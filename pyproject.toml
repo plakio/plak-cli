@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "plak"
+version = "0.1.0"
+description = ""
+authors = ["Oscar Hugo Paz <oscar@plak.io>"]
+readme = "README.md"
+
+[tool.poetry.scripts]
+plak = "plak.main:app"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+typer = {extras = ["all"], version = "^0.12.3"}
+pytest = "^8.3.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
