@@ -1,19 +1,20 @@
-[tool.poetry]
+[project]
+authors = [
+    {name = "Oscar Hugo Paz", email = "oscar@plak.io"},
+]
+requires-python = "<4.0,>=3.12"
+dependencies = [
+    "pytest<9.0.0,>=8.3.2",
+    "typer>=0.12.5",
+]
 name = "plak"
 version = "0.1.0"
-description = ""
-authors = ["Oscar Hugo Paz <oscar@plak.io>"]
+description = "Herramienta para gestionar servidores en la nube y sitios en WordPress"
 readme = "README.md"
 
-[tool.poetry.scripts]
+[project.scripts]
 plak = "plak.main:app"
 
-[tool.poetry.dependencies]
-python = "^3.12"
-typer = {extras = ["all"], version = "^0.12.3"}
-pytest = "^8.3.2"
-
-
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
