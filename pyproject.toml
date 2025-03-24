@@ -6,6 +6,9 @@ requires-python = "<4.0,>=3.12"
 dependencies = [
     "pytest<9.0.0,>=8.3.2",
     "typer>=0.12.5",
+    "rich>=13.7.0",
+    "questionary>=2.0.1",
+    "textual>=0.52.1",
 ]
 name = "plak"
 version = "0.1.0"
