@@ -2,20 +2,39 @@ import typer
 import os
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt
 
+# Inicializar la aplicación Typer y la consola Rich
 app = typer.Typer()
 console = Console()
 
-def get_ssh_dir():
-    """Get the SSH directory path."""
+def get_ssh_dir() -> str:
+    """
+    Obtiene la ruta al directorio SSH del usuario.
+    
+    Returns:
+        str: Ruta absoluta al directorio ~/.ssh
+    """
     return os.path.expanduser("~/.ssh")
 
-def list_ssh_keys():
-    """List all SSH keys in the .ssh directory."""
+def list_ssh_keys() -> List[Dict[str, Union[str, bool]]]:
+    """
+    Lista todas las claves SSH en el directorio .ssh.
+    
+    Busca archivos que probablemente sean claves privadas (excluyendo archivos
+    conocidos como authorized_keys, known_hosts, etc.) y comprueba si tienen
+    una clave pública correspondiente (.pub).
+    
+    Returns:
+        List[Dict[str, Union[str, bool]]]: Lista de diccionarios con información de claves.
+            Cada diccionario contiene:
+            - 'name': Nombre del archivo de clave
+            - 'path': Ruta completa al archivo de clave
+            - 'has_public': Booleano indicando si tiene archivo .pub
+    """
     ssh_dir = get_ssh_dir()
     if not os.path.exists(ssh_dir):
         return []
@@ -38,8 +57,25 @@ def list_ssh_keys():
     
     return keys
 
-def get_key_details(key_path):
-    """Get details about an SSH key."""
+def get_key_details(key_path: str) -> Optional[Dict[str, str]]:
+    """
+    Obtiene detalles técnicos de una clave SSH.
+    
+    Para claves públicas (.pub), utiliza ssh-keygen para extraer información
+    como tipo de clave, bits, huella digital y comentario. Para claves privadas
+    o cuando no puede obtener detalles, devuelve información básica.
+    
+    Args:
+        key_path (str): Ruta al archivo de clave (pública o privada)
+        
+    Returns:
+        Optional[Dict[str, str]]: Diccionario con detalles de la clave o None si
+                                la clave no existe. El diccionario contiene:
+                                - 'bits': Número de bits de la clave
+                                - 'fingerprint': Huella digital de la clave
+                                - 'comment': Comentario (normalmente user@host)
+                                - 'type': Tipo de clave (RSA, ED25519, etc.)
+    """
     if not os.path.exists(key_path):
         return None
     
@@ -74,7 +110,13 @@ def get_key_details(key_path):
 
 @app.command()
 def create():
-    """Create an SSH key interactively."""
+    """
+    Crea una clave SSH de forma interactiva.
+    
+    Guía al usuario a través del proceso de creación de una clave SSH,
+    solicitando información como nombre, tipo de clave, bits y passphrase.
+    Al finalizar, muestra la clave pública generada.
+    """
     console.print("[bold blue]Creating an SSH key...[/bold blue]")
     
     key_name = Prompt.ask("Key name (e.g., id_rsa)", default="id_rsa")
@@ -126,7 +168,14 @@ def create():
 
 @app.command()
 def view():
-    """View SSH keys interactively."""
+    """
+    Muestra las claves SSH de forma interactiva.
+    
+    Lista todas las claves SSH encontradas en el directorio ~/.ssh
+    y permite al usuario seleccionar una para ver más detalles.
+    Para claves con archivo .pub, muestra información técnica y
+    el contenido de la clave pública.
+    """
     console.print("[bold blue]SSH Keys:[/bold blue]")
     
     keys = list_ssh_keys()
@@ -186,7 +235,16 @@ def view():
 
 @app.command()
 def delete():
-    """Delete an SSH key interactively."""
+    """
+    Elimina una clave SSH de forma interactiva.
+    
+    Muestra una lista de las claves SSH disponibles y permite al usuario
+    seleccionar cuál eliminar. Solicita confirmación antes de proceder
+    y elimina tanto la clave privada como la pública si existe.
+    
+    Esta operación es irreversible y no puede deshacerse, por lo que
+    se requiere confirmación explícita.
+    """
     console.print("[bold blue]Delete SSH Key[/bold blue]")
     
     keys = list_ssh_keys()

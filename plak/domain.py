@@ -8,18 +8,37 @@ from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt
 
+# Inicializar la aplicación Typer y la consola Rich
 app = typer.Typer()
 console = Console()
 
-def get_hosts_path():
-    """Get path to hosts file."""
+def get_hosts_path() -> str:
+    """
+    Obtiene la ruta al archivo hosts del sistema.
+    
+    Determina la ubicación del archivo hosts según el sistema operativo.
+    En Windows es C:\\Windows\\System32\\drivers\\etc\\hosts,
+    en Unix/Linux/MacOS es /etc/hosts.
+    
+    Returns:
+        str: Ruta absoluta al archivo hosts
+    """
     if os.name == 'nt':  # Windows
         return r"C:\Windows\System32\drivers\etc\hosts"
     else:  # Unix/Linux/MacOS
         return "/etc/hosts"
 
 def parse_hosts() -> List[Dict[str, str]]:
-    """Parse hosts file and return list of entries."""
+    """
+    Analiza el archivo hosts y devuelve una lista de entradas.
+    
+    Cada entrada es un diccionario con las claves 'IP' y 'Domain'.
+    Si hay múltiples dominios en la misma línea, se crean entradas
+    separadas para cada uno con la misma IP.
+    
+    Returns:
+        List[Dict[str, str]]: Lista de diccionarios con entradas del hosts.
+    """
     hosts_path = get_hosts_path()
     if not os.path.exists(hosts_path):
         return []
@@ -46,8 +65,21 @@ def parse_hosts() -> List[Dict[str, str]]:
     
     return entries
 
-def add_hosts_entry(ip: str, domain: str):
-    """Add a new entry to hosts file."""
+def add_hosts_entry(ip: str, domain: str) -> bool:
+    """
+    Añade una nueva entrada al archivo hosts.
+    
+    En sistemas Unix/Linux/MacOS, utiliza sudo para modificar el archivo hosts.
+    Crea un archivo temporal, lo modifica y luego lo mueve al lugar correcto
+    con privilegios de superusuario.
+    
+    Args:
+        ip (str): Dirección IP para el dominio
+        domain (str): Nombre de dominio a añadir
+        
+    Returns:
+        bool: True si se añadió correctamente, False si hubo un error
+    """
     hosts_path = get_hosts_path()
     
     # Check if entry already exists
@@ -77,8 +109,20 @@ def add_hosts_entry(ip: str, domain: str):
         console.print(f"[bold red]Error updating hosts file: {str(e)}[/bold red]")
         return False
 
-def delete_hosts_entry(domain: str):
-    """Delete an entry from hosts file."""
+def delete_hosts_entry(domain: str) -> bool:
+    """
+    Elimina una entrada del archivo hosts.
+    
+    En sistemas Unix/Linux/MacOS, utiliza sudo para modificar el archivo hosts.
+    Si el dominio es uno de varios en la misma línea, solo elimina ese dominio
+    y mantiene los demás con la misma IP.
+    
+    Args:
+        domain (str): Nombre de dominio a eliminar
+        
+    Returns:
+        bool: True si se eliminó correctamente, False si hubo un error
+    """
     hosts_path = get_hosts_path()
     temp_file = "/tmp/hosts.new"
     
@@ -127,7 +171,13 @@ def delete_hosts_entry(domain: str):
 
 @app.command()
 def create():
-    """Add a domain to hosts interactively."""
+    """
+    Añade un dominio al archivo hosts de forma interactiva.
+    
+    Solicita el nombre de dominio y la dirección IP, y luego añade
+    la entrada al archivo hosts del sistema. En sistemas Unix/Linux/MacOS,
+    solicitará privilegios sudo para modificar el archivo.
+    """
     console.print("[bold blue]Adding a new domain to hosts...[/bold blue]")
     
     domain = Prompt.ask("Domain name")
@@ -142,7 +192,12 @@ def create():
 
 @app.command()
 def view():
-    """View domains from hosts."""
+    """
+    Muestra los dominios del archivo hosts en formato tabulado.
+    
+    Muestra una tabla con todas las entradas del archivo hosts,
+    incluyendo IP y dominio en columnas separadas.
+    """
     console.print("[bold blue]Domains in hosts file:[/bold blue]")
     
     entries = parse_hosts()
@@ -161,7 +216,13 @@ def view():
 
 @app.command()
 def delete():
-    """Delete a domain from hosts interactively."""
+    """
+    Elimina un dominio del archivo hosts de forma interactiva.
+    
+    Muestra una lista de todos los dominios configurados y permite
+    seleccionar cuál eliminar. Solicita confirmación antes de proceder
+    y requiere privilegios sudo en sistemas Unix/Linux/MacOS.
+    """
     console.print("[bold blue]Delete Domain from hosts[/bold blue]")
     
     entries = parse_hosts()

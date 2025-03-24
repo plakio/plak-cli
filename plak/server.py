@@ -8,15 +8,30 @@ from rich.table import Table
 from rich.prompt import Prompt
 from typing import List, Dict, Optional
 
+# Inicializar la aplicación Typer y la consola Rich
 app = typer.Typer()
 console = Console()
 
-def get_ssh_config_path():
-    """Get path to SSH config file."""
+def get_ssh_config_path() -> str:
+    """
+    Obtiene la ruta al archivo de configuración SSH.
+    
+    Returns:
+        str: Ruta absoluta al archivo ~/.ssh/config
+    """
     return os.path.expanduser("~/.ssh/config")
 
 def parse_ssh_config() -> List[Dict[str, str]]:
-    """Parse SSH config file and return list of servers."""
+    """
+    Analiza el archivo de configuración SSH y devuelve una lista de servidores.
+    
+    El análisis extrae información de cada bloque Host, incluyendo nombre, hostname, 
+    usuario, puerto y archivo de identidad si está especificado.
+    
+    Returns:
+        List[Dict[str, str]]: Lista de diccionarios, cada uno representando un host SSH.
+                            Cada diccionario contiene claves como 'Name', 'HostName', 'User', etc.
+    """
     config_path = get_ssh_config_path()
     if not os.path.exists(config_path):
         return []
@@ -51,8 +66,17 @@ def parse_ssh_config() -> List[Dict[str, str]]:
     
     return hosts
 
-def add_ssh_config(name: str, hostname: str, user: str, port: int = 22, identity_file: Optional[str] = None):
-    """Add a new entry to SSH config."""
+def add_ssh_config(name: str, hostname: str, user: str, port: int = 22, identity_file: Optional[str] = None) -> None:
+    """
+    Añade una nueva entrada al archivo de configuración SSH.
+    
+    Args:
+        name (str): Nombre de la conexión (bloque Host)
+        hostname (str): Dirección IP o nombre del servidor
+        user (str): Nombre de usuario para la conexión
+        port (int, optional): Puerto SSH. Por defecto es 22.
+        identity_file (Optional[str], optional): Ruta al archivo de clave privada.
+    """
     config_path = get_ssh_config_path()
     
     # Ensure SSH directory exists
@@ -73,18 +97,27 @@ def add_ssh_config(name: str, hostname: str, user: str, port: int = 22, identity
         if identity_file:
             f.write(f"    IdentityFile {identity_file}\n")
 
-def delete_ssh_config(name: str):
-    """Delete an entry from SSH config."""
+def delete_ssh_config(name: str) -> bool:
+    """
+    Elimina una entrada del archivo de configuración SSH.
+    
+    Args:
+        name (str): Nombre del host a eliminar
+        
+    Returns:
+        bool: True si se eliminó correctamente, False si hubo un error
+    """
     config_path = get_ssh_config_path()
     if not os.path.exists(config_path):
         console.print("[bold red]SSH config file does not exist.[/bold red]")
-        return
+        return False
     
     with open(config_path, 'r') as f:
         lines = f.readlines()
     
     # Find Host block to delete
     i = 0
+    found = False
     while i < len(lines):
         if lines[i].strip().startswith(f"Host {name}"):
             # Found the host, now find where this block ends
@@ -93,16 +126,28 @@ def delete_ssh_config(name: str):
                 j += 1
             # Delete the block
             del lines[i:j]
+            found = True
             break
         i += 1
+    
+    if not found:
+        return False
     
     # Write back the modified config
     with open(config_path, 'w') as f:
         f.writelines(lines)
+    
+    return True
 
 @app.command()
 def create():
-    """Create a new remote connection interactively."""
+    """
+    Crea una nueva conexión remota SSH de forma interactiva.
+    
+    El comando solicitará toda la información necesaria a través de prompts
+    incluyendo nombre de la conexión, hostname, usuario, puerto y opcionalmente
+    una clave SSH específica.
+    """
     console.print("[bold blue]Adding a new SSH connection...[/bold blue]")
     
     name = Prompt.ask("Connection name")
@@ -120,7 +165,12 @@ def create():
 
 @app.command()
 def view():
-    """View remote connections."""
+    """
+    Muestra todas las conexiones remotas configuradas en formato de tabla.
+    
+    La tabla muestra información detallada de cada conexión, incluyendo nombre, 
+    hostname, usuario, puerto y archivo de identidad (si está configurado).
+    """
     console.print("[bold blue]SSH Connections:[/bold blue]")
     
     hosts = parse_ssh_config()
@@ -148,7 +198,13 @@ def view():
 
 @app.command()
 def delete():
-    """Delete a remote connection interactively."""
+    """
+    Elimina una conexión remota de forma interactiva.
+    
+    Muestra una lista de las conexiones disponibles y permite al usuario
+    seleccionar cuál desea eliminar. Solicita confirmación antes de realizar
+    la eliminación.
+    """
     console.print("[bold blue]Delete SSH Connection[/bold blue]")
     
     hosts = parse_ssh_config()
@@ -200,7 +256,13 @@ def delete():
 
 @app.command()
 def connect():
-    """Connect to a server interactively."""
+    """
+    Conecta a un servidor SSH seleccionándolo de forma interactiva.
+    
+    Muestra una lista de las conexiones disponibles y permite al usuario
+    seleccionar a cuál desea conectarse. Luego ejecuta el comando SSH
+    para establecer la conexión.
+    """
     console.print("[bold blue]Connect to SSH Server[/bold blue]")
     
     hosts = parse_ssh_config()
