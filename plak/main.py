@@ -1,6 +1,7 @@
 import typer
-from plak import server, domain, sshkey
 from typing import Optional
+
+from plak import server, domain, sshkey
 from plak import __app_name__, __version__
 
 
