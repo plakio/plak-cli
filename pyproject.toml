@@ -6,9 +6,13 @@ requires-python = "<4.0,>=3.12"
 dependencies = [
     "pytest<9.0.0,>=8.3.2",
     "typer>=0.12.5",
+    "rich>=13.7.0",
+    "questionary>=2.0.1",
+    "textual>=0.52.1",
 ]
 name = "plak"
-version = "0.1.0"
+# La versión ahora se obtiene dinámicamente de __init__.py
+dynamic = ["version"]
 description = "Herramienta para gestionar servidores en la nube y sitios en WordPress"
 readme = "README.md"
 
@@ -16,5 +20,8 @@ readme = "README.md"
 plak = "plak.main:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "plak/__init__.py"
