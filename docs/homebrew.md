@@ -7,14 +7,14 @@ Plak is distributed through a Homebrew tap.
 After the first tap release is published, users can install Plak with:
 
 ```bash
-brew tap plak/plak-cli
+brew tap plakio/plak-cli
 brew install plak-cli
 ```
 
 Or in one command:
 
 ```bash
-brew install plak/plak-cli/plak-cli
+brew install plakio/plak-cli/plak-cli
 ```
 
 ## Tap Repository
@@ -22,7 +22,7 @@ brew install plak/plak-cli/plak-cli
 Homebrew expects the tap repository to be named with a `homebrew-` prefix. For Plak, use:
 
 ```text
-plak/homebrew-plak-cli
+plakio/homebrew-plak-cli
 ```
 
 The tap should contain:
@@ -59,7 +59,7 @@ README.md
 6. Copy `/tmp/plak-cli.rb` into the tap repository:
 
    ```text
-   plak/homebrew-plak-cli/Formula/plak-cli.rb
+   plakio/homebrew-plak-cli/Formula/plak-cli.rb
    ```
 
 7. In the tap repository, test locally:
@@ -86,4 +86,4 @@ The source template lives at:
 packaging/homebrew/plak-cli.rb.template
 ```
 
-It is intentionally checked in as a template because Homebrew requires a real release tarball SHA256. The generated `Formula/plak-cli.rb` belongs in `plak/homebrew-plak-cli`, not this source repository.
+It is intentionally checked in as a template because Homebrew requires a real release tarball SHA256. The generated `Formula/plak-cli.rb` belongs in `plakio/homebrew-plak-cli`, not this source repository.

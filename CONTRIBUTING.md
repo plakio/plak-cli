@@ -49,7 +49,7 @@ After tagging a release, generate the formula for the tap with:
 ./scripts/homebrew_formula.sh 0.3.0 > /tmp/plak-cli.rb
 ```
 
-Then copy it to `plak/homebrew-plak-cli/Formula/plak-cli.rb` and test it with Homebrew. See `docs/homebrew.md` for the full release flow.
+Then copy it to `plakio/homebrew-plak-cli/Formula/plak-cli.rb` and test it with Homebrew. See `docs/homebrew.md` for the full release flow.
 
 ## Safety
 
