@@ -20,7 +20,8 @@ It follows a Cove-style structure: modular source files are compiled into a sing
 After the Homebrew tap is published, install Plak with:
 
 ```bash
-brew install plakio/tap/plak
+brew tap plak/plak-cli
+brew install plak-cli
 ```
 
 For local development, Plak can also install/check `gum` with Homebrew:

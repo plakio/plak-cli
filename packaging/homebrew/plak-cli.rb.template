@@ -1,4 +1,4 @@
-class Plak < Formula
+class PlakCli < Formula
   desc "Interactive Bash CLI for SSH servers, local domains, and SSH keys"
   homepage "https://github.com/plakio/plak-cli"
   url "https://github.com/plakio/plak-cli/archive/refs/tags/v__VERSION__.tar.gz"

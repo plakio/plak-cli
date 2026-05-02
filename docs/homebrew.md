@@ -7,14 +7,14 @@ Plak is distributed through a Homebrew tap.
 After the first tap release is published, users can install Plak with:
 
 ```bash
-brew tap plakio/tap
-brew install plak
+brew tap plak/plak-cli
+brew install plak-cli
 ```
 
 Or in one command:
 
 ```bash
-brew install plakio/tap/plak
+brew install plak/plak-cli/plak-cli
 ```
 
 ## Tap Repository
@@ -22,13 +22,13 @@ brew install plakio/tap/plak
 Homebrew expects the tap repository to be named with a `homebrew-` prefix. For Plak, use:
 
 ```text
-plakio/homebrew-tap
+plak/homebrew-plak-cli
 ```
 
 The tap should contain:
 
 ```text
-Formula/plak.rb
+Formula/plak-cli.rb
 README.md
 ```
 
@@ -53,28 +53,28 @@ README.md
 5. Generate the Homebrew formula:
 
    ```bash
-   ./scripts/homebrew_formula.sh 0.3.0 > /tmp/plak.rb
+   ./scripts/homebrew_formula.sh 0.3.0 > /tmp/plak-cli.rb
    ```
 
-6. Copy `/tmp/plak.rb` into the tap repository:
+6. Copy `/tmp/plak-cli.rb` into the tap repository:
 
    ```text
-   plakio/homebrew-tap/Formula/plak.rb
+   plak/homebrew-plak-cli/Formula/plak-cli.rb
    ```
 
 7. In the tap repository, test locally:
 
    ```bash
-   brew install --build-from-source ./Formula/plak.rb
-   brew test ./Formula/plak.rb
-   brew uninstall plak
+   brew install --build-from-source ./Formula/plak-cli.rb
+   brew test ./Formula/plak-cli.rb
+   brew uninstall plak-cli
    ```
 
 8. Commit and push the tap update:
 
    ```bash
-   git add Formula/plak.rb
-   git commit -m "plak 0.3.0"
+   git add Formula/plak-cli.rb
+   git commit -m "plak-cli 0.3.0"
    git push origin main
    ```
 
@@ -83,7 +83,7 @@ README.md
 The source template lives at:
 
 ```text
-packaging/homebrew/plak.rb.template
+packaging/homebrew/plak-cli.rb.template
 ```
 
-It is intentionally checked in as a template because Homebrew requires a real release tarball SHA256. The generated `Formula/plak.rb` belongs in `plakio/homebrew-tap`, not this source repository.
+It is intentionally checked in as a template because Homebrew requires a real release tarball SHA256. The generated `Formula/plak-cli.rb` belongs in `plak/homebrew-plak-cli`, not this source repository.

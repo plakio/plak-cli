@@ -11,7 +11,7 @@ fi
 
 version="${version#v}"
 repo_url="https://github.com/plakio/plak-cli/archive/refs/tags/v${version}.tar.gz"
-template="packaging/homebrew/plak.rb.template"
+template="packaging/homebrew/plak-cli.rb.template"
 
 if [ ! -f "$template" ]; then
     echo "Template not found: $template" >&2

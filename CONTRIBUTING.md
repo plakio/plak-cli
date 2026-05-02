@@ -41,15 +41,15 @@ brew install shellcheck shfmt
 
 ## Homebrew Releases
 
-Plak's Homebrew formula is generated from `packaging/homebrew/plak.rb.template`.
+Plak's Homebrew formula is generated from `packaging/homebrew/plak-cli.rb.template`.
 
 After tagging a release, generate the formula for the tap with:
 
 ```bash
-./scripts/homebrew_formula.sh 0.3.0 > /tmp/plak.rb
+./scripts/homebrew_formula.sh 0.3.0 > /tmp/plak-cli.rb
 ```
 
-Then copy it to `plakio/homebrew-tap/Formula/plak.rb` and test it with Homebrew. See `docs/homebrew.md` for the full release flow.
+Then copy it to `plak/homebrew-plak-cli/Formula/plak-cli.rb` and test it with Homebrew. See `docs/homebrew.md` for the full release flow.
 
 ## Safety
 
