@@ -15,7 +15,15 @@ It follows a Cove-style structure: modular source files are compiled into a sing
 - `ssh` and `ssh-keygen`
 - `sudo` for writing to `/etc/hosts` when needed
 
-On macOS, Plak can install `gum` with Homebrew:
+## Installation
+
+After the Homebrew tap is published, install Plak with:
+
+```bash
+brew install plakio/tap/plak
+```
+
+For local development, Plak can also install/check `gum` with Homebrew:
 
 ```bash
 ./plak.sh install
@@ -47,6 +55,8 @@ Install the local compiled script as `plak`:
 ```bash
 ./install-plak.sh --dev
 ```
+
+See [docs/homebrew.md](docs/homebrew.md) for release and tap maintenance.
 
 ## Project Structure
 
