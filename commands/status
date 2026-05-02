@@ -1,0 +1,20 @@
+plak_status() {
+    plak_ui_title "Plak status"
+    echo ""
+    echo "OS:          $PLAK_OS"
+    echo "Plak home:   $PLAK_HOME"
+    echo "SSH config:  $PLAK_SSH_CONFIG"
+    echo "Hosts file:  $PLAK_HOSTS_FILE"
+    echo ""
+    echo "Dependencies:"
+
+    local dep status
+    for dep in gum ssh ssh-keygen awk sed grep mktemp; do
+        if plak_command_exists "$dep"; then
+            status="found"
+        else
+            status="missing"
+        fi
+        printf '  %-10s %s\n' "$dep" "$status"
+    done
+}

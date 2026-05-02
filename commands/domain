@@ -1,0 +1,228 @@
+plak_domain_entries() {
+    local hosts_file="${1:-$PLAK_HOSTS_FILE}"
+
+    [ -f "$hosts_file" ] || return 0
+
+    awk '
+        /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+        NF >= 2 {
+            ip = $1
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^#/) break
+                print ip "," $i
+            }
+        }
+    ' "$hosts_file"
+}
+
+plak_domain_exists() {
+    local domain="$1"
+    plak_domain_entries | awk -F, -v target="$domain" '$2 == target { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+plak_domain_validate_name() {
+    local domain="$1"
+    [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && [[ "$domain" == *.* || "$domain" == "localhost" ]]
+}
+
+plak_domain_validate_ip() {
+    local ip="$1"
+    [[ "$ip" =~ ^[A-Za-z0-9:.%-]+$ ]]
+}
+
+plak_domain_write_hosts_file() {
+    local tmp_file="$1" backup_path
+    backup_path="${PLAK_HOSTS_FILE}.plak.bak.$(date +%Y%m%d%H%M%S)"
+
+    if [ -w "$PLAK_HOSTS_FILE" ]; then
+        cp "$PLAK_HOSTS_FILE" "$backup_path"
+        cat "$tmp_file" > "$PLAK_HOSTS_FILE"
+        return 0
+    fi
+
+    sudo cp "$PLAK_HOSTS_FILE" "$backup_path"
+    sudo cp "$tmp_file" "$PLAK_HOSTS_FILE"
+}
+
+plak_domain_add_entry() {
+    local ip="$1" domain="$2" tmp_file
+
+    [ -f "$PLAK_HOSTS_FILE" ] || {
+        plak_ui_error "Hosts file not found: $PLAK_HOSTS_FILE"
+        return 1
+    }
+
+    if plak_domain_exists "$domain"; then
+        plak_ui_error "Domain '$domain' already exists in $PLAK_HOSTS_FILE."
+        return 1
+    fi
+
+    tmp_file=$(mktemp)
+    cat "$PLAK_HOSTS_FILE" > "$tmp_file"
+    printf '\n%s\t%s # plak\n' "$ip" "$domain" >> "$tmp_file"
+
+    plak_domain_write_hosts_file "$tmp_file"
+    rm -f "$tmp_file"
+}
+
+plak_domain_remove_entry() {
+    local domain="$1" tmp_file
+
+    [ -f "$PLAK_HOSTS_FILE" ] || return 1
+    tmp_file=$(mktemp)
+
+    awk -v target="$domain" '
+        /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
+        {
+            hash = 0
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^#/) { hash = i; break }
+            }
+            max = hash ? hash - 1 : NF
+            if (max < 2) { print; next }
+
+            ip = $1
+            keep = ""
+            removed_here = 0
+            for (i = 2; i <= max; i++) {
+                if ($i == target) {
+                    removed_here = 1
+                } else {
+                    keep = keep (keep ? " " : "") $i
+                }
+            }
+
+            if (!removed_here) { print; next }
+            found = 1
+            if (keep != "") {
+                line = ip "\t" keep
+                if (hash) {
+                    comment = ""
+                    for (i = hash; i <= NF; i++) comment = comment (comment ? " " : "") $i
+                    line = line " " comment
+                }
+                print line
+            }
+        }
+        END { if (!found) exit 2 }
+    ' "$PLAK_HOSTS_FILE" > "$tmp_file" || {
+        local code=$?
+        rm -f "$tmp_file"
+        return "$code"
+    }
+
+    plak_domain_write_hosts_file "$tmp_file"
+    rm -f "$tmp_file"
+}
+
+plak_domain_list() {
+    if [ ! -f "$PLAK_HOSTS_FILE" ]; then
+        plak_ui_warn "Hosts file not found: $PLAK_HOSTS_FILE"
+        return 0
+    fi
+
+    local rows
+    rows=$(plak_domain_entries)
+
+    if [ -z "$rows" ]; then
+        plak_ui_warn "No hosts entries found."
+        return 0
+    fi
+
+    if plak_command_exists gum && [ -t 1 ]; then
+        {
+            echo "IP,Domain"
+            echo "$rows"
+        } | gum table --separator ","
+    else
+        echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
+    fi
+}
+
+plak_domain_add() {
+    plak_require_gum
+
+    plak_ui_title "Add hosts entry"
+
+    local domain ip
+    while true; do
+        domain=$(gum input --prompt "Domain: " --placeholder "site.localhost")
+        [ -n "$domain" ] || return 0
+        if plak_domain_validate_name "$domain"; then
+            break
+        fi
+        plak_ui_error "Invalid domain name."
+    done
+
+    while true; do
+        ip=$(gum input --prompt "IP: " --value "127.0.0.1")
+        [ -n "$ip" ] || return 0
+        if plak_domain_validate_ip "$ip"; then
+            break
+        fi
+        plak_ui_error "Invalid IP or host value."
+    done
+
+    gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
+        "Hosts entry" \
+        "$ip    $domain"
+
+    if ! gum confirm "Add this entry to $PLAK_HOSTS_FILE?"; then
+        plak_ui_warn "Cancelled."
+        return 0
+    fi
+
+    plak_domain_add_entry "$ip" "$domain"
+    plak_ui_success "Domain '$domain' added."
+}
+
+plak_domain_delete() {
+    plak_require_gum
+
+    local rows selected domain
+    rows=$(plak_domain_entries)
+
+    if [ -z "$rows" ]; then
+        plak_ui_warn "No hosts entries found."
+        return 0
+    fi
+
+    selected=$(echo "$rows" | awk -F, '{ print $2 "    " $1 }' | gum filter --placeholder "Choose domain to delete")
+    [ -n "$selected" ] || return 0
+
+    domain=$(echo "$selected" | awk '{ print $1 }')
+    if ! gum confirm "Delete domain '$domain' from $PLAK_HOSTS_FILE?"; then
+        plak_ui_warn "Cancelled."
+        return 0
+    fi
+
+    plak_domain_remove_entry "$domain"
+    plak_ui_success "Domain '$domain' deleted."
+}
+
+plak_domain() {
+    local action="${1:-help}"
+    if [ "$#" -gt 0 ]; then
+        shift
+    fi
+
+    case "$action" in
+        list|view)
+            plak_domain_list "$@"
+            ;;
+        add|create)
+            plak_domain_add "$@"
+            ;;
+        delete|remove)
+            plak_domain_delete "$@"
+            ;;
+        help|--help|-h)
+            plak_display_command_help domain
+            ;;
+        *)
+            plak_ui_error "Unknown domain action '$action'"
+            plak_display_command_help domain
+            exit 1
+            ;;
+    esac
+}
