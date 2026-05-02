@@ -26,6 +26,7 @@ fi
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source_script="$script_dir/plak.sh"
 destination="$install_dir/plak"
+download_url="${PLAK_INSTALL_URL:-https://plak.run/plak.sh}"
 
 if [ "$DEV_MODE" = true ]; then
     if [ ! -f "$source_script" ]; then
@@ -33,9 +34,14 @@ if [ "$DEV_MODE" = true ]; then
         exit 1
     fi
 else
-    echo "Only --dev install is available in this scaffold." >&2
-    echo "Run: ./compile.sh && ./install-plak.sh --dev" >&2
-    exit 1
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "curl is required to install Plak." >&2
+        exit 1
+    fi
+
+    source_script=$(mktemp)
+    trap 'rm -f "$source_script"' EXIT
+    curl -fsSL "$download_url" -o "$source_script"
 fi
 
 if [ ! -d "$install_dir" ]; then

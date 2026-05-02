@@ -17,11 +17,23 @@ It follows a Cove-style structure: modular source files are compiled into a sing
 
 ## Installation
 
-After the Homebrew tap is published, install Plak with:
+Install Plak with Homebrew:
 
 ```bash
 brew tap plakio/plak-cli
 brew install plak-cli
+```
+
+Or in one command:
+
+```bash
+brew install plakio/plak-cli/plak-cli
+```
+
+You can also install Plak directly with the installer script:
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/plakio/plak-cli/main/install-plak.sh)
 ```
 
 For local development, Plak can also install/check `gum` with Homebrew:
