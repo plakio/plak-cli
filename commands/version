@@ -1,0 +1,3 @@
+plak_version() {
+    echo "$PLAK_NAME v$PLAK_VERSION"
+}

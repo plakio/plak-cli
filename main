@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+
+# Plak - Bash entrypoint
+# Source file for the compiled plak.sh distribution script.
+
+set -euo pipefail
+
+PLAK_NAME="plak"
+PLAK_VERSION="0.3.0-dev"
+PLAK_HOME="${PLAK_HOME:-$HOME/.plak}"
+PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
+PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
+
+# Ensure common user-managed binary locations are available when launched from
+# restricted environments such as cron, launchd, or GUI shells.
+for _plak_bin in /opt/homebrew/bin /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
+    if [ -d "$_plak_bin" ] && [[ ":$PATH:" != *":$_plak_bin:"* ]]; then
+        PATH="$_plak_bin:$PATH"
+    fi
+done
+unset _plak_bin
+export PATH
+
+plak_setup_environment() {
+    local os_name
+    os_name=$(uname -s)
+
+    case "$os_name" in
+        Darwin)
+            PLAK_OS="macos"
+            ;;
+        Linux)
+            PLAK_OS="linux"
+            ;;
+        *)
+            PLAK_OS="unsupported"
+            ;;
+    esac
+
+    export PLAK_OS
+}
+
+plak_command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+plak_has_tty() {
+    [ -t 0 ] && [ -t 1 ]
+}
+
+plak_require_gum() {
+    if ! plak_command_exists gum; then
+        echo "Error: gum is required for interactive Plak commands." >&2
+        echo "Install it from https://github.com/charmbracelet/gum or run: plak install" >&2
+        exit 1
+    fi
+
+    if ! plak_has_tty; then
+        echo "Error: this command needs an interactive terminal." >&2
+        exit 1
+    fi
+}
+
+plak_show_help() {
+    cat <<'HELP'
+Plak CLI
+
+Usage:
+  plak <command> [arguments]
+
+Commands:
+  server      Manage SSH server connections
+  domain      Manage local hosts entries
+  sshkey      Manage SSH keys
+  status      Check local dependencies and paths
+  install     Install required dependencies
+  version     Show Plak version
+  help        Show this help
+
+Examples:
+  plak server list
+  plak server connect
+  plak status
+HELP
+}
+
+plak_display_command_help() {
+    local command="${1:-}"
+
+    case "$command" in
+        server)
+            cat <<'HELP'
+Usage:
+  plak server <action>
+
+Actions:
+  list        List hosts from ~/.ssh/config
+  connect     Pick a host with gum and connect through ssh
+  add         Add a new SSH host interactively
+  delete      Delete an SSH host interactively
+  help        Show server help
+HELP
+            ;;
+        domain)
+            cat <<'HELP'
+Usage:
+  plak domain <action>
+
+Actions:
+  list        List non-comment entries from /etc/hosts
+  add         Add a hosts entry interactively
+  delete      Delete a hosts entry interactively
+  help        Show domain help
+HELP
+            ;;
+        sshkey)
+            cat <<'HELP'
+Usage:
+  plak sshkey <action>
+
+Actions:
+  list        List likely SSH private keys in ~/.ssh
+  view        Show SSH key details and public key
+  create      Create a new SSH key interactively
+  delete      Delete an SSH key and its public key
+  help        Show sshkey help
+HELP
+            ;;
+        install)
+            cat <<'HELP'
+Usage:
+  plak install
+
+Installs or guides installation for dependencies used by Plak.
+HELP
+            ;;
+        status)
+            echo "Usage: plak status"
+            ;;
+        version)
+            echo "Usage: plak version"
+            ;;
+        *)
+            plak_show_help
+            ;;
+    esac
+}
+
+main() {
+    plak_setup_environment
+
+    for arg in "$@"; do
+        if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+            plak_display_command_help "${1:-}"
+            exit 0
+        fi
+    done
+
+    local command="${1:-help}"
+    if [ "$#" -gt 0 ]; then
+        shift
+    fi
+
+    case "$command" in
+        server)
+            plak_server "$@"
+            ;;
+        domain)
+            plak_domain "$@"
+            ;;
+        sshkey)
+            plak_sshkey "$@"
+            ;;
+        status|doctor)
+            plak_status "$@"
+            ;;
+        install)
+            plak_install "$@"
+            ;;
+        version|--version|-v)
+            plak_version
+            ;;
+        help)
+            plak_show_help
+            ;;
+        *)
+            echo "Error: unknown command '$command'" >&2
+            echo ""
+            plak_show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

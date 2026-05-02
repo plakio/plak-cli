@@ -1,0 +1,33 @@
+# Shared UI helpers for Plak Bash commands.
+
+plak_ui_title() {
+    if plak_command_exists gum; then
+        gum style --bold --foreground 212 "$1"
+    else
+        echo "$1"
+    fi
+}
+
+plak_ui_error() {
+    if plak_command_exists gum; then
+        gum style --foreground red "Error: $1" >&2
+    else
+        echo "Error: $1" >&2
+    fi
+}
+
+plak_ui_warn() {
+    if plak_command_exists gum; then
+        gum style --foreground yellow "$1"
+    else
+        echo "$1"
+    fi
+}
+
+plak_ui_success() {
+    if plak_command_exists gum; then
+        gum style --foreground green "$1"
+    else
+        echo "$1"
+    fi
+}

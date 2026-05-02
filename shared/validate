@@ -1,0 +1,11 @@
+# Shared validation helpers for Plak Bash commands.
+
+plak_validate_hostname_alias() {
+    local value="$1"
+    [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+plak_validate_port() {
+    local value="$1"
+    [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 1 ] && [ "$value" -le 65535 ]
+}

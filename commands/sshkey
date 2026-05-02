@@ -1,0 +1,213 @@
+plak_sshkey_private_keys() {
+    local ssh_dir="${1:-$HOME/.ssh}"
+
+    [ -d "$ssh_dir" ] || return 0
+
+    find "$ssh_dir" -maxdepth 1 -type f \
+        ! -name '.*' \
+        ! -name '*.pub' \
+        ! -name 'authorized_keys' \
+        ! -name 'known_hosts*' \
+        ! -name '*_known_hosts' \
+        ! -name 'config' \
+        -print | while IFS= read -r key_path; do
+            if head -n 1 "$key_path" 2>/dev/null | grep -q 'PRIVATE KEY'; then
+                printf '%s\n' "$key_path"
+            fi
+        done | sort
+}
+
+plak_sshkey_rows() {
+    plak_sshkey_private_keys | while IFS= read -r key_path; do
+        key_name=$(basename "$key_path")
+        has_public="No"
+        [ -f "$key_path.pub" ] && has_public="Yes"
+        printf '%s,%s,%s\n' "$key_name" "$has_public" "$key_path"
+    done
+}
+
+plak_sshkey_list() {
+    local ssh_dir="$HOME/.ssh" rows
+
+    if [ ! -d "$ssh_dir" ]; then
+        plak_ui_warn "SSH directory not found: $ssh_dir"
+        return 0
+    fi
+
+    rows=$(plak_sshkey_rows)
+
+    if [ -z "$rows" ]; then
+        plak_ui_warn "No SSH keys found in $ssh_dir."
+        return 0
+    fi
+
+    if plak_command_exists gum && [ -t 1 ]; then
+        {
+            echo "Name,Public Key,Path"
+            echo "$rows"
+        } | gum table --separator ","
+    else
+        echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
+    fi
+}
+
+plak_sshkey_show_details() {
+    local key_path="$1" pub_path details
+
+    if [ ! -f "$key_path" ]; then
+        plak_ui_error "Key not found: $key_path"
+        return 1
+    fi
+
+    pub_path="$key_path.pub"
+    plak_ui_title "SSH key: $(basename "$key_path")"
+    echo "Private: $key_path"
+    echo "Public:  $pub_path"
+    echo ""
+
+    if [ -f "$pub_path" ]; then
+        if details=$(ssh-keygen -l -f "$pub_path" 2>/dev/null); then
+            echo "$details"
+            echo ""
+        fi
+        cat "$pub_path"
+    else
+        plak_ui_warn "No public key found."
+    fi
+}
+
+plak_sshkey_view() {
+    local keys selected key_name
+
+    keys=$(plak_sshkey_private_keys)
+    if [ -z "$keys" ]; then
+        plak_ui_warn "No SSH keys found in $HOME/.ssh."
+        return 0
+    fi
+
+    if [ "${1:-}" != "" ]; then
+        key_name="$1"
+        if [ -f "$HOME/.ssh/$key_name" ]; then
+            plak_sshkey_show_details "$HOME/.ssh/$key_name"
+        else
+            plak_sshkey_show_details "$key_name"
+        fi
+        return
+    fi
+
+    plak_require_gum
+    selected=$(echo "$keys" | gum filter --placeholder "Choose SSH key")
+    [ -n "$selected" ] || return 0
+    plak_sshkey_show_details "$selected"
+}
+
+plak_sshkey_create() {
+    plak_require_gum
+
+    plak_ui_title "Create SSH key"
+
+    local ssh_dir key_name key_path key_type bits passphrase overwrite=false
+    ssh_dir="$HOME/.ssh"
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+
+    while true; do
+        key_name=$(gum input --prompt "Key name: " --value "id_ed25519")
+        [ -n "$key_name" ] || return 0
+        if [[ "$key_name" == */* || "$key_name" == .* ]]; then
+            plak_ui_error "Use a file name only, without slashes or leading dots."
+            continue
+        fi
+        break
+    done
+
+    key_path="$ssh_dir/$key_name"
+    if [ -e "$key_path" ] || [ -e "$key_path.pub" ]; then
+        if gum confirm "Key '$key_name' already exists. Overwrite?"; then
+            overwrite=true
+        else
+            plak_ui_warn "Cancelled."
+            return 0
+        fi
+    fi
+
+    key_type=$(gum choose "ed25519" "rsa" "ecdsa")
+    bits=""
+    if [ "$key_type" = "rsa" ]; then
+        bits=$(gum choose "4096" "2048")
+    fi
+
+    passphrase=$(gum input --password --placeholder "Passphrase (empty for none)")
+
+    if [ "$overwrite" = true ]; then
+        rm -f "$key_path" "$key_path.pub"
+    fi
+
+    local cmd=(ssh-keygen -t "$key_type" -f "$key_path" -N "$passphrase")
+    if [ -n "$bits" ]; then
+        cmd=(ssh-keygen -t "$key_type" -b "$bits" -f "$key_path" -N "$passphrase")
+    fi
+
+    if "${cmd[@]}"; then
+        chmod 600 "$key_path"
+        [ -f "$key_path.pub" ] && chmod 644 "$key_path.pub"
+        plak_ui_success "SSH key '$key_name' created."
+        echo ""
+        plak_sshkey_show_details "$key_path"
+    else
+        plak_ui_error "ssh-keygen failed."
+        return 1
+    fi
+}
+
+plak_sshkey_delete() {
+    plak_require_gum
+
+    local keys selected
+    keys=$(plak_sshkey_private_keys)
+    if [ -z "$keys" ]; then
+        plak_ui_warn "No SSH keys found in $HOME/.ssh."
+        return 0
+    fi
+
+    selected=$(echo "$keys" | gum filter --placeholder "Choose SSH key to delete")
+    [ -n "$selected" ] || return 0
+
+    if ! gum confirm "Delete '$(basename "$selected")' and its .pub file?"; then
+        plak_ui_warn "Cancelled."
+        return 0
+    fi
+
+    rm -f "$selected" "$selected.pub"
+    plak_ui_success "SSH key '$(basename "$selected")' deleted."
+}
+
+plak_sshkey() {
+    local action="${1:-help}"
+    if [ "$#" -gt 0 ]; then
+        shift
+    fi
+
+    case "$action" in
+        list)
+            plak_sshkey_list "$@"
+            ;;
+        view)
+            plak_sshkey_view "$@"
+            ;;
+        add|create)
+            plak_sshkey_create "$@"
+            ;;
+        delete|remove)
+            plak_sshkey_delete "$@"
+            ;;
+        help|--help|-h)
+            plak_display_command_help sshkey
+            ;;
+        *)
+            plak_ui_error "Unknown sshkey action '$action'"
+            plak_display_command_help sshkey
+            exit 1
+            ;;
+    esac
+}
