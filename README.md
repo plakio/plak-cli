@@ -33,7 +33,7 @@ brew install plakio/plak-cli/plak-cli
 You can also install Plak directly with the installer script:
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/plakio/plak-cli/main/install-plak.sh)
+bash <(curl -sL https://plak.sh/install-plak.sh)
 ```
 
 For local development, Plak can also install/check `gum` with Homebrew:
