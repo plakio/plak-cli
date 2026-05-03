@@ -6,7 +6,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
 ./compile.sh >/dev/null
-bash -n main shared/* commands/* compile.sh install-plak.sh plak.sh
+bash -n main shared/* commands/* compile.sh install.sh plak.sh
 
 version_output=$(./plak.sh version)
 grep -q 'plak v' <<<"$version_output"

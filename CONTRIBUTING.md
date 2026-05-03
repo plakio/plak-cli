@@ -28,14 +28,14 @@ brew install shellcheck shfmt
 3. Validate syntax:
 
    ```bash
-   bash -n main shared/* commands/* compile.sh install-plak.sh plak.sh
+   bash -n main shared/* commands/* compile.sh install.sh plak.sh
    ```
 
 4. If available, run:
 
    ```bash
-   shellcheck main shared/* commands/* compile.sh install-plak.sh
-   shfmt -w main shared/* commands/* compile.sh install-plak.sh
+   shellcheck main shared/* commands/* compile.sh install.sh
+   shfmt -w main shared/* commands/* compile.sh install.sh
    ./compile.sh
    ```
 
