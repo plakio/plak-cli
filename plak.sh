@@ -72,8 +72,29 @@ Commands:
   server      Manage SSH server connections
   domain      Manage local hosts entries
   sshkey      Manage SSH keys
+  add         Create a WordPress or plain local site
+  delete      Delete a local site
+  list        List local sites
+  login       Generate a one-time WordPress admin login link
+  db          Manage local site databases
+  pull        Pull a remote WordPress site into Plak
+  push        Push a local Plak site to a remote WordPress site
+  enable      Start local site services
+  disable     Stop local site services
+  reload      Regenerate and reload the local site server
+  trust       Trust the local HTTPS certificate
+  ports       Reconfigure HTTP/HTTPS ports
+  memory      Show or raise PHP memory_limit
+  directive   Manage custom Caddyfile rules
+  mappings    Manage extra domains for a site
+  proxy       Manage standalone reverse proxies
+  share       Create a temporary public tunnel for a site
+  lan         Manage LAN access for local sites
+  tailscale   Expose sites to a Tailscale network
   status      Check local dependencies and paths
   install     Install required dependencies
+  skill       Install the Plak agent skill
+  upgrade     Upgrade the local site stack
   version     Show Plak version
   help        Show this help
 
@@ -126,21 +147,47 @@ Actions:
   help        Show sshkey help
 HELP
             ;;
+        skill)
+            if declare -F plak_skill_help >/dev/null 2>&1; then
+                plak_skill_help
+            else
+                echo "Usage: plak skill install [codex|claude-code|opencode|pi|all]"
+            fi
+            ;;
         install)
             cat <<'HELP'
 Usage:
-  plak install
+  plak install [--yes]
 
-Installs or guides installation for dependencies used by Plak.
+Installs or guides installation for dependencies used by Plak sites.
 HELP
             ;;
         status)
             echo "Usage: plak status"
             ;;
+        add)
+            echo "Usage: plak add <name> [--plain]"
+            ;;
+        delete)
+            echo "Usage: plak delete <name> [--force]"
+            ;;
+        list)
+            echo "Usage: plak list [--totals]"
+            ;;
+        login)
+            echo "Usage: plak login <site> [<user>]"
+            ;;
+        db)
+            echo "Usage: plak db <backup|list>"
+            ;;
         version)
             echo "Usage: plak version"
             ;;
         *)
+            if declare -F plak_site_display_command_help >/dev/null 2>&1; then
+                plak_site_display_command_help "$command"
+                return
+            fi
             plak_show_help
             ;;
     esac
@@ -148,6 +195,14 @@ HELP
 
 main() {
     plak_setup_environment
+
+    local PLAK_SITE_CMD
+    if command -v plak >/dev/null 2>&1; then
+        PLAK_SITE_CMD="plak"
+    else
+        PLAK_SITE_CMD="$0"
+    fi
+    export PLAK_SITE_CMD
 
     for arg in "$@"; do
         if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
@@ -162,6 +217,12 @@ main() {
     fi
 
     case "$command" in
+        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+            set +e
+            ;;
+    esac
+
+    case "$command" in
         server)
             plak_server "$@"
             ;;
@@ -169,6 +230,135 @@ main() {
             ;;
         sshkey)
             plak_sshkey "$@"
+            ;;
+        skill)
+            plak_skill "$@"
+            ;;
+        add)
+            check_dependencies
+            plak_site_add "$@"
+            ;;
+        delete)
+            check_dependencies
+            plak_site_delete "$@"
+            ;;
+        rename)
+            check_dependencies
+            plak_site_rename "$@"
+            ;;
+        list)
+            check_dependencies
+            plak_site_list "$@"
+            ;;
+        path)
+            check_dependencies
+            plak_site_path "$@"
+            ;;
+        pull)
+            check_dependencies
+            plak_site_pull "$@"
+            ;;
+        push)
+            check_dependencies
+            plak_site_push "$@"
+            ;;
+        login)
+            check_dependencies
+            plak_site_login "$@"
+            ;;
+        enable)
+            check_dependencies
+            plak_site_enable "$@"
+            ;;
+        disable)
+            check_dependencies
+            plak_site_disable "$@"
+            ;;
+        reload)
+            check_dependencies
+            plak_site_reload "$@"
+            ;;
+        trust)
+            check_dependencies
+            plak_site_trust "$@"
+            ;;
+        db)
+            check_dependencies
+            local action="${1:-}"
+            [ "$#" -gt 0 ] && shift
+            case "$action" in
+                backup)
+                    plak_site_db_backup "$@"
+                    ;;
+                list)
+                    plak_site_db_list "$@"
+                    ;;
+                *)
+                    plak_display_command_help "db"
+                    exit 0
+                    ;;
+            esac
+            ;;
+        directive)
+            check_dependencies
+            local action="${1:-}"
+            [ "$#" -gt 0 ] && shift
+            case "$action" in
+                add|update)
+                    plak_site_directive_add_or_update "$@"
+                    ;;
+                delete)
+                    plak_site_directive_delete "$@"
+                    ;;
+                list)
+                    plak_site_directive_list "$@"
+                    ;;
+                *)
+                    plak_site_display_command_help "directive"
+                    exit 0
+                    ;;
+            esac
+            ;;
+        proxy)
+            check_dependencies
+            plak_site_proxy "$@"
+            ;;
+        tailscale)
+            check_dependencies
+            plak_site_tailscale "$@"
+            ;;
+        mappings)
+            check_dependencies
+            plak_site_mappings "$@"
+            ;;
+        lan)
+            check_dependencies
+            plak_site_lan "$@"
+            ;;
+        ports)
+            check_dependencies
+            plak_site_ports "$@"
+            ;;
+        memory)
+            check_dependencies
+            plak_site_memory "$@"
+            ;;
+        log)
+            plak_site_log "$@"
+            ;;
+        share)
+            check_dependencies
+            plak_site_share "$@"
+            ;;
+        wsl-hosts)
+            plak_site_wsl_hosts "$@"
+            ;;
+        url)
+            check_dependencies
+            plak_site_url "$@"
+            ;;
+        upgrade)
+            plak_site_upgrade "$@"
             ;;
         status|doctor)
             plak_status "$@"
@@ -193,6 +383,2461 @@ main() {
 
 
 # --- Shared Helpers ---
+# Source: shared/site/runtime
+#!/bin/bash
+
+# ====================================================
+#  Plak - Main Script
+#  Contains global configurations, helper functions,
+#  and the main command routing logic.
+# ====================================================
+
+# Ensure Homebrew/user bin dirs are on PATH. Callers like launchd and
+# systemd hand down a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which
+# means the dashboard's shell_exec of plak fails to find gum/wp/frankenphp.
+# We only prepend dirs that actually exist and aren't already on PATH.
+for _plak_site_bin in /opt/homebrew/bin /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
+    if [ -d "$_plak_site_bin" ] && [[ ":$PATH:" != *":$_plak_site_bin:"* ]]; then
+        PATH="$_plak_site_bin:$PATH"
+    fi
+done
+unset _plak_site_bin
+export PATH
+
+# --- OS & Package Manager Detection ---
+OS=""
+PKG_MANAGER=""
+SUDO_CMD="sudo"
+IS_WSL=false
+BIN_DIR="/usr/local/bin"
+
+setup_environment() {
+    local os_name
+    os_name=$(uname -s)
+
+    # --- Check for MacOS ---
+    if [ "$os_name" = "Darwin" ]; then
+        OS="macos"
+        PKG_MANAGER="brew"
+        SUDO_CMD=""
+        
+        # Architecture detection for MacOS Homebrew paths
+        if [ "$(uname -m)" = "arm64" ]; then
+            BIN_DIR="/opt/homebrew/bin"
+        else
+            BIN_DIR="/usr/local/bin"
+        fi
+        
+        return 0 # Success, exit function
+    fi
+
+    # --- Check for Linux ---
+    if [ "$os_name" = "Linux" ]; then
+        OS="linux"
+        BIN_DIR="/usr/local/bin" # Standard for Linux
+        
+        # Check if running in WSL
+        if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then
+            IS_WSL=true
+        fi
+        
+        if [ ! -f /etc/os-release ]; then
+            echo "❌ ERROR: Cannot detect Linux distribution." >&2
+            exit 1
+        fi
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        if [[ "$ID" == "ubuntu" || "$ID" == "debian" || "$ID_LIKE" == *"debian"* ]]; then
+            PKG_MANAGER="apt"
+        elif [[ "$ID" == "fedora" || "$ID" == "centos" || "$ID" == "rhel" || "$ID_LIKE" == *"fedora"* || "$ID_LIKE" == *"rhel"* ]]; then
+            PKG_MANAGER="dnf"
+        else
+            echo "❌ ERROR: Unsupported Linux distribution: $ID." >&2
+            echo "Supported: Ubuntu, Debian, Fedora, CentOS, RHEL and derivatives." >&2
+            exit 1
+        fi
+        
+        if [ "$(id -u)" -eq 0 ]; then
+            SUDO_CMD=""
+        fi
+        return 0 # Success, exit function
+    fi
+    
+    # --- If neither of the above, it's an unsupported OS ---
+    echo "❌ ERROR: Unsupported OS: $os_name" >&2
+    exit 1
+}
+
+setup_environment
+# --- End OS Detection ---
+
+# --- Configuration ---
+PLAK_SITE_DIR="$HOME/Plak"
+CONFIG_FILE="$PLAK_SITE_DIR/config"
+CADDYFILE_PATH="$PLAK_SITE_DIR/Caddyfile"
+PHP_INI_FILE="$PLAK_SITE_DIR/php.ini"
+
+APP_DIR="$PLAK_SITE_DIR/App"
+SITES_DIR="$PLAK_SITE_DIR/Sites"
+LOGS_DIR="$PLAK_SITE_DIR/Logs"
+
+# App Sub-directories
+GUI_DIR="$APP_DIR/gui"
+ADMINER_DIR="$APP_DIR/adminer"
+CUSTOM_CADDY_DIR="$APP_DIR/directives"
+
+PROTECTED_NAMES="plak"
+CADDY_CMD="frankenphp"
+
+# Note: BIN_DIR is set in setup_environment() based on OS and architecture
+
+# Export PHPRC so every PHP invocation (frankenphp php-cli, frankenphp -r, and
+# any nested wp-cli call) picks up our memory_limit / display_errors / error
+# reporting overrides from $PHP_INI_FILE. The file is written by plak install;
+# until then PHPRC points at a non-existent path, which PHP silently ignores.
+export PHPRC="$PHP_INI_FILE"
+
+# --- Port Configuration ---
+# Defaults; overridden by HTTP_PORT/HTTPS_PORT entries in $CONFIG_FILE if present.
+HTTP_PORT=80
+HTTPS_PORT=443
+if [ -f "$CONFIG_FILE" ]; then
+    _plak_site_saved_http=$(grep '^HTTP_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
+    _plak_site_saved_https=$(grep '^HTTPS_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
+    [ -n "$_plak_site_saved_http" ] && HTTP_PORT="$_plak_site_saved_http"
+    [ -n "$_plak_site_saved_https" ] && HTTPS_PORT="$_plak_site_saved_https"
+    unset _plak_site_saved_http _plak_site_saved_https
+fi
+
+# Returns ":8453" when HTTPS_PORT is non-default, otherwise empty.
+https_port_suffix() {
+    if [ "$HTTPS_PORT" = "443" ]; then
+        echo ""
+    else
+        echo ":$HTTPS_PORT"
+    fi
+}
+
+# Builds https URL with port suffix when non-default (e.g. "https://foo.localhost:8453").
+url_for() {
+    echo "https://${1}$(https_port_suffix)"
+}
+
+# Idempotent config writer: replaces any existing KEY= line before appending.
+config_set() {
+    local key="$1" val="$2"
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    local tmp
+    tmp=$(mktemp)
+    if [ -f "$CONFIG_FILE" ]; then
+        grep -v "^${key}=" "$CONFIG_FILE" > "$tmp" 2>/dev/null || true
+    fi
+    echo "${key}='${val}'" >> "$tmp"
+    mv "$tmp" "$CONFIG_FILE"
+}
+
+# Emit a base64-encoded random password. Uses openssl when present, falls
+# back to /dev/urandom otherwise — Fedora Workstation doesn't ship openssl
+# in its base install, and a missing openssl used to yield an empty $db_pass
+# that then became a MariaDB user with *no* password.
+plak_site_random_password() {
+    local bytes="${1:-16}"
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -base64 "$bytes"
+    else
+        head -c "$bytes" /dev/urandom | base64 | tr -d '\n'
+    fi
+}
+
+# Reads a directive from ~/Plak/php.ini (last-wins, ini-style), trims
+# surrounding whitespace/quotes, and returns the fallback if the key is
+# missing or the ini file doesn't exist yet. Used by regenerate_caddyfile
+# so plak memory set only needs to edit one source of truth.
+plak_site_ini_get() {
+    local key="$1" fallback="$2" val=""
+    if [ -f "$PHP_INI_FILE" ]; then
+        val=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$PHP_INI_FILE" 2>/dev/null \
+            | tail -1 \
+            | sed -E "s|^[[:space:]]*${key}[[:space:]]*=[[:space:]]*||" \
+            | tr -d '"' \
+            | sed -E 's/[[:space:]]+$//')
+    fi
+    echo "${val:-$fallback}"
+}
+
+# Returns the process name(s) listening on $1 for display purposes, or empty
+# if the process isn't visible (e.g. owned by another uid on macOS). Do NOT
+# use this for availability checks — use port_is_free for that.
+port_listening_app() {
+    local port="$1"
+    if command -v lsof &>/dev/null; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null \
+            | awk 'NR>1 {print $1}' | sort -u | paste -sd, -
+    elif command -v ss &>/dev/null; then
+        ss -tlnH "sport = :$port" 2>/dev/null \
+            | grep -oE 'users:\(\("[^"]+"' | sed 's/.*"\(.*\)"$/\1/' \
+            | sort -u | paste -sd, -
+    fi
+}
+
+# True when nothing is accepting connections on $1. Uses bash /dev/tcp so it
+# works regardless of who owns the listener (lsof is uid-scoped on macOS and
+# cannot see root-owned sockets from a regular user). Probes both IPv4 and
+# IPv6 loopback because some servers (e.g. Python's http.server) bind v6-only
+# by default and the v4 probe alone would miss them.
+port_is_free() {
+    local port="$1"
+    if (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
+        return 1
+    fi
+    if (exec 3<>/dev/tcp/::1/"$port") 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+# True if the process listening on $1 is one of our own services (Caddy /
+# FrankenPHP). Used so reinstalls don't flag their own services as conflicts.
+port_is_own() {
+    local app
+    app=$(port_listening_app "$1")
+    [ -n "$app" ] && { [[ "$app" == *"$CADDY_CMD"* ]] || [[ "$app" == *frankenph* ]]; }
+}
+
+# True if $1 is occupied by something that isn't one of our own services.
+port_has_conflict() {
+    port_is_free "$1" && return 1
+    port_is_own "$1" && return 1
+    return 0
+}
+
+# Interactive prompt that asks for HTTP and HTTPS ports, validates each, and
+# re-prompts until both are free. Sets HTTP_PORT / HTTPS_PORT globals on
+# success. Called by the install and plak ports flows.
+prompt_custom_ports() {
+    local suggest_http="${1:-8090}" suggest_https="${2:-8453}"
+    local candidate
+    while true; do
+        candidate=$(gum input --value "$suggest_http" --prompt "HTTP port: ")
+        if [[ ! "$candidate" =~ ^[0-9]+$ ]] || [ "$candidate" -lt 1 ] || [ "$candidate" -gt 65535 ]; then
+            gum style --foreground red "   ❌ Invalid port number."
+            continue
+        fi
+        if ! port_is_free "$candidate"; then
+            gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            continue
+        fi
+        HTTP_PORT="$candidate"
+        break
+    done
+    while true; do
+        candidate=$(gum input --value "$suggest_https" --prompt "HTTPS port: ")
+        if [[ ! "$candidate" =~ ^[0-9]+$ ]] || [ "$candidate" -lt 1 ] || [ "$candidate" -gt 65535 ]; then
+            gum style --foreground red "   ❌ Invalid port number."
+            continue
+        fi
+        if [ "$candidate" = "$HTTP_PORT" ]; then
+            gum style --foreground red "   ❌ HTTPS port must differ from HTTP port."
+            continue
+        fi
+        if ! port_is_free "$candidate"; then
+            gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            continue
+        fi
+        HTTPS_PORT="$candidate"
+        break
+    done
+}
+
+# Build the https:// URL for a hostname given an HTTPS port. Omits the port
+# suffix when $2 equals 443 so stored URLs match the "no suffix" form.
+port_url_for() {
+    local host="$1" port="$2"
+    if [ "$port" = "443" ]; then
+        echo "https://$host"
+    else
+        echo "https://$host:$port"
+    fi
+}
+
+# Walk every WordPress site under $SITES_DIR and run wp search-replace to
+# migrate stored URLs from OLD_HTTPS port to NEW_HTTPS port. Updates each
+# hostname the site answers on (base + entries in site/mappings) so custom
+# mappings don't get left stale. Pass "--dry-run" as the third argument to
+# preview replacement counts without committing.
+#
+# No-op if OLD_HTTPS == NEW_HTTPS or if $SITES_DIR has no WordPress sites.
+# Returns 0 even if individual sites fail — per-site errors are reported
+# in the output and summarised at the end.
+update_wp_site_urls_for_port_change() {
+    local old_https="$1" new_https="$2" dry_run_flag="${3:-}"
+    local dry_run=false
+    [ "$dry_run_flag" = "--dry-run" ] && dry_run=true
+
+    [ "$old_https" = "$new_https" ] && return 0
+    [ -d "$SITES_DIR" ] || return 0
+
+    local wp_cmd
+    wp_cmd=$(get_wp_cmd)
+
+    local total_sites=0 updated_sites=0 failed_hosts=0
+    local site_path site_name hostname mapping old_url new_url
+    local -a hostnames
+
+    for site_path in "$SITES_DIR"/*; do
+        [ -d "$site_path" ] || continue
+        [ -f "$site_path/public/wp-config.php" ] || continue
+        total_sites=$((total_sites + 1))
+        site_name=$(basename "$site_path")
+
+        hostnames=("$site_name")
+        if [ -f "$site_path/mappings" ]; then
+            while IFS= read -r mapping || [ -n "$mapping" ]; do
+                [ -n "$mapping" ] && hostnames+=("$mapping")
+            done < "$site_path/mappings"
+        fi
+
+        local any_updated=false
+        for hostname in "${hostnames[@]}"; do
+            old_url=$(port_url_for "$hostname" "$old_https")
+            new_url=$(port_url_for "$hostname" "$new_https")
+            [ "$old_url" = "$new_url" ] && continue
+
+            local -a sr_args
+            sr_args=(--all-tables --skip-plugins --skip-themes --format=count)
+            $dry_run && sr_args+=(--dry-run)
+
+            local output rc count
+            output=$( (cd "$site_path/public" && $wp_cmd search-replace "$old_url" "$new_url" "${sr_args[@]}") 2>&1 )
+            rc=$?
+            if [ $rc -eq 0 ]; then
+                count=$(echo "$output" | tr -d '[:space:]')
+                [[ "$count" =~ ^[0-9]+$ ]] || count=0
+                if $dry_run; then
+                    echo "   • ${hostname}: would replace ${count} occurrence(s)"
+                else
+                    echo "   • ${hostname}: replaced ${count} occurrence(s)"
+                fi
+                any_updated=true
+            else
+                gum style --foreground red "   ❌ ${hostname}: search-replace failed"
+                failed_hosts=$((failed_hosts + 1))
+            fi
+        done
+        $any_updated && updated_sites=$((updated_sites + 1))
+    done
+
+    echo ""
+    if $dry_run; then
+        echo "🔍 Dry run: $updated_sites of $total_sites WordPress site(s) would be updated."
+    else
+        echo "📊 $updated_sites of $total_sites WordPress site(s) updated."
+    fi
+    if [ $failed_hosts -gt 0 ]; then
+        gum style --foreground yellow "⚠️  $failed_hosts hostname replacement(s) failed."
+    fi
+    return 0
+}
+
+# --- Whoops Bootstrap Generation ---
+create_whoops_bootstrap() {
+    echo "📜 Creating Whoops bootstrap file..."
+    cat > "$APP_DIR/whoops_bootstrap.php" << 'EOM'
+<?php
+// This script is automatically included before any other PHP script.
+// It registers a simple PSR-4 autoloader for the Whoops library.
+
+spl_autoload_register(function ($class) {
+    $prefix = 'Whoops\\';
+    $base_dir = __DIR__ . '/whoops/src/Whoops/';
+    
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) {
+        return;
+    }
+    
+    $relative_class = substr($class, $len);
+    $file = $base_dir . str_replace('\\', '/', $relative_class) . '.php';
+
+    if (file_exists($file)) {
+        require $file;
+    }
+});
+
+$whoops = new \Whoops\Run;
+
+// We want to see all errors *except* for the noisy Deprecated and Notice warnings,
+// which are common with older plugins on modern PHP.
+// E_USER_NOTICE is used by WordPress's _doing_it_wrong() function.
+// E_USER_WARNING is triggered by WP_HTTP (wp_version_check, update checks, API
+// calls) whenever a request to api.wordpress.org or a plugin update endpoint
+// fails — e.g. on first wp-admin load before background crons settle, or on a
+// fresh install without system CA certs. That's a transient runtime condition,
+// not a bug to page on; leave it in the error log and let WordPress replakr.
+$whoops->silenceErrorsInPaths(
+    '/.*/', // A regex that matches all file paths
+    E_DEPRECATED | E_USER_DEPRECATED | E_NOTICE | E_USER_NOTICE | E_USER_WARNING
+);
+
+// The PrettyPageHandler will now only be triggered for fatal errors.
+$whoops->pushHandler(new \Whoops\Handler\PrettyPageHandler);
+$whoops->register();
+EOM
+}
+
+# --- Helper Functions ---
+
+# Inject the mu-plugin for one-time logins
+inject_mu_plugin() {
+    local public_dir="$1"
+    if [ -z "$public_dir" ] || [ ! -d "$public_dir" ]; then
+        return 1 # Exit if no valid directory is provided
+    fi
+
+    # Heredoc containing the mu-plugin code
+read -r -d '' build_mu_plugin << 'heredoc'
+<?php
+/**
+ * Plugin Name: CaptainCore Helper
+ * Plugin URI: https://captaincore.io
+ * Description: Collection of helper functions for CaptainCore
+ * Version: 0.3.0
+ * Author: CaptainCore
+ * Author URI: https://captaincore.io
+ * Text Domain: captaincore-helper
+ */
+
+/**
+ * Registers AJAX callback for quick logins
+ */
+function captaincore_quick_login_action_callback() {
+
+	$post = json_decode( file_get_contents( 'php://input' ) );
+	// Error if token not valid
+	if ( ! isset( $post->token ) || $post->token != md5( AUTH_KEY ) ) {
+		return new WP_Error( 'token_invalid', 'Invalid Token', [ 'status' => 404 ] );
+		wp_die();
+	}
+
+	$post->user_login = str_replace( "%20", " ", $post->user_login );
+	$user     = get_user_by( 'login', $post->user_login );
+	$password = wp_generate_password();
+	// Short token: sha1 is 40 hex chars; 7 is still 16^7 ≈ 268M combinations,
+	// plenty for a one-time-use local-dev login link, and short enough to fit
+	// a narrow terminal without wrapping.
+	$token    = substr( sha1( $password ), 0, 7 );
+
+	update_user_meta( $user->ID, 'plak_site_login_token', $token );
+	$query_args = [
+			'user_id'          => $user->ID,
+			'plak_site_login_token' => $token,
+		];
+	$login_url    = wp_login_url();
+		$one_time_url = add_query_arg( $query_args, $login_url );
+
+	echo $one_time_url;
+	wp_die();
+
+}
+
+add_action( 'wp_ajax_nopriv_captaincore_quick_login', 'captaincore_quick_login_action_callback' );
+/**
+ * Login a request in as a user if the token is valid.
+ */
+function captaincore_login_handle_token() {
+
+	global $pagenow;
+	if ( 'wp-login.php' !== $pagenow || empty( $_GET['user_id'] ) || empty( $_GET['plak_site_login_token'] ) ) {
+		return;
+	}
+
+	if ( is_user_logged_in() ) {
+		$error = sprintf( __( 'Invalid one-time login token, but you are logged in as \'%1$s\'. <a href="%2$s">Go to the dashboard instead</a>?', 'captaincore-login' ), wp_get_current_user()->user_login, admin_url() );
+	} else {
+		$error = sprintf( __( 'Invalid one-time login token. <a href="%s">Try signing in instead</a>?', 'captaincore-login' ), wp_login_url() );
+	}
+
+	// Use a generic error message to ensure user ids can't be sniffed
+	$user = get_user_by( 'id', (int) $_GET['user_id'] );
+	if ( ! $user ) {
+		wp_die( $error );
+	}
+
+	$token    = get_user_meta( $user->ID, 'plak_site_login_token', true );
+	$is_valid = false;
+		if ( hash_equals( $token, $_GET['plak_site_login_token'] ) ) {
+			$is_valid = true;
+		}
+
+	if ( ! $is_valid ) {
+		wp_die( $error );
+	}
+
+	delete_user_meta( $user->ID, 'plak_site_login_token' );
+	wp_set_auth_cookie( $user->ID, 1 );
+	wp_safe_redirect( admin_url() );
+	exit;
+}
+
+add_action( 'init', 'captaincore_login_handle_token' );
+
+if (defined('WP_CLI') && WP_CLI) {
+
+    /**
+     * Generates a one-time login link for a user based on user ID, email, or login.
+     *
+     * ## OPTIONS
+     *
+     * <user_identifier>
+     * : The user ID, email, or login of the user to generate the login link for.
+     *
+     * ## EXAMPLES
+     *
+     * wp user login 123
+     * wp user login user@example.com
+     * wp user login myusername
+     *
+     * @param array $args The command arguments.
+     */
+    function captaincore_generate_login_link( $args ) {
+
+        $user_identifier = $args[0];
+        // Determine if the identifier is a user ID, email, or login
+        if (is_numeric($user_identifier)) {
+            $user = get_user_by('ID', $user_identifier);
+        } elseif (is_email($user_identifier)) {
+            $user = get_user_by('email', $user_identifier);
+        } else {
+            $user = get_user_by('login', $user_identifier);
+        }
+
+        // Check if the user exists
+        if (!$user) {
+            WP_CLI::error("User not found: $user_identifier");
+            return;
+        }
+
+        // Generate tokens. Short token (7 hex chars from sha1) keeps the
+        // one-time URL readable on narrow terminals while still leaving
+        // ~268M combinations for a one-time-use local-dev link.
+        $password = wp_generate_password();
+        $token    = substr( sha1( $password ), 0, 7 );
+
+        // Update user meta with the new token
+        update_user_meta( $user->ID, 'plak_site_login_token', $token );
+        // Construct the one-time login URL
+        $query_args = [
+            'user_id'          => $user->ID,
+            'plak_site_login_token' => $token,
+        ];
+        $login_url    = wp_login_url();
+        $one_time_url = add_query_arg($query_args, $login_url);
+        // Output the URL to the CLI
+        WP_CLI::log("$one_time_url");
+    }
+
+    WP_CLI::add_command( 'user login', 'captaincore_generate_login_link' );
+}
+
+/**
+ * Disable auto-update email notifications for plugins.
+ */
+add_filter( 'auto_plugin_update_send_email', '__return_false' );
+
+/**
+ * Disable auto-update email notifications for themes.
+ */
+add_filter( 'auto_theme_update_send_email', '__return_false' );
+
+/**
+ * Dynamic URL override for Tailscale/LAN/Share access.
+ * When accessed via a non-localhost domain, override home and siteurl
+ * to use the current host so CSS/JS/images load correctly.
+ */
+function plak_site_maybe_override_site_url( $value ) {
+    // Only run in front-end context with a valid HTTP_HOST
+    if ( defined( 'WP_CLI' ) && WP_CLI ) {
+        return $value;
+    }
+    
+    $host = isset( $_SERVER['HTTP_HOST'] ) ? $_SERVER['HTTP_HOST'] : '';
+    
+    // Skip if no host or if it ends with .localhost (normal local access)
+    if ( empty( $host ) || preg_match( '/\.localhost(:\d+)?$/', $host ) ) {
+        return $value;
+    }
+    
+    // Override to current host for Tailscale, LAN, or public share access
+    $scheme = ( ! empty( $_SERVER['HTTPS'] ) && $_SERVER['HTTPS'] !== 'off' ) ? 'https' : 'http';
+    return $scheme . '://' . $host;
+}
+add_filter( 'option_home', 'plak_site_maybe_override_site_url' );
+add_filter( 'option_siteurl', 'plak_site_maybe_override_site_url' );
+heredoc
+
+    local mu_plugins_dir="$public_dir/wp-content/mu-plugins"
+    mkdir -p "$mu_plugins_dir"
+    echo "$build_mu_plugin" > "$mu_plugins_dir/captaincore-helper.php"
+    echo "   - ✅ Injected one-time login MU-plugin."
+}
+
+# Write a Plak-branded landing index.php into a plain site's public dir.
+# The heredoc below is the user's PHP — it reads $_SERVER['HTTP_HOST'] and
+# __FILE__ at request time, so it self-identifies wherever it's served from.
+write_plain_site_landing() {
+    local public_dir="$1"
+    if [ -z "$public_dir" ] || [ ! -d "$public_dir" ]; then
+        return 1
+    fi
+
+read -r -d '' build_landing << 'LANDING_EOF'
+<?php
+$host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+$file = __FILE__;
+$dir  = dirname(__FILE__);
+$home = getenv('HOME') ?: '';
+$display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strlen($home)) : $dir;
+?><!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title><?= htmlspecialchars($host) ?></title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' stroke-linecap='round' stroke-linejoin='round'><defs><clipPath id='c'><circle cx='32' cy='32' r='28'/></clipPath></defs><g clip-path='url(%23c)'><rect width='64' height='64' fill='%23f6f1e8'/><rect y='32' width='64' height='32' fill='%233a97a9'/><path d='M 4 32 C 4 22, 12 12, 22 12 C 30 12, 34 18, 42 16 C 50 14, 58 18, 60 24 L 60 32 Z' fill='%238bb382'/><line x1='2' y1='32' x2='62' y2='32' stroke='%231c4c58' stroke-width='2.5' fill='none'/><g stroke='%231c4c58' stroke-width='2.6' fill='none'><path d='M 10 42 Q 18 38, 26 42 T 42 42 T 56 42'/><path d='M 14 50 Q 22 46, 30 50 T 46 50 T 56 50'/></g></g><circle cx='32' cy='32' r='28' stroke='%231c4c58' stroke-width='3' fill='none'/></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..600&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #fbfaf7; --bg-elev: #ffffff; --bg-sunk: #f4f2ec;
+  --border: #e8e4da; --text: #1a1c1b; --text-soft: #3a3d3a;
+  --muted: #6b6f6a; --dim: #9a9d97;
+  /* sRGB fallback first; the oklch override on the next line is ignored by
+     browsers without oklch() support (Firefox <113, Chrome <111, Safari <16.4)
+     so the hex value wins — otherwise the whole declaration would be invalid
+     and --accent would fall back to its initial value (unset). */
+  --accent: #3a97a9;       --accent-ink: #1c4c58;
+  --accent: oklch(62% 0.11 190); --accent-ink: oklch(35% 0.08 190);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1210; --bg-elev: #161a17; --bg-sunk: #0b0e0c;
+    --border: #252925; --text: #edeee9; --text-soft: #c6c9c1;
+    --muted: #8a8e85; --dim: #5d615a;
+    --accent: #4db0c2;       --accent-ink: #83d2e0;
+    --accent: oklch(72% 0.12 190); --accent-ink: oklch(82% 0.10 190);
+  }
+}
+html { background: var(--bg); }
+body {
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--text); background: var(--bg);
+  min-height: 100vh; display: grid; place-items: center;
+  padding: 2rem; -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+}
+main { max-width: 560px; text-align: center; }
+.mark { width: 56px; height: 56px; margin: 0 auto 1.75rem; display: block; }
+h1 {
+  font-family: 'Fraunces', 'Times New Roman', serif;
+  font-style: italic; font-weight: 500;
+  font-size: clamp(2.25rem, 5vw, 3.25rem);
+  letter-spacing: -0.025em; line-height: 1.02;
+  margin-bottom: 0.55rem;
+}
+.host {
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 0.9rem; color: var(--muted); margin-bottom: 1.75rem;
+}
+p { color: var(--text-soft); line-height: 1.55; font-size: 1.02rem; margin-bottom: 1rem; }
+.path {
+  display: inline-block;
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 0.82rem;
+  padding: 0.45rem 0.8rem;
+  background: var(--bg-sunk); border: 1px solid var(--border);
+  border-radius: 7px; color: var(--text-soft);
+  margin: 0.25rem 0 2rem; word-break: break-all;
+}
+.actions { display: inline-flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+.pill {
+  display: inline-flex; align-items: center; gap: 0.45em;
+  padding: 0.55rem 1.05rem; border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text-soft);
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 0.85rem; text-decoration: none;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+.pill:hover { border-color: var(--accent); color: var(--accent-ink); background: var(--bg-sunk); }
+.pill.primary { background: var(--accent); border-color: var(--accent); color: #0a1a1c; }
+.pill.primary:hover { filter: brightness(1.08); background: var(--accent); color: #0a1a1c; }
+footer {
+  margin-top: 3rem;
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 0.72rem; color: var(--dim); letter-spacing: 0.05em;
+}
+footer a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--border); }
+footer a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <svg class="mark" viewBox="0 0 64 64" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <defs><clipPath id="c"><circle cx="32" cy="32" r="28"/></clipPath></defs>
+    <g clip-path="url(#c)">
+      <rect width="64" height="64" fill="#f6f1e8"/>
+      <rect y="32" width="64" height="32" fill="#3a97a9"/>
+      <path d="M 4 32 C 4 22, 12 12, 22 12 C 30 12, 34 18, 42 16 C 50 14, 58 18, 60 24 L 60 32 Z" fill="#8bb382"/>
+      <line x1="2" y1="32" x2="62" y2="32" stroke="#1c4c58" stroke-width="2.5" fill="none"/>
+      <g stroke="#1c4c58" stroke-width="2.6" fill="none">
+        <path d="M 10 42 Q 18 38, 26 42 T 42 42 T 56 42"/>
+        <path d="M 14 50 Q 22 46, 30 50 T 46 50 T 56 50"/>
+      </g>
+    </g>
+    <circle cx="32" cy="32" r="28" stroke="#1c4c58" stroke-width="3" fill="none"/>
+  </svg>
+  <h1>Hello.</h1>
+  <div class="host"><?= htmlspecialchars($host) ?></div>
+  <p>Your site is ready. Start building by editing files in:</p>
+  <div class="path"><?= htmlspecialchars($display_dir) ?></div>
+  <div class="actions">
+    <a class="pill primary" href="https://plak.localhost/">Plak dashboard</a>
+    <a class="pill" href="https://plak.run/" target="_blank" rel="noopener">plak.run ↗</a>
+  </div>
+  <footer>Served by <a href="https://plak.run" target="_blank" rel="noopener">Plak</a></footer>
+</main>
+</body>
+</html>
+LANDING_EOF
+
+    echo "$build_landing" > "$public_dir/index.php"
+    echo "   - ✅ Wrote Plak landing page."
+}
+
+# Load configuration from ~/Plak/config
+source_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+    else
+        echo "❌ Error: Plak config file not found. Please run 'plak install'."
+        exit 1
+    fi
+}
+
+# Function to check for required dependencies
+check_dependencies() {
+    # Check for Caddy/FrankenPHP
+    if ! command -v "$CADDY_CMD" &> /dev/null && ! [ -x "$CADDY_CMD" ]; then
+        gum style --foreground red "❌ Caddy/FrankenPHP not found. Please run 'plak install'."
+        exit 1
+    fi
+
+    # Check for other dependencies
+    for pkg_cmd in mariadb mailpit "wp:wp-cli" gum; do
+        local pkg=${pkg_cmd##*:}
+        local cmd=${pkg_cmd%%:*}
+        if ! command -v $cmd &> /dev/null; then
+            gum style --foreground red "❌ Dependency '$cmd' not found. Please run 'plak install'."
+            exit 1
+        fi
+    done
+}
+
+# --- Helper Functions ---
+
+# Helper function to get WP-CLI command. Routes wp-cli through FrankenPHP's
+# bundled PHP via frankenphp php-cli so that we use one PHP runtime for both
+# web (Caddy) and CLI — no separate brew php install needed. PHP settings
+# (memory_limit, display_errors, error_reporting) come from $PHP_INI_FILE,
+# which plak install writes alongside ~/Plak/config. PHPRC is exported once
+# at script init below so every PHP invocation in any subshell picks it up.
+#
+# frankenphp php-cli does NOT support PHP CLI flags like -d or -c. PHPRC
+# is the only mechanism for setting ini values, hence the dedicated ini file.
+#
+# --allow-root is needed in WSL/Docker where the script runs as root.
+get_wp_cmd() {
+    local wp_path
+    wp_path=$(command -v wp)
+    local frank
+    frank=$(command -v frankenphp)
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "$frank php-cli $wp_path --allow-root"
+    else
+        echo "$frank php-cli $wp_path"
+    fi
+}
+
+# Safely single-quote a value for interpolation into a remote shell command.
+# Interior single quotes become the standard '\'' escape sequence, so the
+# result can be dropped into ssh "... $(shell_quote "$v") ..." without injection.
+shell_quote() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+# Helper function to get the correct MariaDB service name on Linux
+# Different distros may use 'mariadb', 'mysql', or 'mysqld' as the service name
+get_mariadb_service_name() {
+    if [ "$OS" == "macos" ]; then
+        echo "mariadb"
+        return
+    fi
+    # Check which service name exists on this system
+    if systemctl list-unit-files mariadb.service 2>/dev/null | grep -q mariadb; then
+        echo "mariadb"
+    elif systemctl list-unit-files mysql.service 2>/dev/null | grep -q mysql; then
+        echo "mysql"
+    elif systemctl list-unit-files mysqld.service 2>/dev/null | grep -q mysqld; then
+        echo "mysqld"
+    else
+        # Default to mariadb
+        echo "mariadb"
+    fi
+}
+
+# Manage /etc/hosts file for local domains
+update_etc_hosts() {
+    echo "🔎 Checking /etc/hosts for required entries..."
+
+    # An array of all hostnames Plak will manage
+    local required_hosts=("plak.localhost" "db.plak.localhost" "mail.plak.localhost")
+
+    # Also find all site-specific hostnames
+    if [ -d "$SITES_DIR" ]; then
+        for site_path in "$SITES_DIR"/*; do
+            if [ -d "$site_path" ]; then
+                required_hosts+=("$(basename "$site_path")")
+
+                # Check for additional mappings
+                if [ -f "$site_path/mappings" ]; then
+                    while IFS= read -r mapping || [ -n "$mapping" ]; do
+                        # Skip empty lines
+                        if [ -n "$mapping" ]; then
+                            required_hosts+=("$mapping")
+                        fi
+                    done < "$site_path/mappings"
+                fi
+            fi
+        done
+    fi
+
+    local missing_hosts=()
+    for host in "${required_hosts[@]}"; do
+        # Use grep -q to quietly check if the entry exists
+        if ! grep -q "127.0.0.1[[:space:]]\+$host" /etc/hosts; then
+            missing_hosts+=("$host")
+        fi
+    done
+
+    if [ ${#missing_hosts[@]} -gt 0 ]; then
+        echo "   - Adding missing entries to /etc/hosts (requires sudo)..."
+        local entries_to_add=""
+        for host in "${missing_hosts[@]}"; do
+            entries_to_add+="127.0.0.1 $host\n"
+        done
+
+        # Use sudo tee to append all missing entries at once
+        echo -e "$entries_to_add" | sudo tee -a /etc/hosts > /dev/null
+        echo "   - ✅ Done."
+    else
+        echo "   - ✅ All entries are present."
+    fi
+}
+
+# Probe Caddy's admin API to see if the server is running.
+# Uses bash's built-in /dev/tcp so we don't depend on nc/curl being installed.
+is_caddy_running() {
+    (echo > /dev/tcp/127.0.0.1/2019) &>/dev/null
+}
+
+# Write the Plak-themed Adminer entry point (index.php with the head() hook
+# that injects the theme toggle, plus autologin) and refresh the theme
+# assets (adminer.css, adminer.js). Shared by plak_site_install (initial
+# deploy) and plak_site_upgrade (so upgraders pick up theme changes without a
+# reinstall). Idempotent — overwrites existing files.
+deploy_adminer_theme() {
+    local adminer_dir="${1:-$ADMINER_DIR}"
+    mkdir -p "$adminer_dir"
+
+    echo "⚙️ Writing Adminer entry point..."
+    cat > "$adminer_dir/index.php" << 'ADMINER_INDEX_EOF'
+<?php
+// This is the custom entry point for Adminer with autologin.
+function adminer_object() {
+    // Adminer 5.x uses the Adminer namespace
+    class AdminerPlakLogin extends Adminer\Adminer {
+        function name() { return 'Plak DB Manager'; }
+        function permanentLogin($i = false) { return "plak-local-development-key"; }
+        function credentials() {
+            $configFile = getenv('HOME') . '/Plak/config';
+            if (file_exists($configFile)) {
+                $config = parse_ini_file($configFile);
+                $db_user = $config['DB_USER'] ?? null;
+                $db_pass = $config['DB_PASSWORD'] ?? null;
+                return ['localhost', $db_user, $db_pass];
+            }
+            return ['localhost', null, null];
+        }
+        function login($login, $password) { return true; }
+        function head($title = null) {
+            // Inject the Plak theme toggle. Inline init runs before adminer.css
+            // applies so the saved choice (or system preference) is honored
+            // without a theme flash on load.
+            $nonce = \Adminer\nonce();
+            $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
+            echo "<script{$nonce}>{$init}</script>\n";
+            $v = @filemtime(__DIR__ . '/adminer.js') ?: 1;
+            echo "<script src='adminer.js?v={$v}'{$nonce}></script>\n";
+            return true;
+        }
+    }
+    return new AdminerPlakLogin();
+}
+// Include the original Adminer core file to run the application.
+include "./adminer-core.php";
+ADMINER_INDEX_EOF
+
+    local script_dir local_theme_dir
+    script_dir=$(cd "$(dirname "$0")" && pwd)
+    local_theme_dir="$script_dir/adminer-theme"
+
+    if [ -f "$local_theme_dir/adminer.css" ] && [ -f "$local_theme_dir/adminer.js" ]; then
+        echo "🎨 Installing local Plak Adminer theme..."
+        cp "$local_theme_dir/adminer.css" "$adminer_dir/adminer.css"
+        cp "$local_theme_dir/adminer.js" "$adminer_dir/adminer.js"
+    else
+        echo "🎨 Downloading Plak Adminer theme..."
+        curl -sL "https://raw.githubusercontent.com/plakio/plak-cli/main/adminer-theme/adminer.css" -o "$adminer_dir/adminer.css"
+        curl -sL "https://raw.githubusercontent.com/plakio/plak-cli/main/adminer-theme/adminer.js"  -o "$adminer_dir/adminer.js"
+    fi
+}
+
+# Repair ownership of ~/Plak state that a pre-1.10 root-run FrankenPHP may
+# have left owned by root. The most user-visible symptom is the size cache
+# (~/Plak/cache/site-sizes.json) becoming unwritable — refresh_sizes computes
+# correctly, @file_put_contents silently fails, and list_sites returns stale
+# nulls. Safe to call repeatedly; only runs chown when the ownership is
+# actually wrong. macOS never needs this because launchd runs as the user.
+heal_plak_site_state_ownership() {
+    [ "$OS" = "linux" ] || return 0
+    local uid; uid=$(id -u)
+    local gid; gid=$(id -g)
+    local target
+    for target in "$PLAK_SITE_DIR/cache" "$PLAK_SITE_DIR/.reload.lock" "$PLAK_SITE_DIR/.reload.lock.d" "$PLAK_SITE_DIR/.reload.pending" "$PLAK_SITE_DIR/caddy.pid"; do
+        [ -e "$target" ] || continue
+        # Cheap short-circuit: only invoke sudo if the top-level is wrong.
+        [ "$(stat -c %u "$target" 2>/dev/null)" = "$uid" ] && continue
+        $SUDO_CMD -n chown -R "$uid:$gid" "$target" 2>/dev/null || true
+    done
+}
+
+# (Re)start the Caddy/FrankenPHP service. Safe to call when already running —
+# both platforms stop any existing instance first. Called from plak enable
+# and from regenerate_caddyfile when Caddy isn't up yet.
+start_caddy_service() {
+    echo "   - Starting Caddy/FrankenPHP..."
+    mkdir -p "$LOGS_DIR"
+
+    if [ "$OS" == "macos" ]; then
+        local caddy_plist_path="$PLAK_SITE_DIR/com.plak.caddy.plist"
+        local frankenphp_bin
+        frankenphp_bin=$(command -v "$CADDY_CMD")
+
+        launchctl unload "$caddy_plist_path" &>/dev/null
+        "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null 2>&1
+
+        cat > "$caddy_plist_path" << EOM
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+        <key>KeepAlive</key>
+        <true/>
+        <key>Label</key>
+        <string>com.plak.caddy</string>
+        <key>ProgramArguments</key>
+        <array>
+                <string>$frankenphp_bin</string>
+                <string>run</string>
+                <string>--config</string>
+                <string>$CADDYFILE_PATH</string>
+                <string>--pidfile</string>
+                <string>$PLAK_SITE_DIR/caddy.pid</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>StandardErrorPath</key>
+        <string>$LOGS_DIR/caddy-process.log</string>
+        <key>StandardOutPath</key>
+        <string>$LOGS_DIR/caddy-process.log</string>
+</dict>
+</plist>
+EOM
+        launchctl load "$caddy_plist_path"
+        launchctl start com.plak.caddy
+    fi
+
+    if [ "$OS" == "linux" ]; then
+        # v1.10+: Caddy runs as plak.service under systemd (installed by
+        # plak_site_enable), so it survives reboots. Prefer systemctl when the
+        # unit is present; fall back to an ad-hoc foreground start only if
+        # someone invoked this before plak_site_enable wrote the unit.
+        if systemctl list-unit-files plak.service &>/dev/null 2>&1 \
+            && systemctl cat plak.service &>/dev/null 2>&1; then
+            $SUDO_CMD systemctl restart plak.service
+        else
+            # A pre-1.10 root-owned pidfile would block a user-run start.
+            if [ -e "$PLAK_SITE_DIR/caddy.pid" ] && [ ! -w "$PLAK_SITE_DIR/caddy.pid" ]; then
+                $SUDO_CMD -n rm -f "$PLAK_SITE_DIR/caddy.pid" 2>/dev/null || true
+            fi
+            "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+                || $SUDO_CMD -n "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+                || true
+            "$CADDY_CMD" start --config "$CADDYFILE_PATH" --pidfile "$PLAK_SITE_DIR/caddy.pid" >> "$LOGS_DIR/caddy-process.log" 2>&1
+        fi
+    fi
+}
+
+# Function to regenerate the Caddyfile
+regenerate_caddyfile() {
+    echo "🔄 Regenerating Caddyfile..."
+    if ! command -v mailpit &> /dev/null; then
+        gum style --foreground red "❌ Mailpit is not installed. Please run 'plak install' successfully first."
+        return 1
+    fi
+    # Ensure the user-owned PHP session dir referenced by the Caddyfile's
+    # php_ini session.save_path exists before FrankenPHP tries to use it.
+    mkdir -p "$PLAK_SITE_DIR/cache/sessions" 2>/dev/null
+    local mailpit_path
+    mailpit_path=$(command -v mailpit)
+
+    # Build optional http_port / https_port directives when non-default.
+    local port_directives=""
+    if [ "$HTTP_PORT" != "80" ]; then
+        port_directives+="    http_port $HTTP_PORT"$'\n'
+    fi
+    if [ "$HTTPS_PORT" != "443" ]; then
+        port_directives+="    https_port $HTTPS_PORT"$'\n'
+    fi
+
+    # Write the static header of the Caddyfile
+    cat > "$CADDYFILE_PATH" <<- EOM
+{
+${port_directives}    frankenphp {
+        php_ini sendmail_path "$mailpit_path sendmail -t"
+        php_ini log_errors On
+        php_ini display_errors Off
+        php_ini error_log "$LOGS_DIR/errors.log"
+        php_ini auto_prepend_file "$APP_DIR/whoops_bootstrap.php"
+        php_ini memory_limit $(plak_site_ini_get memory_limit 1G)
+        php_ini upload_max_filesize $(plak_site_ini_get upload_max_filesize 1G)
+        php_ini post_max_size $(plak_site_ini_get post_max_size 1G)
+        # User-owned session dir. Linux apt's php.ini points sessions at
+        # /var/lib/php-zts/session (owned by the frankenphp user); since
+        # Plak runs FrankenPHP as the invoking user, that path is
+        # unwritable and Adminer spams session_start warnings every
+        # request.
+        php_ini session.save_path "$PLAK_SITE_DIR/cache/sessions"
+    }
+    order php_server before file_server
+    servers {
+        protocols h1
+    }
+}
+
+# --- Global Services ---
+
+mail.plak.localhost {
+    reverse_proxy 127.0.0.1:8025
+    tls internal
+}
+
+db.plak.localhost {
+    root * "$ADMINER_DIR"
+    php_server
+    tls internal
+}
+
+plak.localhost {
+    root * "$GUI_DIR"
+    php_server
+    tls internal
+}
+
+# --- Plak Managed Sites ---
+EOM
+
+    # Check if Tailscale is enabled
+    local tailscale_hostname=""
+    local tailscale_config="$APP_DIR/tailscale"
+    if [ -f "$tailscale_config" ]; then
+        tailscale_hostname=$(cat "$tailscale_config")
+    fi
+
+    # Append blocks for each site dynamically
+    if [ -d "$SITES_DIR" ]; then
+        for site_path in "$SITES_DIR"/*; do
+            if [ -d "$site_path" ]; then
+                local site_name
+                site_name=$(basename "$site_path")
+                
+                # Build the list of domains
+                local site_domains="$site_name"
+                
+                if [ -f "$site_path/mappings" ]; then
+                    while IFS= read -r mapping || [ -n "$mapping" ]; do
+                         if [ -n "$mapping" ]; then
+                            site_domains="$site_domains, $mapping"
+                         fi
+                    done < "$site_path/mappings"
+                fi
+
+                echo "$site_domains {" >> "$CADDYFILE_PATH"
+                
+                echo "    root * \"$site_path/public\"" >> "$CADDYFILE_PATH"
+                echo "    tls internal" >> "$CADDYFILE_PATH"
+                
+                echo "    log {" >> "$CADDYFILE_PATH"
+                echo "        output file \"$site_path/logs/caddy.log\"" >> "$CADDYFILE_PATH"
+                echo "    }" >> "$CADDYFILE_PATH"
+                
+                local custom_conf_file="$CUSTOM_CADDY_DIR/$site_name"
+                if [ -f "$custom_conf_file" ]; then
+                    echo "" >> "$CADDYFILE_PATH"
+                    sed 's/^/    /' "$custom_conf_file" >> "$CADDYFILE_PATH"
+                    echo "" >> "$CADDYFILE_PATH"
+                fi
+
+                echo "    php_server" >> "$CADDYFILE_PATH"
+
+                if [ ! -f "$site_path/public/wp-config.php" ]; then
+                    echo "    file_server" >> "$CADDYFILE_PATH"
+                fi
+
+                echo "}" >> "$CADDYFILE_PATH"
+                echo "" >> "$CADDYFILE_PATH"
+                
+                # Check if LAN access is enabled for this site
+                local lan_config="$site_path/lan_config"
+                if [ -f "$lan_config" ]; then
+                    local lan_port
+                    lan_port=$(grep "^port=" "$lan_config" | cut -d'=' -f2)
+
+                    if [ -n "$lan_port" ]; then
+                        local lan_ip
+                        lan_ip=$(get_lan_ip)
+                        echo "# LAN access for $site_name on port $lan_port" >> "$CADDYFILE_PATH"
+                        echo "https://${lan_ip}:${lan_port} {" >> "$CADDYFILE_PATH"
+                        echo "    bind 0.0.0.0" >> "$CADDYFILE_PATH"
+                        echo "    root * \"$site_path/public\"" >> "$CADDYFILE_PATH"
+                        echo "    tls internal" >> "$CADDYFILE_PATH"
+                        
+                        echo "    log {" >> "$CADDYFILE_PATH"
+                        echo "        output file \"$site_path/logs/caddy-lan.log\"" >> "$CADDYFILE_PATH"
+                        echo "    }" >> "$CADDYFILE_PATH"
+                        
+                        if [ -f "$custom_conf_file" ]; then
+                            echo "" >> "$CADDYFILE_PATH"
+                            sed 's/^/    /' "$custom_conf_file" >> "$CADDYFILE_PATH"
+                            echo "" >> "$CADDYFILE_PATH"
+                        fi
+
+                        echo "    php_server" >> "$CADDYFILE_PATH"
+
+                        if [ ! -f "$site_path/public/wp-config.php" ]; then
+                            echo "    file_server" >> "$CADDYFILE_PATH"
+                        fi
+
+                        echo "}" >> "$CADDYFILE_PATH"
+                        echo "" >> "$CADDYFILE_PATH"
+                    fi
+                fi
+            fi
+        done
+    fi
+
+    # Append custom proxy entries
+    local proxy_dir="$APP_DIR/proxies"
+    if [ -d "$proxy_dir" ] && [ -n "$(ls -A "$proxy_dir" 2>/dev/null)" ]; then
+        echo "# --- Custom Reverse Proxies ---" >> "$CADDYFILE_PATH"
+        echo "" >> "$CADDYFILE_PATH"
+        
+        for proxy_file in "$proxy_dir"/*; do
+            if [ -f "$proxy_file" ]; then
+                local proxy_name
+                proxy_name=$(basename "$proxy_file")
+                
+                local proxy_domain=""
+                local proxy_target=""
+                local proxy_tls="internal"
+
+                # Read the config file
+                while IFS='=' read -r key value; do
+                    case "$key" in
+                        domain) proxy_domain="$value" ;;
+                        target) proxy_target="$value" ;;
+                        tls) proxy_tls="$value" ;;
+                    esac
+                done < "$proxy_file"
+
+                if [ -n "$proxy_domain" ] && [ -n "$proxy_target" ]; then
+                    echo "# Proxy: $proxy_name" >> "$CADDYFILE_PATH"
+                    echo "$proxy_domain {" >> "$CADDYFILE_PATH"
+                    echo "    reverse_proxy $proxy_target" >> "$CADDYFILE_PATH"
+                    if [ "$proxy_tls" = "internal" ]; then
+                        echo "    tls internal" >> "$CADDYFILE_PATH"
+                    fi
+                    echo "}" >> "$CADDYFILE_PATH"
+                    echo "" >> "$CADDYFILE_PATH"
+                fi
+            fi
+        done
+    fi
+
+    # Add Tailscale port-based routing if enabled
+    if [ -n "$tailscale_hostname" ]; then
+        echo "# --- Tailscale Port-Based Access ---" >> "$CADDYFILE_PATH"
+        echo "" >> "$CADDYFILE_PATH"
+        
+        local ts_port=9001
+        
+        # Add a server block for each site on a unique port
+        if [ -d "$SITES_DIR" ]; then
+            for site_path in "$SITES_DIR"/*; do
+                if [ -d "$site_path" ]; then
+                    local site_name
+                    site_name=$(basename "$site_path")
+                    local site_base_name
+                    site_base_name=$(echo "$site_name" | sed 's/\.localhost$//')
+                    
+                    # Check if this site has a simple reverse_proxy directive
+                    local directive_file="$CUSTOM_CADDY_DIR/$site_name"
+                    local direct_proxy_target=""
+                    if [ -f "$directive_file" ]; then
+                        # Extract target if directive is just "reverse_proxy <target>"
+                        direct_proxy_target=$(grep -E '^reverse_proxy [0-9a-zA-Z.:]+$' "$directive_file" 2>/dev/null | awk '{print $2}')
+                    fi
+                    
+                    echo "# Tailscale: ${site_base_name} -> port ${ts_port}" >> "$CADDYFILE_PATH"
+                    echo "https://${tailscale_hostname}:${ts_port} {" >> "$CADDYFILE_PATH"
+                    echo "    tls internal" >> "$CADDYFILE_PATH"
+                    
+                    if [ -n "$direct_proxy_target" ]; then
+                        # Proxy directly to the backend target
+                        echo "    reverse_proxy ${direct_proxy_target}" >> "$CADDYFILE_PATH"
+                    else
+                        # Serve site directly (not via proxy) for better compatibility
+                        echo "    root * \"$site_path/public\"" >> "$CADDYFILE_PATH"
+
+                        echo "    log {" >> "$CADDYFILE_PATH"
+                        echo "        output file \"$site_path/logs/caddy-tailscale.log\"" >> "$CADDYFILE_PATH"
+                        echo "    }" >> "$CADDYFILE_PATH"
+                        
+                        # Include custom directives if present
+                        if [ -f "$directive_file" ]; then
+                            echo "" >> "$CADDYFILE_PATH"
+                            sed 's/^/    /' "$directive_file" >> "$CADDYFILE_PATH"
+                            echo "" >> "$CADDYFILE_PATH"
+                        fi
+                        
+                        echo "    php_server" >> "$CADDYFILE_PATH"
+                        
+                        if [ ! -f "$site_path/public/wp-config.php" ]; then
+                            echo "    file_server" >> "$CADDYFILE_PATH"
+                        fi
+                    fi
+                    echo "}" >> "$CADDYFILE_PATH"
+                    echo "" >> "$CADDYFILE_PATH"
+                    
+                    # Store port mapping for this site
+                    echo "${ts_port}" > "$site_path/tailscale_port"
+                    
+                    ((ts_port++))
+                fi
+            done
+        fi
+        
+        # Global services on fixed ports
+        # Mail on port 9901
+        echo "# Tailscale: mail -> port 9901" >> "$CADDYFILE_PATH"
+        echo "https://${tailscale_hostname}:9901 {" >> "$CADDYFILE_PATH"
+        echo "    tls internal" >> "$CADDYFILE_PATH"
+        echo "    reverse_proxy 127.0.0.1:8025" >> "$CADDYFILE_PATH"
+        echo "}" >> "$CADDYFILE_PATH"
+        echo "" >> "$CADDYFILE_PATH"
+        
+        # DB on port 9902 - serve directly
+        echo "# Tailscale: db -> port 9902" >> "$CADDYFILE_PATH"
+        echo "https://${tailscale_hostname}:9902 {" >> "$CADDYFILE_PATH"
+        echo "    tls internal" >> "$CADDYFILE_PATH"
+        echo "    root * \"$ADMINER_DIR\"" >> "$CADDYFILE_PATH"
+        echo "    php_server" >> "$CADDYFILE_PATH"
+        echo "}" >> "$CADDYFILE_PATH"
+        echo "" >> "$CADDYFILE_PATH"
+        
+        # Dashboard on port 9900 - serve directly
+        echo "# Tailscale: plak dashboard -> port 9900" >> "$CADDYFILE_PATH"
+        echo "https://${tailscale_hostname}:9900 {" >> "$CADDYFILE_PATH"
+        echo "    tls internal" >> "$CADDYFILE_PATH"
+        echo "    root * \"$GUI_DIR\"" >> "$CADDYFILE_PATH"
+        echo "    php_server" >> "$CADDYFILE_PATH"
+        echo "}" >> "$CADDYFILE_PATH"
+        echo "" >> "$CADDYFILE_PATH"
+    fi
+
+    # If Caddy is already running, reload against the new config. If it isn't,
+    # start it — the start command reads $CADDYFILE_PATH itself, so no reload
+    # is needed. Without this probe, plak add on a stopped stack would
+    # silently "succeed" while the site was actually unreachable.
+    #
+    # The reload runs synchronously so callers only see success after the new
+    # config is actually live. The previous implementation backgrounded it to
+    # avoid a self-deadlock when the dashboard (running inside FrankenPHP)
+    # triggered a reload; that deadlock is now handled at the PHP layer, which
+    # already backgrounds plak reload via shell_exec '…&' (see create_gui_file).
+    # With hundreds of sites the Caddyfile adapt takes a few seconds — racing
+    # the exit against a subsequent curl produced TLS internal errors.
+    if is_caddy_running; then
+        # Reload talks to the admin API on localhost:2019 and doesn't need
+        # root. Dropping sudo here keeps the caller (incl. the dashboard's
+        # shell_exec) running as the invoking user.
+        if "$CADDY_CMD" reload --config "$CADDYFILE_PATH" --address localhost:2019 &> "$LOGS_DIR/caddy-reload.log"; then
+            echo "✅ Caddy configuration reloaded."
+        else
+            gum style --foreground red "❌ Caddy reload failed. See $LOGS_DIR/caddy-reload.log for details."
+            return 1
+        fi
+    else
+        echo "ℹ️  Caddy is not running — starting it now."
+        start_caddy_service
+    fi
+}
+
+# --- GUI Generation ---
+create_gui_file() {
+    echo "🎨 Creating Plak dashboard files..."
+    mkdir -p "$GUI_DIR"
+    
+    # Create the API file that handles the logic
+    cat > "$GUI_DIR/api.php.tmp" << 'EOM'
+<?php
+header('Content-Type: application/json');
+$sitedir = 'SITES_DIR_PLACEHOLDER';
+$plak_site_path = 'PLAK_SITE_EXECUTABLE_PATH_PLACEHOLDER';
+$user_home = 'USER_HOME_PLACEHOLDER';
+
+// Read the configured HTTPS port so site links include ":8453" when non-default.
+$__plak_site_https_port = 443;
+$__plak_site_cfg_path = $user_home . '/Plak/config';
+if (file_exists($__plak_site_cfg_path)) {
+    $__plak_site_cfg = parse_ini_file($__plak_site_cfg_path);
+    if (!empty($__plak_site_cfg['HTTPS_PORT'])) {
+        $__plak_site_https_port = (int) $__plak_site_cfg['HTTPS_PORT'];
+    }
+}
+$__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__plak_site_https_port;
+
+// Per-site disk sizes are cached so list_sites stays fast even on hosts with
+// ~100 sites. The cache is refreshed on demand by the dashboard's 'refresh_sizes'
+// action; stale entries are tolerable because list_sites filters by what's on
+// disk and the UI falls back to '—' when an entry is missing.
+$__plak_site_sizes_cache = $user_home . '/Plak/cache/site-sizes.json';
+
+function plak_site_read_size_cache($path) {
+    if (!file_exists($path)) return [];
+    $data = @json_decode(@file_get_contents($path), true);
+    return (is_array($data) && isset($data['sites']) && is_array($data['sites'])) ? $data['sites'] : [];
+}
+
+function plak_site_write_size_cache($path, array $sizes) {
+    @mkdir(dirname($path), 0755, true);
+    @file_put_contents($path, json_encode([
+        'sites' => $sizes,
+        'updated_at' => time(),
+    ], JSON_UNESCAPED_SLASHES));
+}
+
+// Handle GET requests for listing sites
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $action = $_GET['action'] ?? '';
+    if ($action === 'list_sites') {
+        $sites_info = [];
+        $size_cache = plak_site_read_size_cache($__plak_site_sizes_cache);
+        if (file_exists($sitedir) && is_dir($sitedir)) {
+            $items = scandir($sitedir);
+            foreach ($items as $item) {
+                if ($item === '.' || $item === '..') continue;
+                $site_path = $sitedir . '/' . $item;
+                if (is_dir($site_path)) {
+                    // Prefer the public/ dir's mtime since it gets touched whenever
+                    // files are added/removed at the doc root — closer to "when did I
+                    // last work on this site" than the site dir itself.
+                    $mtime = @filemtime($site_path . '/public');
+                    if (!$mtime) $mtime = @filemtime($site_path);
+
+                    $sites_info[] = [
+                        'name' => str_replace('.localhost', '', $item),
+                        'domain' => 'https://' . $item . $__plak_site_port_suffix,
+                        'type' => file_exists($site_path . "/public/wp-config.php") ? 'WordPress' : 'Plain',
+                        'display_path' => '~/Plak/Sites/' . $item,
+                        'full_path' => $site_path,
+                        'size_bytes' => isset($size_cache[$item]) ? (int) $size_cache[$item] : null,
+                        'modified_at' => $mtime ?: null,
+                    ];
+                }
+            }
+            if (!empty($sites_info)) {
+                array_multisort(
+                    array_column($sites_info, "type"), SORT_ASC,
+                    array_column($sites_info, "name"), SORT_ASC,
+                    $sites_info
+                );
+            }
+        }
+        echo json_encode($sites_info);
+        exit;
+    }
+}
+
+// Handle POST requests for adding/deleting/reloading
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $action = $input['action'] ?? '';
+    $response = ['success' => false, 'message' => 'Invalid request.'];
+    $command = '';
+    $site_name = $input['site_name'] ?? '';
+
+    switch ($action) {
+        case 'add_site':
+            if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                $type_flag = ($input['is_plain'] ?? false) ? '--plain' : '';
+                $command = sprintf('HOME=%s %s add %s %s --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), $type_flag);
+                // Remember we're adding so the post-exec block below can
+                // measure the new site's size and fold it into the cache.
+                $add_site_target = $site_name;
+            } else { $response['message'] = 'Invalid site name provided.'; }
+            break;
+        case 'delete_site':
+            if (!empty($site_name)) {
+                // --no-reload: plak_site_delete otherwise auto-reloads Caddy after
+                // each delete to prevent zombie log-dir skeletons from being
+                // recreated. The dashboard batches one reload after the whole
+                // delete queue drains, so skip per-item reloads here.
+                $command = sprintf('HOME=%s %s delete %s --force --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name));
+            } else { $response['message'] = 'Site name not provided for deletion.'; }
+            break;
+        case 'get_login_link':
+            $response = ['success' => false, 'message' => 'An unknown error occurred.'];
+            if (!empty($site_name)) {
+                // Delegate to the 'plak login' command which has the self-healing logic.
+                $command = sprintf(
+                    'HOME=%s %s login %s 2>&1',
+                    escapeshellarg($user_home),
+                    escapeshellarg($plak_site_path),
+                    escapeshellarg($site_name)
+                );
+
+                exec($command, $output_lines, $return_code);
+                $full_output = implode("\n", $output_lines);
+                $login_url = '';
+
+                // Parse the command's output to find the URL.
+                foreach ($output_lines as $line) {
+                    if (strpos($line, 'https://') !== false && strpos($line, '/wp-login.php') !== false) {
+                        // Clean the line from any "gum" box characters.
+                        $login_url = trim(preg_replace('/[│└┌]/u', '', $line));
+                        break;
+                    }
+                }
+
+                if (!empty($login_url)) {
+                    $response = ['success' => true, 'url' => $login_url];
+                } else {
+                    $response = ['success' => false, 'message' => 'Failed to generate login link.', 'output' => $full_output];
+                }
+
+            } else {
+                $response['message'] = 'Site name not provided for login link.';
+            }
+            echo json_encode($response);
+            exit; // Exit immediately
+        case 'reload_server':
+            // This command is run in the background to prevent deadlocking the server.
+            // Output is redirected to /dev/null and the '&' backgrounds the process.
+            $reload_command = sprintf('HOME=%s %s reload > /dev/null 2>&1 &', escapeshellarg($user_home), escapeshellarg($plak_site_path));
+            shell_exec($reload_command);
+            $response = ['success' => true, 'message' => 'Server reload initiated.'];
+            echo json_encode($response);
+            exit; // Exit immediately
+        case 'refresh_sizes':
+            // Walk every site directory with `du -sk` (portable on macOS + Linux — -k
+            // forces 1024-byte blocks) and cache the result as bytes. Runs sequentially
+            // so 80+ sites take a few seconds; acceptable because this is user-triggered.
+            $sizes = [];
+            if (file_exists($sitedir) && is_dir($sitedir)) {
+                foreach (scandir($sitedir) as $item) {
+                    if ($item === '.' || $item === '..') continue;
+                    $p = $sitedir . '/' . $item;
+                    if (!is_dir($p)) continue;
+                    $out = []; $rc = 0;
+                    exec('du -sk ' . escapeshellarg($p) . ' 2>/dev/null', $out, $rc);
+                    if ($rc === 0 && !empty($out[0])) {
+                        $parts = preg_split('/\s+/', trim($out[0]));
+                        if (ctype_digit($parts[0] ?? '')) {
+                            $sizes[$item] = ((int) $parts[0]) * 1024;
+                        }
+                    }
+                }
+            }
+            plak_site_write_size_cache($__plak_site_sizes_cache, $sizes);
+            echo json_encode(['success' => true, 'sites' => $sizes, 'updated_at' => time()]);
+            exit;
+    }
+
+    if (!empty($command)) {
+        exec($command, $output, $return_code);
+        if ($return_code === 0) {
+            $response = ['success' => true, 'message' => 'Operation completed successfully.'];
+            // For add_site: measure the new site's footprint inline and fold
+            // it into the size cache so the UI shows "4.0 KB" (or whatever)
+            // immediately instead of "—" until the next refresh_sizes pass.
+            if (isset($add_site_target)) {
+                $new_path = $sitedir . '/' . $add_site_target . '.localhost';
+                if (is_dir($new_path)) {
+                    $size_out = []; $size_rc = 0;
+                    exec('du -sk ' . escapeshellarg($new_path) . ' 2>/dev/null', $size_out, $size_rc);
+                    if ($size_rc === 0 && !empty($size_out[0])) {
+                        $parts = preg_split('/\s+/', trim($size_out[0]));
+                        if (ctype_digit($parts[0] ?? '')) {
+                            $bytes = ((int) $parts[0]) * 1024;
+                            $response['size_bytes'] = $bytes;
+                            $cache = plak_site_read_size_cache($__plak_site_sizes_cache);
+                            $cache[$add_site_target . '.localhost'] = $bytes;
+                            plak_site_write_size_cache($__plak_site_sizes_cache, $cache);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Translate known failure signatures into user-friendly messages.
+            // Generic "An error occurred" isn't actionable, but "Site name is
+            // taken" tells the user exactly what to do next.
+            $err_text = implode("\n", $output);
+            $msg = 'An error occurred.';
+            if (isset($add_site_target)) {
+                $msg = 'Could not create site.';
+                if (stripos($err_text, 'already exists') !== false) {
+                    $msg = 'Site name is taken.';
+                } elseif (stripos($err_text, 'reserved name') !== false) {
+                    $msg = 'That name is reserved. Pick another.';
+                } elseif (stripos($err_text, 'invalid site name') !== false) {
+                    $msg = 'Invalid site name.';
+                } elseif (stripos($err_text, 'WordPress installation failed') !== false) {
+                    $msg = 'WordPress installation failed — check the logs.';
+                }
+            }
+            $response = ['success' => false, 'message' => $msg, 'output' => $err_text];
+        }
+    }
+    echo json_encode($response);
+    exit;
+}
+
+http_response_code(405);
+echo json_encode(['success' => false, 'message' => 'Method Not Allowed']);
+EOM
+
+    # Create the main dashboard file (the UI)
+    cat > "$GUI_DIR/index.php.tmp" << 'EOM'
+<?php
+$config_file = getenv('HOME') . '/Plak/config';
+$config_data = file_exists($config_file) ? parse_ini_file($config_file) : [];
+$__plak_site_https_port = isset($config_data['HTTPS_PORT']) ? (int) $config_data['HTTPS_PORT'] : 443;
+$__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__plak_site_https_port;
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="color-scheme" content="dark light">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plak — sites</title>
+    <script>
+        // Set data-theme synchronously before any CSS paints, so the correct
+        // theme's background is used from the very first frame (no FOUC).
+        // Alpine re-reads the same localStorage key in init() — values stay
+        // in sync with no extra flip.
+        (function () {
+            try {
+                var s = localStorage.getItem('theme');
+                var t = (s === 'dark' || s === 'light')
+                    ? s
+                    : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+                document.documentElement.setAttribute('data-theme', t);
+            } catch (e) {}
+        })();
+    </script>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' stroke-linecap='round' stroke-linejoin='round'><defs><clipPath id='c'><circle cx='32' cy='32' r='28'/></clipPath></defs><g clip-path='url(%23c)'><rect width='64' height='64' fill='%23f6f1e8'/><rect y='32' width='64' height='32' fill='%233a97a9'/><path d='M 4 32 C 4 22, 12 12, 22 12 C 30 12, 34 18, 42 16 C 50 14, 58 18, 60 24 L 60 32 Z' fill='%238bb382'/><line x1='2' y1='32' x2='62' y2='32' stroke='%231c4c58' stroke-width='2.5' fill='none'/><g stroke='%231c4c58' stroke-width='2.6' fill='none'><path d='M 10 42 Q 18 38, 26 42 T 42 42 T 56 42'/><path d='M 14 50 Q 22 46, 30 50 T 46 50 T 56 50'/></g></g><circle cx='32' cy='32' r='28' stroke='%231c4c58' stroke-width='3' fill='none'/></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..600&family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="//unpkg.com/alpinejs" defer></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        html { background: #0f1210; }
+        html[data-theme="light"] { background: #fbfaf7; }
+
+        :root {
+            --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            --font-serif: 'Fraunces', Georgia, serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            /* sRGB fallback first; browsers without oklch() support silently
+               drop the override on the next line and keep the hex value.
+               Without the fallback, the whole declaration would be invalid on
+               Firefox <113 / Chrome <111 / Safari <16.4 and --accent would be
+               unset — which reads as "transparent" for backgrounds and
+               "black" for SVG fills (hence the invisible add button and the
+               solid-black logo disc on older browsers). */
+            --accent: #3a97a9;
+            --accent: oklch(62% 0.11 190);
+            --accent-fg: #0a1a1c;
+            --radius-lg: 20px;
+            --radius-md: 10px;
+            --radius-pill: 999px;
+        }
+
+        html[data-theme="dark"], html:not([data-theme]) {
+            --bg: #0f1210;
+            --bg-sunk: #0b0e0c;
+            --panel: #181c19;
+            --panel-hover: #1e2320;
+            --panel-border: #252925;
+            --text: #edeee9;
+            --text-dim: #8a8e85;
+            --text-faint: #5d615a;
+            /* Dark-mode teal is brighter so it reads cleanly against the
+               warmer panel — matches the landing page palette. */
+            --accent: #4db0c2;
+            --accent: oklch(72% 0.12 190);
+            --pill-bg: #1e2320;
+            --pill-wp-bg: rgba(77, 176, 194, 0.18);
+            --pill-wp-bg: color-mix(in oklch, var(--accent) 18%, transparent);
+            --pill-wp-fg: #71c0ce;
+            --pill-wp-fg: color-mix(in oklch, var(--accent) 80%, white);
+            --pill-static-bg: #1e2320;
+            --pill-static-fg: #9a9d94;
+            --input-bg: #0b0e0c;
+            --danger: #d66a6a;
+            --shadow-lg: 0 28px 60px -24px rgba(0,0,0,0.7), 0 6px 16px -6px rgba(0,0,0,0.4);
+            color-scheme: dark;
+        }
+
+        html[data-theme="light"] {
+            --bg: #fbfaf7;
+            --bg-sunk: #f4f2ec;
+            --panel: #ffffff;
+            --panel-hover: #f6f4ee;
+            --panel-border: #e8e4da;
+            --text: #1a1c1b;
+            --text-dim: #6b6f6a;
+            --text-faint: #9a9d97;
+            /* White on teal reads stronger than the dark accent-fg does on
+               the lighter background — override just for light mode. */
+            --accent-fg: #ffffff;
+            --pill-bg: #f1ede5;
+            --pill-wp-bg: rgba(58, 151, 169, 0.14);
+            --pill-wp-bg: color-mix(in oklch, var(--accent) 14%, transparent);
+            --pill-wp-fg: #20535d;
+            --pill-wp-fg: color-mix(in oklch, var(--accent) 55%, black);
+            --pill-static-bg: #f1ede5;
+            --pill-static-fg: #8a8781;
+            --input-bg: #fbfaf7;
+            --danger: #b44848;
+            --shadow-lg: 0 24px 50px -24px rgba(20,28,30,0.18), 0 6px 16px -6px rgba(20,28,30,0.06);
+            color-scheme: light;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-sans);
+            font-size: 15px;
+            line-height: 1.5;
+            min-height: 100vh;
+            padding: 2.5rem 1.25rem 4rem;
+            -webkit-font-smoothing: antialiased;
+            font-feature-settings: "ss01", "cv11";
+        }
+
+        .wrap { max-width: 820px; margin: 0 auto; }
+
+        /* Top nav */
+        .nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2rem; }
+        .logo { display: inline-flex; align-items: center; gap: 12px; color: var(--text); text-decoration: none; font-weight: 600; font-size: 1.05rem; letter-spacing: -0.01em; }
+        /* Brand mark: plak/bay silhouette in a circle. Classes are scoped to
+           .logo-mark so they don't collide with unrelated elements. Colors
+           are driven by CSS variables with sensible defaults, so each theme
+           can override individual layers without touching the inline SVG. */
+        /* Each layer gets a pair of declarations — the sRGB hex applies
+           everywhere, then the oklch override kicks in on browsers that
+           understand it. Without the fallback, unsupported oklch() in a
+           var() default makes the whole `fill`/`stroke` declaration invalid
+           and SVG falls back to fill:black (which is what produces the
+           solid-black disc + missing layers on Firefox <113). */
+        .logo-mark { width: 34px; height: 34px; display: block; flex-shrink: 0; }
+        .logo-mark .disc    { fill: var(--mark-disc, #f6f1e8); fill: var(--mark-disc, oklch(96% 0.015 85)); }
+        .logo-mark .water   { fill: var(--mark-water, #3a97a9); fill: var(--mark-water, oklch(62% 0.11 190)); }
+        .logo-mark .land    { fill: var(--mark-land, #8bb382); fill: var(--mark-land, oklch(72% 0.10 150)); }
+        .logo-mark .horizon { stroke: var(--mark-horizon, #1c4c58); stroke: var(--mark-horizon, oklch(35% 0.08 190)); fill: none; }
+        .logo-mark .wave    { stroke: var(--mark-wave, #1c4c58); stroke: var(--mark-wave, oklch(35% 0.08 190)); fill: none; }
+        .logo-mark .ring    { stroke: var(--mark-ring, #1c4c58); stroke: var(--mark-ring, oklch(35% 0.08 190)); fill: none; stroke-width: 3; }
+        html[data-theme="dark"] .logo-mark {
+            --mark-disc:    #2b2925;
+            --mark-disc:    oklch(22% 0.01 85);
+            --mark-land:    #6a9d70;
+            --mark-land:    oklch(64% 0.09 150);
+            --mark-ring:    rgba(237, 238, 233, 0.72);
+            --mark-ring:    color-mix(in oklab, var(--text) 72%, transparent);
+            --mark-horizon: rgba(237, 238, 233, 0.72);
+            --mark-horizon: color-mix(in oklab, var(--text) 72%, transparent);
+            --mark-wave:    rgba(237, 238, 233, 0.65);
+            --mark-wave:    color-mix(in oklab, var(--text) 65%, transparent);
+        }
+        /* Square icon button that cross-fades a moon (light mode) with a sun
+           (dark mode). Both SVGs are stacked absolutely so the button size
+           stays constant during the transition. */
+        .theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 7px; border: 1px solid var(--panel-border); color: var(--text-dim); background: var(--panel); cursor: pointer; padding: 0; position: relative; flex: none; transition: border-color 120ms, background 120ms, color 120ms; }
+        .theme-btn:hover { color: var(--text); background: var(--bg-sunk); }
+        .theme-btn svg { width: 15px; height: 15px; position: absolute; transition: opacity 200ms ease, transform 300ms ease; }
+        .theme-btn .icon-sun  { opacity: 0; transform: rotate(-40deg) scale(0.7); }
+        .theme-btn .icon-moon { opacity: 1; transform: rotate(0) scale(1); }
+        html[data-theme="dark"] .theme-btn .icon-sun  { opacity: 1; transform: rotate(0) scale(1); }
+        html[data-theme="dark"] .theme-btn .icon-moon { opacity: 0; transform: rotate(40deg) scale(0.7); }
+
+        /* Card */
+        .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-lg); }
+        .card-head { display: flex; align-items: center; justify-content: space-between; padding: 1.1rem 1.5rem; border-bottom: 1px solid var(--panel-border); gap: 1rem; }
+        .card-title { font-family: var(--font-serif); font-style: italic; font-weight: 500; font-size: 1.45rem; margin: 0; letter-spacing: -0.01em; }
+        .card-actions { display: flex; align-items: center; gap: 0.45rem; }
+
+        /* Pills */
+        .pill { display: inline-flex; align-items: center; gap: 0.4em; padding: 0.38rem 0.8rem; border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: 0.8rem; font-weight: 400; border: 1px solid var(--panel-border); background: transparent; color: var(--text-dim); text-decoration: none; cursor: pointer; transition: color 120ms, border-color 120ms, background 120ms; white-space: nowrap; }
+        .pill:hover { color: var(--text); border-color: var(--text-faint); }
+        .pill.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 500; }
+        .pill.primary:hover { filter: brightness(1.08); color: var(--accent-fg); border-color: var(--accent); }
+        .pill:disabled { opacity: 0.5; cursor: not-allowed; }
+        .pill-icon { width: 13px; height: 13px; flex: none; opacity: 0.85; }
+        .pill:hover .pill-icon { opacity: 1; }
+
+        /* Filter row */
+        .filter-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.5rem; border-bottom: 1px solid var(--panel-border); }
+        .filter-input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font-family: var(--font-mono); font-size: 0.88rem; padding: 0.15rem 0; outline: 0; }
+        .filter-input::placeholder { color: var(--text-faint); }
+        .filter-kbd { font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-faint); border: 1px solid var(--panel-border); border-radius: 4px; padding: 0.1rem 0.35rem; }
+        .filter-clear { background: transparent; border: 0; color: var(--text-dim); cursor: pointer; font-size: 1.05rem; line-height: 1; padding: 0 0.35rem; border-radius: 5px; }
+        .filter-clear:hover { color: var(--text); background: var(--panel-hover); }
+        /* Chip showing an active type-only filter (set by clicking a row pill).
+           Separate state from the free-text filter so users can't hand-edit the
+           "type:xxx" tokens and get into a weird parse state. */
+        .filter-chip { display: inline-flex; align-items: center; gap: 0.1rem; padding: 0.18rem 0.22rem 0.18rem 0.65rem; background: var(--pill-wp-bg); color: var(--pill-wp-fg); border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: 0.76rem; font-weight: 500; letter-spacing: 0.02em; white-space: nowrap; }
+        .filter-chip-x { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; background: transparent; border: 0; color: inherit; cursor: pointer; border-radius: 50%; font-size: 0.95rem; line-height: 1; padding: 0; }
+        .filter-chip-x:hover { background: rgba(58, 151, 169, 0.28); background: color-mix(in oklch, var(--accent) 28%, transparent); }
+
+        /* Add row */
+        /* New-site alert: appears after creating a WP site so the one-time
+           login is one click away, without hunting for the new row. */
+        .new-site-alert { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--panel-border); background: var(--bg-sunk); background: color-mix(in oklab, var(--accent) 12%, var(--panel)); color: var(--text); font-size: 0.92rem; }
+        .new-site-alert-icon { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-fg); flex: none; }
+        .new-site-alert-text { flex: 1; min-width: 0; }
+        .new-site-alert-text strong { font-family: var(--font-mono); font-weight: 500; }
+        .new-site-alert-close { background: transparent; border: 0; color: var(--text-dim); cursor: pointer; font-size: 1.15rem; line-height: 1; padding: 0.25rem 0.55rem; border-radius: 5px; flex: none; }
+        .new-site-alert-close:hover { color: var(--text); background: var(--panel-hover); }
+
+        .add-row { position: relative; padding: 0.9rem 1.5rem; border-bottom: 1px solid var(--panel-border); background: var(--bg-sunk); }
+        .add-row.is-creating { overflow: hidden; }
+        /* Indeterminate progress stripe across the top while plak add is
+           running — site creation takes 5-10s so we need a clear "working"
+           cue beyond just the button text swap. Solid accent block slides
+           across; a gradient-fade version blended with the row background
+           and looked the wrong green. */
+        .add-row.is-creating::before {
+            content: '';
+            position: absolute; top: 0; height: 3px; width: 30%;
+            /* A thin 2px stripe of var(--accent) perceptually muted to olive
+               against the cream bg-sunk; a brighter, more saturated teal at
+               3px reads unambiguously as teal (same hue as the brand, just
+               higher chroma so it survives the narrow band). */
+            background: #3fb6cf;
+            background: oklch(72% 0.15 190);
+            animation: add-row-slide 1.3s linear infinite;
+        }
+        @keyframes add-row-slide {
+            from { left: -30%; }
+            to   { left: 100%; }
+        }
+        /* Inline spinner for the create button (reuses the .site-action-btn
+           .btn-spinner pattern but scoped so pill button layout isn't altered). */
+        .pill .btn-spinner { display: inline-block; width: 11px; height: 11px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; flex: none; }
+        .add-row form { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+        .add-row input[type="text"] { background: var(--input-bg); border: 1px solid var(--panel-border); color: var(--text); font-family: var(--font-mono); font-size: 0.9rem; padding: 0.5rem 0.8rem; border-radius: var(--radius-md); min-width: 200px; flex: 1; }
+        .add-row input[type="text"]:focus { outline: 0; border-color: var(--accent); }
+        .add-row .plain-toggle { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--text-dim); font-size: 0.85rem; cursor: pointer; }
+        .add-row .plain-toggle input { accent-color: var(--accent); }
+
+        /* Site list — one grid on the <ul>, rows inherit its columns via
+           subgrid so type/modified/size/actions align vertically across rows
+           instead of each row sizing independently. */
+        .site-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr auto auto auto auto; column-gap: 0.9rem; }
+        .site-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; padding: 0.8rem 1.5rem; border-bottom: 1px solid var(--panel-border); transition: background 100ms; cursor: pointer; }
+        .site-row:last-child { border-bottom: 0; }
+        .site-row:hover { background: var(--panel-hover); }
+        .site-domain { font-family: var(--font-mono); font-size: 0.88rem; color: var(--text-dim); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .site-domain .host-accent { color: var(--accent); }
+        .site-domain:hover { color: var(--accent); }
+        .site-domain mark { background: rgba(58, 151, 169, 0.28); background: color-mix(in oklch, var(--accent) 28%, transparent); color: inherit; padding: 0 1px; border-radius: 3px; }
+        .site-type { display: inline-flex; justify-content: center; min-width: 64px; padding: 0.2rem 0.55rem; border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: 0.68rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; user-select: none; transition: filter 120ms; }
+        .site-type:hover { filter: brightness(1.15); }
+        .site-type.wp { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .site-type.static { background: var(--pill-static-bg); color: var(--pill-static-fg); }
+        .site-modified { font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-faint); min-width: 44px; text-align: right; }
+        .site-size { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim); min-width: 64px; text-align: right; }
+        .site-actions { display: flex; gap: 0.15rem; opacity: 0; transition: opacity 100ms; }
+        .site-row:hover .site-actions, .site-row:focus-within .site-actions { opacity: 1; }
+        /* Fixed button size + both children stacked in one grid cell. Since
+           grid-area "stack" collocates them at the same position and size is
+           locked by width/height, toggling opacity on .loading can't shift
+           any neighbour. */
+        .site-action-btn { display: inline-grid; grid-template-areas: "stack"; place-items: center; box-sizing: border-box; width: 3.5em; height: 1.75em; padding: 0; background: transparent; border: 0; color: var(--text-dim); cursor: pointer; border-radius: 7px; font-family: var(--font-mono); font-size: 0.78rem; line-height: 1; }
+        .site-action-btn > * { grid-area: stack; }
+        .site-action-btn:hover { background: var(--panel-border); color: var(--text); }
+        .site-action-btn.danger:hover { color: var(--danger); }
+        .site-action-btn:disabled { cursor: wait; }
+        .site-action-btn .btn-spinner { width: 10px; height: 10px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; opacity: 0; pointer-events: none; }
+        .site-action-btn.loading .btn-label { opacity: 0; }
+        .site-action-btn.loading .btn-spinner { opacity: 1; }
+
+        /* Empty + loading states — scoped to direct children of .site-list so
+           the global .loading class doesn't leak into unrelated elements
+           (notably .site-action-btn.loading, which uses its own state class). */
+        .site-list > .empty, .site-list > .loading { grid-column: 1 / -1; padding: 3rem 1.5rem; text-align: center; color: var(--text-dim); }
+        .empty-hint { margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-faint); }
+        .empty-hint code { background: var(--panel-hover); padding: 0.1rem 0.4rem; border-radius: 5px; }
+
+        /* Footer */
+        .card-foot { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1.5rem; border-top: 1px solid var(--panel-border); color: var(--text-dim); font-family: var(--font-mono); font-size: 0.78rem; gap: 1rem; flex-wrap: wrap; }
+        .services { display: flex; gap: 1.1rem; flex-wrap: wrap; }
+        .dot { display: inline-flex; align-items: center; gap: 0.45rem; color: var(--text-dim); text-decoration: none; background: transparent; border: 0; padding: 0; font-family: inherit; font-size: inherit; cursor: default; }
+        .dot.link, .dot[role="button"] { cursor: pointer; }
+        .dot.link:hover, .dot[role="button"]:hover { color: var(--text); }
+        .dot::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px rgba(58, 151, 169, 0.6); box-shadow: 0 0 6px color-mix(in oklch, var(--accent) 60%, transparent); }
+        .totals { display: inline-flex; align-items: center; gap: 0.5rem; }
+        .refresh-btn { background: transparent; border: 0; color: var(--text-dim); cursor: pointer; padding: 0.15rem 0.35rem; font-size: 0.95rem; border-radius: 5px; }
+        .refresh-btn:hover { color: var(--text); background: var(--panel-hover); }
+        .refresh-btn.spinning { animation: spin 1s linear infinite; pointer-events: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Modal */
+        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: grid; place-items: center; z-index: 80; padding: 1rem; }
+        html[data-theme="light"] .modal-backdrop { background: rgba(20,20,18,0.35); }
+        .modal { background: var(--panel); border: 1px solid var(--panel-border); border-radius: var(--radius-lg); padding: 1.5rem; min-width: min(420px, 90vw); max-width: 540px; }
+        .modal h3 { font-family: var(--font-serif); font-style: italic; font-weight: 500; font-size: 1.25rem; margin: 0 0 0.3rem; }
+        .modal .modal-sub { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 1rem; }
+        .modal pre { background: var(--input-bg); border: 1px solid var(--panel-border); border-radius: var(--radius-md); padding: 0.85rem 1rem; margin: 0; font-family: var(--font-mono); font-size: 0.82rem; color: var(--text); overflow-x: auto; }
+        .db-creds { background: var(--input-bg); border: 1px solid var(--panel-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; display: flex; flex-direction: column; gap: 0.7rem; }
+        .db-cred-row { display: grid; grid-template-columns: 85px 1fr; align-items: baseline; gap: 0.75rem; font-family: var(--font-mono); font-size: 0.82rem; }
+        .db-cred-label { color: var(--text-dim); font-weight: 500; }
+        .db-cred-value { color: var(--text); word-break: break-all; background: transparent; padding: 0; }
+        .modal .modal-foot { margin-top: 1rem; display: flex; justify-content: space-between; align-items: center; color: var(--text-faint); font-family: var(--font-mono); font-size: 0.75rem; }
+
+        /* Snackbar */
+        /* Centered via auto margins + fit-content width, NOT transform — Alpine
+           writes transform inline during x-transition, which would wipe out a
+           translateX(-50%) centering and slide the snackbar in from the edge. */
+        .snackbar { position: fixed; bottom: 1.5rem; left: 0; right: 0; margin-inline: auto; width: max-content; max-width: 90vw; background: var(--text); color: var(--bg); padding: 0.7rem 1.15rem; border-radius: 10px; font-size: 0.88rem; z-index: 200; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+        .snackbar.error { background: var(--danger); color: white; }
+
+        /* Responsive */
+        @media (max-width: 620px) {
+            body { padding: 1.25rem 0.75rem 3rem; }
+            .card-head { padding: 0.9rem 1rem; flex-wrap: wrap; }
+            .card-actions { width: 100%; justify-content: flex-end; }
+            .site-list { grid-template-columns: 1fr auto auto; column-gap: 0.6rem; }
+            .site-row { padding: 0.7rem 1rem; }
+            .site-size, .site-modified { display: none; }
+            .site-actions { opacity: 1; }
+            .add-row { padding: 0.8rem 1rem; }
+            .card-foot { padding: 0.75rem 1rem; }
+        }
+    </style>
+</head>
+<body x-data="dashboard" x-init="init()">
+    <div class="wrap">
+        <nav class="nav">
+            <a class="logo" href="/">
+                <svg class="logo-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false" stroke-linecap="round" stroke-linejoin="round">
+                    <defs>
+                        <clipPath id="plak-clip"><circle cx="32" cy="32" r="28"/></clipPath>
+                    </defs>
+                    <g clip-path="url(#plak-clip)">
+                        <rect x="0" y="0" width="64" height="64" class="disc"/>
+                        <rect x="0" y="32" width="64" height="32" class="water"/>
+                        <path class="land" d="M 4 32 C 4 22, 12 12, 22 12 C 30 12, 34 18, 42 16 C 50 14, 58 18, 60 24 L 60 32 Z"/>
+                        <line class="horizon" x1="2" y1="32" x2="62" y2="32" stroke-width="2.5"/>
+                        <g class="wave" stroke-width="2.6">
+                            <path d="M 10 42 Q 18 38, 26 42 T 42 42 T 56 42"/>
+                            <path d="M 14 50 Q 22 46, 30 50 T 46 50 T 56 50"/>
+                        </g>
+                    </g>
+                    <circle cx="32" cy="32" r="28" class="ring"/>
+                </svg>
+                <span>Plak</span>
+            </a>
+            <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
+                <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
+                <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
+            </button>
+        </nav>
+
+        <section class="card">
+            <header class="card-head">
+                <h1 class="card-title">Sites</h1>
+                <div class="card-actions">
+                    <button class="pill" @click="cycleSort()" :title="'Sort by — click to cycle'" x-text="'sort: ' + sort"></button>
+                    <a class="pill" href="https://db.plak.localhost<?= $__plak_site_port_suffix ?>" target="_blank" rel="noopener" title="Open Adminer">
+                        <svg class="pill-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="8" cy="3.5" rx="5" ry="1.5"/><path d="M3 3.5v9c0 .83 2.24 1.5 5 1.5s5-.67 5-1.5v-9"/><path d="M3 8c0 .83 2.24 1.5 5 1.5s5-.67 5-1.5"/></svg>
+                        db
+                    </a>
+                    <a class="pill" href="https://mail.plak.localhost<?= $__plak_site_port_suffix ?>" target="_blank" rel="noopener" title="Open Mailpit">
+                        <svg class="pill-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="12" height="9" rx="1.5"/><path d="M2.5 5 8 9l5.5-4"/></svg>
+                        mail
+                    </a>
+                    <button class="pill primary" @click="toggleAdd()" x-text="adding ? 'cancel' : '+ add site'"></button>
+                </div>
+            </header>
+
+            <template x-for="alert in alerts" :key="alert.id">
+                <div class="new-site-alert" x-transition.opacity>
+                    <span class="new-site-alert-icon" aria-hidden="true">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.2l3 3 7-7"/></svg>
+                    </span>
+                    <div class="new-site-alert-text">
+                        <strong x-text="alert.name + '.localhost'"></strong> is ready.
+                    </div>
+                    <template x-if="!alert.isPlain">
+                        <button class="pill primary" :disabled="alert.isLoggingIn" @click="loginToNewSite(alert)" x-text="alert.isLoggingIn ? 'opening…' : 'log in to admin'"></button>
+                    </template>
+                    <template x-if="alert.isPlain">
+                        <a class="pill primary" :href="'https://' + alert.name + '.localhost' + PORT_SUFFIX" target="_blank" rel="noopener" @click="dismissAlert(alert.id)">open site</a>
+                    </template>
+                    <button class="new-site-alert-close" @click="dismissAlert(alert.id)" aria-label="Dismiss" title="Dismiss">×</button>
+                </div>
+            </template>
+
+            <div class="filter-row">
+                <span class="filter-chip" x-show="typeFilter" x-transition.opacity aria-label="Active type filter" style="display: none;">
+                    <span x-text="typeFilterLabel"></span>
+                    <button type="button" class="filter-chip-x" @click="typeFilter = null; $refs.filterInput.focus()" aria-label="Remove type filter" title="Remove">×</button>
+                </span>
+                <input
+                    class="filter-input"
+                    type="text"
+                    x-model="filter"
+                    x-ref="filterInput"
+                    placeholder="filter sites by name or type…"
+                    spellcheck="false"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    @keydown.escape.prevent="filter = ''; $event.target.blur()"
+                    aria-label="Filter sites"
+                >
+                <span class="filter-kbd" x-show="!filter && !typeFilter" aria-hidden="true">/</span>
+                <button class="filter-clear" x-show="filter || typeFilter" @click="clearAllFilters(); $refs.filterInput.focus()" aria-label="Clear filter" title="Clear all (Esc)">×</button>
+            </div>
+
+            <div x-show="adding" x-transition.opacity class="add-row" :class="{ 'is-creating': newSite.isLoading }" style="display: none;">
+                <form @submit.prevent="addSite()">
+                    <input type="text" x-model="newSite.name" @input="newSite.name = newSite.name.toLowerCase().replace(/[^a-z0-9-]/g, '')" placeholder="site-name" required :disabled="newSite.isLoading" x-ref="newSiteInput">
+                    <label class="plain-toggle">
+                        <input type="checkbox" x-model="newSite.isPlain" :disabled="newSite.isLoading">
+                        plain (no WordPress)
+                    </label>
+                    <button class="pill primary" type="submit" :disabled="!newSite.name || newSite.isLoading">
+                        <span class="btn-spinner" x-show="newSite.isLoading" aria-hidden="true" style="display: none;"></span>
+                        <span x-text="newSite.isLoading ? 'creating…' : 'create'"></span>
+                    </button>
+                </form>
+            </div>
+
+            <ul class="site-list">
+                <template x-for="site in filteredSites" :key="site.name">
+                    <li class="site-row" @click="openSite(site)">
+                        <a class="site-domain" :href="site.domain" target="_blank" rel="noopener" @click.stop x-html="highlightedDomain(site.domain, filter)"></a>
+                        <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.type === 'WordPress' ? 'WP' : 'STATIC'"></span>
+                        <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
+                        <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
+                        <div class="site-actions">
+                            <template x-if="site.type === 'WordPress'">
+                                <button class="site-action-btn" :class="{ loading: site.isLoggingIn }" @click.stop="getLoginLink(site.name)" :disabled="site.isLoggingIn" :title="'One-time admin login for ' + site.name">
+                                    <span class="btn-label">login</span>
+                                    <span class="btn-spinner" aria-hidden="true"></span>
+                                </button>
+                            </template>
+                            <button class="site-action-btn" @click.stop="copyPath(site.full_path)" title="Copy site path to clipboard">path</button>
+                            <button class="site-action-btn danger" @click.stop="deleteSite(site.name)" :title="'Delete ' + site.name">delete</button>
+                        </div>
+                    </li>
+                </template>
+                <template x-if="isLoading">
+                    <li class="loading">Loading sites…</li>
+                </template>
+                <template x-if="!isLoading && sites.length === 0">
+                    <li class="empty">
+                        <div>No sites yet.</div>
+                        <div class="empty-hint">Click <em>+ add site</em>, or run <code>plak add myblog</code>.</div>
+                    </li>
+                </template>
+                <template x-if="!isLoading && sites.length > 0 && filteredSites.length === 0">
+                    <li class="empty">
+                        <div>No matches for <code x-text="filter"></code>.</div>
+                        <div class="empty-hint">Press Esc to clear.</div>
+                    </li>
+                </template>
+            </ul>
+
+            <footer class="card-foot">
+                <div class="services">
+                    <span class="dot" title="Caddy is serving this page — it's running">caddy</span>
+                    <button type="button" class="dot link" @click="showDbModal = true" title="Database credentials">mariadb</button>
+                    <a class="dot link" :href="mailpitUrl" target="_blank" rel="noopener" title="Open Mailpit">mailpit</a>
+                </div>
+                <div class="totals">
+                    <span x-text="siteCountLabel"></span>
+                    <span x-show="totalBytes > 0" x-text="'· ' + formatSize(totalBytes)"></span>
+                    <button type="button" class="refresh-btn" :class="{ spinning: isRefreshingSizes }" @click="refreshSizes()" :disabled="isRefreshingSizes" :title="isRefreshingSizes ? 'Refreshing…' : 'Refresh disk sizes'">↻</button>
+                </div>
+            </footer>
+        </section>
+    </div>
+
+    <div x-show="showDbModal" x-transition.opacity class="modal-backdrop" @click.self="showDbModal = false" @keydown.escape.window="showDbModal = false" style="display: none;">
+        <div class="modal">
+            <h3>Database credentials</h3>
+            <p class="modal-sub">Plak uses these to create new WordPress databases.</p>
+            <div class="db-creds">
+                <div class="db-cred-row">
+                    <span class="db-cred-label">user</span>
+                    <code class="db-cred-value"><?= htmlspecialchars($config_data['DB_USER'] ?? '—') ?></code>
+                </div>
+                <div class="db-cred-row">
+                    <span class="db-cred-label">password</span>
+                    <code class="db-cred-value"><?= htmlspecialchars($config_data['DB_PASSWORD'] ?? '—') ?></code>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <span>stored in <?= htmlspecialchars(str_replace(getenv('HOME'), '~', $config_file)) ?></span>
+                <button class="pill" @click="showDbModal = false">close</button>
+            </div>
+        </div>
+    </div>
+
+    <div x-show="snackbar.visible" x-transition.opacity.duration.200ms class="snackbar" :class="{ error: snackbar.isError }" x-text="snackbar.message" style="display: none;"></div>
+
+    <script>
+        const PORT_SUFFIX = '<?= $__plak_site_port_suffix ?>';
+        const SITES_DIR = 'SITES_DIR_PLACEHOLDER';
+
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('dashboard', () => ({
+                // Respect the OS theme preference on first visit, dark otherwise.
+                theme: localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
+                sites: [],
+                isLoading: true,
+                adding: false,
+                showDbModal: false,
+                isRefreshingSizes: false,
+                filter: '',
+                typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
+                sort: 'name',
+                sortModes: ['name', 'size', 'modified'],
+                newSite: { name: '', isPlain: false, isLoading: false },
+                snackbar: { visible: false, message: '', isError: false, timer: null },
+                // Persistent dismissible banners for newly-created sites — the
+                // snackbar only lives ~3.5s, not long enough to reach for the
+                // admin login after spinning up a fresh install.
+                alerts: [],
+                deleteQueue: [],
+                isProcessingQueue: false,
+
+                get adminerUrl() { return 'https://db.plak.localhost' + PORT_SUFFIX; },
+                get mailpitUrl() { return 'https://mail.plak.localhost' + PORT_SUFFIX; },
+                get totalBytes() { return this.sites.reduce((t, s) => t + (s.size_bytes || 0), 0); },
+                get filteredSites() {
+                    // Two independent filters ANDed together: typeFilter (chip,
+                    // exact match on site.type) and filter (free text, substring
+                    // match on name OR type). Keeping them separate means the
+                    // user can type anything in the input without worrying about
+                    // stepping on the type constraint.
+                    let base = [...this.sites];
+                    if (this.typeFilter) {
+                        base = base.filter(s => s.type === this.typeFilter);
+                    }
+                    const q = this.filter.trim().toLowerCase();
+                    if (q) {
+                        base = base.filter(s =>
+                            s.name.toLowerCase().includes(q) ||
+                            (s.type || '').toLowerCase().includes(q));
+                    }
+                    if (this.sort === 'size') {
+                        base.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
+                    } else if (this.sort === 'modified') {
+                        base.sort((a, b) => (b.modified_at || 0) - (a.modified_at || 0));
+                    } else {
+                        base.sort((a, b) => a.name.localeCompare(b.name));
+                    }
+                    return base;
+                },
+
+                get typeFilterLabel() {
+                    return this.typeFilter === 'WordPress' ? 'type: wp' : 'type: static';
+                },
+
+                clearAllFilters() {
+                    this.filter = '';
+                    this.typeFilter = null;
+                },
+                get siteCountLabel() {
+                    const total = this.sites.length;
+                    const visible = this.filteredSites.length;
+                    const suffix = ' site' + (total === 1 ? '' : 's');
+                    return visible === total ? total + suffix : visible + ' of ' + total + suffix;
+                },
+
+                init() {
+                    this.applyTheme();
+                    this.$watch('theme', () => { this.applyTheme(); localStorage.setItem('theme', this.theme); });
+
+                    // `/` focuses the filter (GitHub-style). Ignored when typing
+                    // in a form field or holding a modifier key.
+                    window.addEventListener('keydown', (e) => {
+                        if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+                        const el = document.activeElement;
+                        const tag = el && el.tagName;
+                        if (tag === 'INPUT' || tag === 'TEXTAREA' || (el && el.isContentEditable)) return;
+                        e.preventDefault();
+                        this.$refs.filterInput && this.$refs.filterInput.focus();
+                    });
+
+                    this.getSites().then(() => {
+                        // If the size cache is empty (fresh install or just deleted),
+                        // kick off a background refresh so sizes populate without
+                        // making the user hunt for the ↻ button.
+                        if (this.sites.length > 0 && this.sites.every(s => s.size_bytes === null)) {
+                            this.refreshSizes();
+                        }
+                    });
+                },
+
+                applyTheme() {
+                    document.documentElement.dataset.theme = this.theme;
+                },
+
+                toggleTheme() {
+                    this.theme = this.theme === 'light' ? 'dark' : 'light';
+                },
+
+                toggleAdd() {
+                    this.adding = !this.adding;
+                    if (this.adding) {
+                        this.$nextTick(() => { if (this.$refs.newSiteInput) this.$refs.newSiteInput.focus(); });
+                    }
+                },
+
+                formatSize(bytes) {
+                    if (bytes === null || bytes === undefined) return '—';
+                    if (bytes === 0) return '0 B';
+                    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+                    const v = bytes / Math.pow(1024, i);
+                    return (v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + units[i];
+                },
+
+                formatRelative(ts) {
+                    if (!ts) return '—';
+                    const s = Math.max(0, Date.now() / 1000 - ts);
+                    if (s < 60) return 'now';
+                    if (s < 3600) return Math.floor(s / 60) + 'm';
+                    if (s < 86400) return Math.floor(s / 3600) + 'h';
+                    if (s < 86400 * 30) return Math.floor(s / 86400) + 'd';
+                    if (s < 86400 * 365) return Math.floor(s / 86400 / 30) + 'mo';
+                    return Math.floor(s / 86400 / 365) + 'y';
+                },
+
+                escapeHtml(s) {
+                    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+                },
+
+                // Wrap every case-insensitive occurrence of `query` in <mark> while
+                // escaping every other substring. Safe for x-html use because the
+                // inner text comes from the trusted domain, not from query (query
+                // only controls WHERE to split).
+                highlightMatch(text, query) {
+                    const q = (query || '').trim();
+                    if (!q) return this.escapeHtml(text);
+                    const lower = text.toLowerCase();
+                    const lowerQ = q.toLowerCase();
+                    let out = '';
+                    let i = 0;
+                    while (i < text.length) {
+                        const idx = lower.indexOf(lowerQ, i);
+                        if (idx === -1) { out += this.escapeHtml(text.slice(i)); break; }
+                        out += this.escapeHtml(text.slice(i, idx));
+                        out += '<mark>' + this.escapeHtml(text.slice(idx, idx + q.length)) + '</mark>';
+                        i = idx + q.length;
+                    }
+                    return out;
+                },
+
+                // Wrap the site name in <span class="host-accent"> so it reads
+                // teal while the .localhost suffix stays dim — matches the
+                // landing-page dashboard mock. Split at the first dot; if
+                // there's none, the whole string is treated as the name.
+                highlightedDomain(domain, query) {
+                    const stripped = String(domain).replace(/^https?:\/\//, '');
+                    const dotIdx = stripped.indexOf('.');
+                    if (dotIdx === -1) return '<span class="host-accent">' + this.highlightMatch(stripped, query) + '</span>';
+                    const name = stripped.slice(0, dotIdx);
+                    const suffix = stripped.slice(dotIdx);
+                    return '<span class="host-accent">' + this.highlightMatch(name, query) + '</span>' + this.highlightMatch(suffix, query);
+                },
+
+                cycleSort() {
+                    const i = this.sortModes.indexOf(this.sort);
+                    this.sort = this.sortModes[(i + 1) % this.sortModes.length];
+                },
+
+                openSite(site) {
+                    // Don't navigate when the click was part of a drag-to-select,
+                    // so users can still grab the domain/size text to copy.
+                    if (window.getSelection && window.getSelection().toString()) return;
+                    window.open(site.domain, '_blank', 'noopener');
+                },
+
+                showSnack(msg, isError = false) {
+                    if (this.snackbar.timer) clearTimeout(this.snackbar.timer);
+                    this.snackbar = { visible: true, message: msg, isError, timer: null };
+                    this.snackbar.timer = setTimeout(() => { this.snackbar.visible = false; }, 3500);
+                },
+
+                async apiPost(action, payload = {}) {
+                    try {
+                        const res = await fetch('api.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action, ...payload })
+                        }).then(r => r.json());
+                        if (!res.success) this.showSnack(res.message || 'An error occurred.', true);
+                        return res;
+                    } catch (e) {
+                        this.showSnack('Network error.', true);
+                        return { success: false };
+                    }
+                },
+
+                async getSites() {
+                    this.isLoading = true;
+                    try {
+                        const r = await fetch('api.php?action=list_sites');
+                        const data = await r.json();
+                        this.sites = data.map(s => ({ ...s, isLoggingIn: false }));
+                    } catch (e) {
+                        this.showSnack('Could not fetch sites.', true);
+                    } finally {
+                        this.isLoading = false;
+                    }
+                },
+
+                async addSite() {
+                    if (!this.newSite.name) return;
+                    this.newSite.isLoading = true;
+                    const name = this.newSite.name;
+                    const isPlain = this.newSite.isPlain;
+
+                    const add = await this.apiPost('add_site', { site_name: name, is_plain: isPlain });
+                    if (add.success) {
+                        // Optimistic insert: we already know every field the row
+                        // template uses. No auto-refresh — the Caddy reload that
+                        // follows can take tens of seconds on fleets with lots of
+                        // sites and would either hang the fetch or drop the UI
+                        // into an ERR_CONNECTION_REFUSED during the config swap.
+                        this.sites.push({
+                            name,
+                            domain: 'https://' + name + '.localhost' + PORT_SUFFIX,
+                            type: isPlain ? 'Plain' : 'WordPress',
+                            display_path: '~/Plak/Sites/' + name + '.localhost',
+                            full_path: SITES_DIR + '/' + name + '.localhost',
+                            // Server calculates size in add_site and returns it
+                            // alongside success. Fall back to null so the row
+                            // shows "—" until the next refresh if anything failed.
+                            size_bytes: (typeof add.size_bytes === 'number') ? add.size_bytes : null,
+                            modified_at: Math.floor(Date.now() / 1000),
+                            isLoggingIn: false,
+                        });
+                        this.showSnack('Site created.');
+                        this.newSite.name = '';
+                        this.adding = false;
+                        this.apiPost('reload_server'); // fire and forget — Caddy reloads in the background
+
+                        // Surface a persistent alert so the user can jump
+                        // straight into the new site without hunting for the
+                        // row. WP sites get a one-time admin login; plain
+                        // sites get a simple "open site" link.
+                        this.alerts.push({
+                            id: Date.now() + Math.random(),
+                            name,
+                            isPlain,
+                            isLoggingIn: false,
+                        });
+                    }
+                    this.newSite.isLoading = false;
+                },
+
+                async loginToNewSite(alert) {
+                    alert.isLoggingIn = true;
+                    const res = await this.apiPost('get_login_link', { site_name: alert.name });
+                    if (res.success && res.url) {
+                        window.open(res.url, '_blank');
+                        // Acted on — banner's job is done. The new tab has the
+                        // one-time URL; dashboard can drop the prompt.
+                        this.dismissAlert(alert.id);
+                    }
+                    alert.isLoggingIn = false;
+                },
+
+                dismissAlert(id) {
+                    this.alerts = this.alerts.filter(a => a.id !== id);
+                },
+
+                async deleteSite(name) {
+                    if (!confirm(`Delete ${name}? This removes its files and database.`)) return;
+
+                    // Optimistic: pull from the local list immediately so the UI feels
+                    // instant, and enqueue the backend work. processDeleteQueue below
+                    // drains the queue single-file so concurrent deletes don't race on
+                    // shared state (Caddyfile regeneration, /etc/hosts edits).
+                    const idx = this.sites.findIndex(s => s.name === name);
+                    if (idx === -1) return;
+                    this.sites.splice(idx, 1);
+                    this.deleteQueue.push(name);
+                    this.processDeleteQueue();
+                },
+
+                async processDeleteQueue() {
+                    // Single-flight runner: whichever call picks up the lock drains the
+                    // full queue. Concurrent deleteSite() calls just enqueue and return.
+                    if (this.isProcessingQueue) return;
+                    this.isProcessingQueue = true;
+
+                    let anyFailed = false;
+                    try {
+                        // Outer loop catches deletes queued while we were awaiting the
+                        // reload below — otherwise they'd sit forever because the next
+                        // deleteSite() call short-circuits on isProcessingQueue.
+                        while (this.deleteQueue.length > 0) {
+                            while (this.deleteQueue.length > 0) {
+                                const target = this.deleteQueue.shift();
+                                const del = await this.apiPost('delete_site', { site_name: target });
+                                if (del.success) {
+                                    this.showSnack('Site deleted.');
+                                } else {
+                                    anyFailed = true; // apiPost already surfaced the error
+                                }
+                            }
+                            // Kick a reload at the end of the batch. Race-safety
+                            // lives server-side: plak_site_reload() uses a mkdir lock
+                            // with a pending marker to coalesce concurrent calls,
+                            // since reload_server itself backgrounds the shell
+                            // command (shell_exec '...&') and returns instantly.
+                            // Two unsynchronized frankenphp reload calls otherwise
+                            // deadlock Caddy's admin server (10s shutdown timeout).
+                            await this.apiPost('reload_server');
+                        }
+                    } finally {
+                        this.isProcessingQueue = false;
+                    }
+
+                    // If anything failed mid-queue the optimistic UI is now out of sync
+                    // with the backend (e.g. a survivor is missing from our list).
+                    // Cheapest correct fix: re-fetch the authoritative list.
+                    if (anyFailed) await this.getSites();
+                },
+
+                async getLoginLink(name) {
+                    const site = this.sites.find(s => s.name === name);
+                    if (!site) return;
+                    site.isLoggingIn = true;
+                    const res = await this.apiPost('get_login_link', { site_name: name });
+                    if (res.success && res.url) {
+                        window.open(res.url, '_blank');
+                        this.showSnack('Login link opened in a new tab.');
+                    }
+                    site.isLoggingIn = false;
+                },
+
+                async copyPath(path) {
+                    try {
+                        await navigator.clipboard.writeText(path);
+                        this.showSnack('Path copied to clipboard.');
+                    } catch (e) {
+                        this.showSnack('Could not copy path.', true);
+                    }
+                },
+
+                async refreshSizes() {
+                    this.isRefreshingSizes = true;
+                    const res = await this.apiPost('refresh_sizes');
+                    if (res.success) {
+                        await this.getSites();
+                        this.showSnack('Disk sizes updated.');
+                    }
+                    this.isRefreshingSizes = false;
+                }
+            }));
+        });
+    </script>
+</body>
+</html>
+EOM
+
+    # Find the absolute path to this script to pass to the GUI
+    local script_dir
+    script_dir=$(cd "$(dirname "$0")" && pwd)
+    local absolute_script_path="$script_dir/$(basename "$0")"
+    
+    # Escape the paths for use in sed
+    local escaped_path
+    escaped_path=$(printf '%s\n' "$absolute_script_path" | sed -e 's/[\/&]/\\&/g')
+    local escaped_sites_dir
+    escaped_sites_dir=$(printf '%s\n' "$SITES_DIR" | sed -e 's/[\/&]/\\&/g')
+    local escaped_home
+    escaped_home=$(printf '%s\n' "$HOME" | sed -e 's/[\/&]/\\&/g')
+    
+    # Substitute placeholders in both api.php and index.php
+    sed -e "s/PLAK_SITE_EXECUTABLE_PATH_PLACEHOLDER/${escaped_path}/g" \
+        -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
+        -e "s/USER_HOME_PLACEHOLDER/${escaped_home}/g" \
+        "$GUI_DIR/api.php.tmp" > "$GUI_DIR/api.php"
+
+    sed -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
+        "$GUI_DIR/index.php.tmp" > "$GUI_DIR/index.php"
+        
+    # Clean up temp files
+    rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"
+}
+
 # Source: shared/ui
 # Shared UI helpers for Plak Bash commands.
 
@@ -474,33 +3119,7 @@ plak_domain() {
 
 # Source: commands/install
 plak_install() {
-    plak_ui_title "Plak install"
-    echo ""
-
-    if plak_command_exists gum; then
-        plak_ui_success "gum is already installed."
-        return 0
-    fi
-
-    case "$PLAK_OS" in
-        macos)
-            if plak_command_exists brew; then
-                echo "Installing gum with Homebrew..."
-                brew install gum
-            else
-                plak_ui_warn "Homebrew is not installed. Install gum from: https://github.com/charmbracelet/gum"
-                return 1
-            fi
-            ;;
-        linux)
-            plak_ui_warn "gum is missing. Install instructions: https://github.com/charmbracelet/gum#installation"
-            return 1
-            ;;
-        *)
-            plak_ui_warn "Unsupported OS. Install gum manually from: https://github.com/charmbracelet/gum"
-            return 1
-            ;;
-    esac
+    plak_site_install "$@"
 }
 
 # Source: commands/server
@@ -761,6 +3380,4732 @@ plak_server() {
     esac
 }
 
+# Source: commands/site/add
+plak_site_add() {
+    cd ~/
+    local site_name="$1"
+    local site_type="wordpress"
+    local no_reload_flag=false
+
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: A site name is required."
+        echo "Usage: plak add <name> [--plain]"
+        exit 1
+    fi
+
+    # Check for invalid characters.
+    if [[ "$site_name" =~ [^a-z0-9-] ]]; then
+        gum style --foreground red "❌ Error: Invalid site name '$site_name'." "Site names can only contain lowercase letters, numbers, and hyphens."
+        exit 1
+    fi
+
+    # Check if the name starts or ends with a hyphen.
+    if [[ "$site_name" == -* || "$site_name" == *- ]]; then
+        gum style --foreground red "❌ Error: Invalid site name '$site_name'." "Site names cannot begin or end with a hyphen."
+        exit 1
+    fi
+
+    # Check all arguments passed to the function for our flags
+    for arg in "$@"; do
+        if [ "$arg" == "--plain" ]; then
+            site_type="plain"
+        fi
+        if [ "$arg" == "--no-reload" ]; then
+            no_reload_flag=true
+        fi
+    done
+
+    for protected_name in $PROTECTED_NAMES; do
+        if [ "$site_name" == "$protected_name" ]; then
+            gum style --foreground red "❌ Error: '$site_name' is a reserved name. Choose another."
+            exit 1
+        fi
+    done
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local full_hostname
+    full_hostname=$(basename "$site_dir")
+
+    if [ -d "$site_dir" ]; then
+        echo "⚠️ Site '$full_hostname' already exists."
+        exit 1
+    fi
+
+    echo "➕ Creating $site_type site: $full_hostname"
+    mkdir -p "$site_dir/public" "$site_dir/logs"
+
+    if [ "$site_type" == "plain" ]; then
+        write_plain_site_landing "$site_dir/public"
+    fi
+
+    local admin_user="admin"
+    local admin_pass
+    local one_time_login_url=""
+
+    if [ "$site_type" == "wordpress" ]; then
+        source_config
+        local db_name
+        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+        
+        echo "🗄️ Creating database: $db_name"
+        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
+        echo "Installing WordPress..."
+        admin_pass=$(plak_site_random_password 12)
+        
+        # get_wp_cmd routes wp-cli through frankenphp php-cli and PHPRC
+        # (exported in main) sets display_errors=0 + error_reporting=6143.
+        # That handles parse-time and pre-bootstrap warnings, but wp-cli's
+        # own bootstrap calls ini_set('display_errors', 'stderr') to keep
+        # its status messages on stdout, which re-routes PHP deprecation
+        # warnings to stderr from wp-cli's bundled vendor code (Colors.php
+        # on PHP 8.5+). The stderr filter on the subshell strips those
+        # leaked Deprecated lines while still passing through real wp-cli
+        # error output (which doesn't carry the "Deprecated:" prefix).
+        local wp_cmd
+        wp_cmd=$(get_wp_cmd)
+
+        (
+            cd "$site_dir/public" || exit 1
+
+            # 1. Download WordPress with a higher memory limit
+            if ! $wp_cmd core download --quiet; then
+                echo "❌ Error: Failed to download WordPress core. This might be a network issue or a permissions problem."
+                exit 1 # Exit the subshell with an error
+            fi
+
+            # 2. Create the config file
+            $wp_cmd config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --extra-php <<PHP
+define( 'WP_DEBUG', true );
+define( 'WP_DEBUG_LOG', true );
+define( 'WP_DEBUG_DISPLAY', false );
+PHP
+
+            # 3. Install WordPress
+            $wp_cmd core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email
+
+            # 4. Delete default plugins
+            echo "   - Deleting default plugins (Hello Dolly, Akismet)..."
+            $wp_cmd plugin delete hello akismet --quiet
+        ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2)
+
+        # Check the exit code of the subshell. If it's not 0, something failed.
+        if [ $? -ne 0 ]; then
+            gum style --foreground red "❌ WordPress installation failed. Please review the errors above."
+            # Clean up the failed site directory and database
+            echo "   - Cleaning up failed installation..."
+            mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
+            rm -rf "$site_dir"
+            exit 1
+        fi
+        
+        # Generate must-use plugin
+        inject_mu_plugin "$site_dir/public"
+        one_time_login_url=$($wp_cmd user login "$admin_user" --path="$site_dir/public/")
+    fi
+
+    # Only run the reload if the --no-reload flag was NOT passed.
+    if [ "$no_reload_flag" = false ]; then
+        regenerate_caddyfile
+
+        # Caddy's reload admin API returns as soon as the new config is live,
+        # but its internal CA issues the TLS cert for the new hostname
+        # asynchronously after that. Racing a request in that window surfaces
+        # as "tlsv1 alert internal error". Poll HTTPS briefly so we only return
+        # once Caddy can actually complete a handshake for the new domain.
+        local warm_url
+        warm_url=$(url_for "$full_hostname")
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -ks --max-time 1 -o /dev/null "$warm_url/" 2>/dev/null; then
+                break
+            fi
+            sleep 0.2
+        done
+    fi
+
+    echo "✅ Site '$full_hostname' created successfully!"
+    
+    if [ "$site_type" == "wordpress" ]; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(url_for "$full_hostname")/wp-admin" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $one_time_login_url"
+    fi
+}
+
+# Source: commands/site/db
+plak_site_db_backup() {
+    echo "🚀 Starting database backup for all WordPress sites..."
+
+    if [ ! -d "$SITES_DIR" ] || [ -z "$(ls -A "$SITES_DIR")" ]; then
+        gum style --foreground yellow "ℹ️ No sites found to back up."
+        exit 0
+    fi
+
+    local dump_command
+    if command -v mariadb-dump &> /dev/null; then
+        dump_command="mariadb-dump"
+    elif command -v mysqldump &> /dev/null; then
+        dump_command="mysqldump"
+    else
+        gum style --foreground red "❌ Error: Neither mariadb-dump nor mysqldump could be found. Please install MariaDB or MySQL."
+        return 1
+    fi
+    echo "ℹ️ Using '$dump_command' for backups."
+
+    local overall_success=true
+    for site_path in "$SITES_DIR"/*; do
+        if [ -d "$site_path" ] && [ -f "$site_path/public/wp-config.php" ]; then
+            local site_name
+            site_name=$(basename "$site_path")
+            echo "-----------------------------------------------------"
+            echo "➡️ Backing up site: $site_name"
+
+            local public_dir="$site_path/public"
+            local private_dir="$site_path/private"
+            mkdir -p "$private_dir"
+
+            # Use a subshell to avoid manual cd back and forth
+            (
+                cd "$public_dir" || return 1
+                
+                # Get WP-CLI command (adds --allow-root if running as root)
+                local wp_cmd
+                wp_cmd=$(get_wp_cmd)
+                
+                # Check if wp-cli can connect
+                if ! $wp_cmd core is-installed --skip-plugins --skip-themes &> /dev/null; then
+                    echo "   ❌ Error: wp-cli cannot connect to the database for this site. Skipping."
+                    return 1 # This exits the subshell, not the main script
+                fi
+
+                local db_name db_user db_pass
+                db_name=$($wp_cmd config get DB_NAME --skip-plugins --skip-themes)
+                db_user=$($wp_cmd config get DB_USER --skip-plugins --skip-themes)
+                db_pass=$($wp_cmd config get DB_PASSWORD --skip-plugins --skip-themes)
+
+                if [ -z "$db_name" ] || [ -z "$db_user" ]; then
+                    echo "   ❌ Error: Could not retrieve database credentials from wp-config.php. Skipping."
+                    return 1
+                fi
+                
+                local backup_timestamp
+                backup_timestamp=$(date +%Y%m%d-%H%M%S)
+                local backup_file="../private/database-backup-${backup_timestamp}.sql"
+                echo "   Saving backup to: $(basename "$site_path")/private/$(basename "$backup_file")"
+
+                # Execute the dump command
+                if ! "${dump_command}" -u"${db_user}" -p"${db_pass}" --max_allowed_packet=512M --default-character-set=utf8mb4 --add-drop-table --single-transaction --quick --lock-tables=false "${db_name}" > "${backup_file}"; then
+                    echo "   ❌ Error: Database dump failed for '${db_name}'."
+                    rm -f "${backup_file}" # Clean up failed backup file
+                    return 1
+                fi
+                
+                chmod 600 "$backup_file"
+                echo "   ✅ Backup successful."
+            )
+            
+            # Check the exit code of the subshell
+            if [ $? -ne 0 ]; then
+                overall_success=false
+            fi
+        fi
+    done
+    
+    echo "-----------------------------------------------------"
+    if $overall_success; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "🎉 All WordPress database backups completed successfully!"
+    else
+        gum style --foreground red "⚠️ Some database backups failed. Please review the output above."
+    fi
+}
+plak_site_db_list() {
+    source_config # To get DB_USER and DB_PASSWORD for mysql command
+
+    echo "🔎 Gathering database information for all WordPress sites..."
+
+    if ! command -v wp &> /dev/null; then
+        gum style --foreground red "❌ wp-cli is not installed or not in your PATH. Please run 'plak install'."
+        exit 1
+    fi
+
+    if [ ! -d "$SITES_DIR" ] || [ -z "$(ls -A "$SITES_DIR" 2>/dev/null)" ]; then
+        gum style --padding "1 2" "ℹ️ No sites found."
+        exit 0
+    fi
+
+    # Determine if we need --allow-root for wp-cli (running as root in WSL/Docker)
+    local wp_root_flag=""
+    if [ "$(id -u)" -eq 0 ]; then
+        wp_root_flag="--allow-root"
+    fi
+
+    # This heredoc contains a PHP script to find, connect, and format the database list.
+    # We invoke it via frankenphp php-cli -r so we don't depend on a standalone php binary.
+    local wp_path
+    wp_path=$(command -v wp)
+    local frank
+    frank=$(command -v frankenphp)
+    local php_output
+    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" SITES_DIR="$SITES_DIR" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
+        function formatSize(int $bytes): string {
+            if ($bytes === 0) return "0 B";
+            $units = ["B", "KB", "MB", "GB", "TB"];
+            $i = floor(log($bytes, 1024));
+            return round($bytes / (1024 ** $i), 2) . " " . $units[$i];
+        }
+
+        $sites_dir = getenv("SITES_DIR");
+        $db_user = getenv("DB_USER");
+        $db_pass = getenv("DB_PASSWORD");
+        $wp_root_flag = getenv("WP_ROOT_FLAG");
+        $wp_path = getenv("WP_PATH");
+        $frank_bin = getenv("FRANK_BIN");
+        $wp_invoker = escapeshellarg($frank_bin) . " php-cli " . escapeshellarg($wp_path);
+
+        if (!is_dir($sites_dir)) { exit; }
+
+        try {
+            $pdo = new PDO("mysql:host=localhost", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        } catch (PDOException $e) { exit; }
+
+        $sites_info = [];
+        foreach (scandir($sites_dir) as $item) {
+            $public_dir = $sites_dir . "/" . $item . "/public";
+            if (is_file($public_dir . "/wp-config.php")) {
+                $site_name = str_replace(".localhost", "", $item);
+                $public_dir_esc = escapeshellarg($public_dir);
+                $cmd_suffix = " " . $wp_root_flag . " --skip-plugins --skip-themes --quiet 2>/dev/null";
+                
+                $name_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_NAME" . $cmd_suffix);
+                if (is_null($name_raw)) { continue; }
+                $site_db_name = trim($name_raw);
+                if (empty($site_db_name)) { continue; }
+
+                $site_db_user = "N/A";
+                $site_db_pass = "N/A";
+                $size_str = "N/A";
+
+                if (!str_contains(strtolower($site_db_name), "sqlite")) {
+                    $user_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_USER" . $cmd_suffix);
+                    if (!is_null($user_raw)) { $site_db_user = trim($user_raw); }
+
+                    $pass_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_PASSWORD" . $cmd_suffix);
+                    if (!is_null($pass_raw)) { $site_db_pass = trim($pass_raw); }
+                    
+                    $stmt = $pdo->prepare("SELECT SUM(data_length + index_length) as size FROM information_schema.TABLES WHERE table_schema = ?");
+                    $stmt->execute([$site_db_name]);
+                    $size_bytes = $stmt->fetch(PDO::FETCH_ASSOC)["size"] ?? 0;
+                    $size_str = formatSize((int)$size_bytes);
+                }
+
+                $sites_info[] = [
+                    "name" => $site_name,
+                    "db_name" => $site_db_name,
+                    "db_user" => $site_db_user,
+                    "db_pass" => $site_db_pass,
+                    "size" => $size_str,
+                ];
+            }
+        }
+
+        if (empty($sites_info)) { exit; }
+
+        array_multisort(array_column($sites_info, "name"), SORT_ASC, $sites_info);
+        
+        $output = [];
+        $w = ["name" => 20, "db_name" => 25, "db_user" => 20, "db_pass" => 25, "size" => 15];
+        $header = str_pad("Name", $w["name"]) . " " . str_pad("DB Name", $w["db_name"]) . " " . str_pad("DB User", $w["db_user"]) . " " . str_pad("DB Pass", $w["db_pass"]) . " " . str_pad("Size", $w["size"]);
+        $separator = str_repeat("-", $w["name"]) . " " . str_repeat("-", $w["db_name"]) . " " . str_repeat("-", $w["db_user"]) . " " . str_repeat("-", $w["db_pass"]) . " " . str_repeat("-", $w["size"]);
+        $output[] = $header;
+        $output[] = $separator;
+
+        foreach ($sites_info as $site) {
+            $row = str_pad($site["name"], $w["name"]) . " " . str_pad($site["db_name"], $w["db_name"]) . " " . str_pad($site["db_user"], $w["db_user"]) . " " . str_pad($site["db_pass"], $w["db_pass"]) . " " . str_pad($site["size"], $w["size"]);
+            $output[] = $row;
+        }
+        echo implode("\n", $output);
+    ')
+
+    if [ -z "$php_output" ]; then
+        gum style --padding "1 2" "ℹ️ No WordPress sites with readable database configurations found."
+    else
+        echo "$php_output" | gum style --border normal --margin "1" --padding "1 2" --border-foreground 212
+    fi
+}
+# Source: commands/site/delete
+plak_site_delete() {
+    source_config
+    local site_name="$1"
+    for protected_name in $PROTECTED_NAMES; do
+        if [ "$site_name" == "$protected_name" ]; then
+            gum style --foreground red "❌ Error: '$site_name' is a reserved name and cannot be deleted."
+            exit 1
+        fi
+    done
+
+    local force_delete=false
+    local no_reload=false
+    for arg in "$@"; do
+        case "$arg" in
+            --force|--yes|-y) force_delete=true ;;
+            --no-reload) no_reload=true ;;
+        esac
+    done
+    # Non-interactive callers (dashboard shell_exec, scripted cleanup) have no
+    # TTY; gum confirm aborts there. Auto-promote so the delete doesn't hang.
+    [ -t 0 ] || force_delete=true
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    if [ ! -d "$site_dir" ]; then
+        echo "⚠️ Site '$site_name.localhost' not found."
+        exit 1
+    fi
+
+    if ! $force_delete; then
+        if ! gum confirm "🚨 Are you sure you want to delete '$site_name.localhost'? This will remove its files and potentially its database."; then
+            echo "🚫 Deletion cancelled."
+            exit 0
+        fi
+    fi
+
+    # Collect hostnames to strip from /etc/hosts BEFORE we rm -rf the site dir
+    local hosts_to_remove=("$site_name.localhost")
+    if [ -f "$site_dir/mappings" ]; then
+        while IFS= read -r mapping || [ -n "$mapping" ]; do
+            if [ -n "$mapping" ]; then
+                hosts_to_remove+=("$mapping")
+            fi
+        done < "$site_dir/mappings"
+    fi
+
+    echo "🔥 Deleting site: $site_name.localhost"
+    if [ -f "$site_dir/public/wp-config.php" ]; then
+        local db_name
+        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+        echo "🗄️ Deleting database: $db_name"
+        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
+    fi
+
+    # Don't trust the bare rm — a pre-1.10 dashboard-created site would be
+    # root-owned (sudo-started FrankenPHP), and a silent rm failure would
+    # previously still report "removed" while leaving the dir on disk. Try
+    # sudo -n as a fallback, then surface the failure to the caller.
+    if ! rm -rf "$site_dir" 2>/dev/null; then
+        if ! $SUDO_CMD -n rm -rf "$site_dir" 2>/dev/null; then
+            gum style --foreground red "❌ Failed to delete '$site_dir' — permission denied."
+            gum style --foreground yellow "   Run: sudo rm -rf '$site_dir'"
+            exit 1
+        fi
+    fi
+    echo "✅ Directory deleted."
+
+    # --- Delete Custom Caddy Directives ---
+    local custom_conf_file="$CUSTOM_CADDY_DIR/$site_name.localhost"
+    if [ -f "$custom_conf_file" ]; then
+        rm "$custom_conf_file"
+        echo "⚙️ Custom directives deleted."
+    fi
+
+    # --- Clean /etc/hosts entries ---
+    local entries_exist=false
+    local host
+    for host in "${hosts_to_remove[@]}"; do
+        if grep -qE "^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$" /etc/hosts 2>/dev/null; then
+            entries_exist=true
+            break
+        fi
+    done
+
+    if $entries_exist; then
+        echo "🧹 Removing /etc/hosts entries (requires sudo)..."
+        local sed_args=()
+        for host in "${hosts_to_remove[@]}"; do
+            sed_args+=(-e "/^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$/d")
+        done
+        # Use non-interactive sudo when we don't have a TTY (e.g., the dashboard's
+        # PHP shell_exec). In that context an interactive sudo prompt can hang
+        # the caller waiting for a password that will never arrive. From a real
+        # terminal the flag is empty, so sudo prompts as normal.
+        local sudo_flag=""
+        [ -t 0 ] || sudo_flag="-n"
+        if sudo $sudo_flag sed -i.bak -E "${sed_args[@]}" /etc/hosts 2>/dev/null; then
+            sudo $sudo_flag rm -f /etc/hosts.bak 2>/dev/null
+            echo "   - ✅ /etc/hosts cleaned."
+        else
+            gum style --foreground yellow "   - ⚠️ Skipped /etc/hosts cleanup (sudo unavailable from this context). Run 'plak reload' from a terminal to sync."
+        fi
+    fi
+
+    # Regenerate the Caddyfile so Caddy stops holding log file handles for
+    # this site. Without this, a later Caddy restart would re-create the
+    # deleted directory skeleton from the stale Caddyfile entry. The
+    # dashboard passes --no-reload because it batches one reload per
+    # delete queue drain.
+    if [ "$no_reload" = false ]; then
+        regenerate_caddyfile &>/dev/null
+    fi
+
+    echo "✅ Site '$site_name.localhost' has been removed."
+}
+# Source: commands/site/directive
+plak_site_directive_add_or_update() {
+    local site_name="$1"
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: Please provide a site name."
+        echo "Usage: plak directive <add|update> <name>"
+        exit 1
+    fi
+    
+    local site_hostname="${site_name}.localhost"
+    local site_dir="$SITES_DIR/$site_hostname"
+    local custom_conf_file="$CUSTOM_CADDY_DIR/$site_hostname"
+
+    if [ ! -d "$site_dir" ]; then
+        gum style --foreground red "❌ Error: Site '$site_hostname' not found."
+        exit 1
+    fi
+
+    local existing_rules=""
+    if [ -f "$custom_conf_file" ]; then
+        existing_rules=$(cat "$custom_conf_file")
+    fi
+    
+    local custom_rules
+    # If stdin is a terminal (interactive), use gum. Otherwise, read from pipe.
+    if [ -t 0 ]; then
+        if [ -f "$custom_conf_file" ]; then
+            echo "📝 Editing custom Caddy directives for $site_hostname..."
+        else
+            echo "📝 Adding new custom Caddy directives for $site_hostname..."
+        fi
+        echo "   Press Ctrl+D to save and exit, Ctrl+C to cancel."
+        custom_rules=$(gum write --value "$existing_rules" --placeholder "Enter custom Caddy directives here...")
+    else
+        echo "📝 Reading custom directives from stdin for $site_hostname..."
+        custom_rules=$(cat) # Read from standard input
+    fi
+
+    if [ -n "$custom_rules" ]; then
+        mkdir -p "$CUSTOM_CADDY_DIR"
+        echo "$custom_rules" > "$custom_conf_file"
+        echo "✅ Custom directives saved for $site_hostname."
+        regenerate_caddyfile
+    else
+        echo "🚫 No input provided. Action cancelled."
+    fi
+}
+
+# This new function handles deleting directives
+plak_site_directive_delete() {
+    local site_name=""
+    local force_delete=false
+    for arg in "$@"; do
+        case "$arg" in
+            --force|--yes|-y) force_delete=true ;;
+            -*)
+                gum style --foreground red "❌ Unknown option: $arg"
+                echo "Usage: plak directive delete <name> [--force]"
+                exit 1
+                ;;
+            *) [ -z "$site_name" ] && site_name="$arg" ;;
+        esac
+    done
+
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: Please provide a site name."
+        echo "Usage: plak directive delete <name> [--force]"
+        exit 1
+    fi
+
+    local site_hostname="${site_name}.localhost"
+    local custom_conf_file="$CUSTOM_CADDY_DIR/$site_hostname"
+
+    # Non-interactive callers (dashboard shell_exec, CI) have no TTY — gum
+    # confirm aborts there. Auto-promote to --force so scripted deletes work.
+    [ -t 0 ] || force_delete=true
+
+    if [ -f "$custom_conf_file" ]; then
+        if ! $force_delete; then
+            if ! gum confirm "🚨 Are you sure you want to delete the custom directives for '$site_hostname'?"; then
+                echo "🚫 Deletion cancelled."
+                return 0
+            fi
+        fi
+        rm "$custom_conf_file"
+        echo "✅ Custom directives deleted for $site_hostname."
+        regenerate_caddyfile
+    else
+        echo "ℹ️ No custom directives found for $site_hostname."
+    fi
+}
+
+plak_site_directive_list() {
+    echo "🔎 Listing all custom Caddy directives..."
+    
+    if [ ! -d "$CUSTOM_CADDY_DIR" ] || [ -z "$(ls -A "$CUSTOM_CADDY_DIR" 2>/dev/null)" ]; then
+        echo ""
+        gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
+        exit 0
+    fi
+
+    local found_one=false
+    for conf_file in $(find "$CUSTOM_CADDY_DIR" -type f | sort); do
+        found_one=true
+        local site_name
+        site_name=$(basename "$conf_file")
+        
+        local content
+        content=$(cat "$conf_file")
+
+        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 "📄 $site_name" "" "$content"
+    done
+
+    if ! $found_one; then
+        echo ""
+        gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
+    fi
+}
+# Source: commands/site/disable
+plak_site_disable() {
+    echo "🛑 Disabling Plak services..."
+    
+    echo "   - Stopping Caddy/FrankenPHP..."
+
+    # Stop services on MacOS
+    if [ "$OS" == "macos" ]; then
+        launchctl unload "$PLAK_SITE_DIR/com.plak.caddy.plist" &>/dev/null
+        "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null 2>&1
+        echo "   - Stopping MariaDB..."
+        brew services stop mariadb &>/dev/null
+        echo "   - Stopping Mailpit..."
+        launchctl unload "$PLAK_SITE_DIR/com.plak.mailpit.plist" &>/dev/null
+    fi
+
+    # Stop services on Linux
+    if [ "$OS" == "linux" ]; then
+        # v1.10+: FrankenPHP runs as plak.service under systemd. Try that
+        # first; fall back to frankenphp stop in case a user skipped
+        # plak_site_enable since the upgrade and still has an ad-hoc instance.
+        $SUDO_CMD systemctl stop plak.service &>/dev/null \
+            || "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || $SUDO_CMD -n "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || true
+
+        # Get the correct MariaDB service name
+        local mariadb_service
+        mariadb_service=$(get_mariadb_service_name)
+
+        echo "   - Stopping MariaDB ($mariadb_service)..."
+        $SUDO_CMD systemctl stop "$mariadb_service" &>/dev/null
+        echo "   - Stopping Mailpit..."
+        $SUDO_CMD systemctl stop mailpit &>/dev/null
+    fi
+    
+    echo "✅ Services stopped."
+}
+# Source: commands/site/enable
+plak_site_enable() {
+    echo "🚀 Enabling Plak services..."
+    
+    # Ensure log directory exists
+    mkdir -p "$LOGS_DIR"
+
+    if [ "$OS" == "macos" ]; then
+        echo "   - Starting MariaDB..."
+        brew services start mariadb
+
+        local plist_path="$PLAK_SITE_DIR/com.plak.mailpit.plist"
+        local mailpit_bin
+        mailpit_bin=$(command -v mailpit)
+
+        # Stop and unload any existing service to ensure our custom one is used.
+        launchctl unload "$plist_path" &>/dev/null
+        brew services stop mailpit &>/dev/null
+
+        echo "   - Generating custom Mailpit service file..."
+        cat > "$plist_path" << EOM
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+        <key>KeepAlive</key>
+        <true/>
+        <key>Label</key>
+        <string>com.plak.mailpit</string>
+        <key>ProgramArguments</key>
+        <array>
+                <string>$mailpit_bin</string>
+                <string>--database</string>
+                <string>$PLAK_SITE_DIR/mailpit.db</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>StandardErrorPath</key>
+        <string>$LOGS_DIR/mailpit.log</string>
+        <key>StandardOutPath</key>
+        <string>$LOGS_DIR/mailpit.log</string>
+</dict>
+</plist>
+EOM
+        # Load and start the new service.
+        launchctl load "$plist_path"
+        launchctl start com.plak.mailpit
+    fi
+    
+    if [ "$OS" == "linux" ]; then
+        # Get the correct MariaDB service name for this distro
+        local mariadb_service
+        mariadb_service=$(get_mariadb_service_name)
+        
+        echo "   - Starting MariaDB ($mariadb_service)..."
+        $SUDO_CMD systemctl enable "$mariadb_service" &>/dev/null
+        $SUDO_CMD systemctl restart "$mariadb_service"
+        
+        local service_path="/etc/systemd/system/mailpit.service"
+        local mailpit_bin
+        mailpit_bin=$(command -v mailpit)
+        local current_user
+        current_user=$(whoami)
+
+        echo "   - Generating custom Mailpit service file..."
+        # Write the unit file directly to its destination via sudo tee.
+        # Previously we used mktemp + sudo mv, but on Fedora/SELinux mv
+        # preserves the source file's user_tmp_t context from /tmp, and
+        # systemd refuses to load units outside the systemd_unit_file_t
+        # type. Writing fresh into /etc/systemd/system/ picks up that
+        # directory's type-transition rule automatically.
+        $SUDO_CMD tee "$service_path" >/dev/null << EOM
+[Unit]
+Description=Mailpit Service for Plak
+After=network.target
+
+[Service]
+ExecStart=$mailpit_bin --database $PLAK_SITE_DIR/mailpit.db
+Restart=always
+User=$current_user
+
+[Install]
+WantedBy=multi-user.target
+EOM
+        $SUDO_CMD chmod 644 "$service_path"
+
+        # --- FrankenPHP / Plak systemd unit ---
+        # Mirrors the mailpit pattern so the stack survives a reboot. The
+        # apt frankenphp.service was masked during plak install so there
+        # is no name conflict; we use plak.service to keep the scope
+        # clear ("this is Plak's managed FrankenPHP").
+        local plak_site_service_path="/etc/systemd/system/plak.service"
+        local frankenphp_bin
+        frankenphp_bin=$(command -v "$CADDY_CMD")
+
+        echo "   - Generating Plak FrankenPHP service file..."
+        # Same sudo-tee pattern as the mailpit unit above; see the note
+        # there for why mktemp + sudo mv doesn't survive SELinux.
+        $SUDO_CMD tee "$plak_site_service_path" >/dev/null << EOM
+[Unit]
+Description=FrankenPHP for Plak
+After=network.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+ExecStart=$frankenphp_bin run --config $CADDYFILE_PATH --pidfile $PLAK_SITE_DIR/caddy.pid
+ExecReload=$frankenphp_bin reload --config $CADDYFILE_PATH --address localhost:2019
+Restart=on-failure
+RestartSec=2s
+User=$current_user
+Environment=HOME=/home/$current_user
+Environment=PHPRC=$PHP_INI_FILE
+
+[Install]
+WantedBy=multi-user.target
+EOM
+        $SUDO_CMD chmod 644 "$plak_site_service_path"
+
+        # Reload systemd, then enable and start both Plak-managed services
+        $SUDO_CMD systemctl daemon-reload
+        $SUDO_CMD systemctl enable mailpit &>/dev/null
+        $SUDO_CMD systemctl restart mailpit
+        $SUDO_CMD systemctl enable plak.service &>/dev/null
+        # Stop any ad-hoc frankenphp started by a pre-1.10 plak_site_enable so
+        # systemctl can take ownership of the listening sockets cleanly.
+        "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || $SUDO_CMD -n "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || true
+        $SUDO_CMD systemctl restart plak.service
+    fi
+
+    # Skip the ad-hoc Caddy start on Linux — systemd handles it now.
+    if [ "$OS" != "linux" ]; then
+        start_caddy_service
+    fi
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+            "✅ Services are running" \
+            "Dashboard: $(url_for plak.localhost)" \
+            "Adminer:   $(url_for db.plak.localhost)" \
+            "Mailpit:   $(url_for mail.plak.localhost)"
+        
+        # Show WSL-specific info
+        if [ "$IS_WSL" = true ]; then
+            local wsl_ip
+            wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            echo ""
+            gum style --foreground yellow "WSL Note: To access sites from Windows browser, update Windows hosts file."
+            echo ""
+            echo "  Run this in PowerShell (as Administrator):"
+            echo ""
+            echo "  Add-Content -Path C:\\Windows\\System32\\drivers\\etc\\hosts -Value \"\`n$wsl_ip plak.localhost db.plak.localhost mail.plak.localhost\""
+            echo ""
+            echo "  Or manually add this line to C:\\Windows\\System32\\drivers\\etc\\hosts:"
+            echo "  $wsl_ip plak.localhost db.plak.localhost mail.plak.localhost"
+            echo ""
+            echo "  Note: WSL IP may change on restart. Run 'plak wsl-hosts' to get updated commands."
+        fi
+    else
+        gum style --foreground red "❌ Caddy server failed to start. Check $LOGS_DIR/caddy-process.log for errors."
+    fi
+}
+# Source: commands/site/help
+plak_site_display_command_help() {
+    local cmd="$1"
+    case "$cmd" in
+        directive)
+            cat <<'HELP'
+Usage:
+  plak directive <add|update|delete|list> [site]
+
+Manage custom Caddyfile rules for local sites.
+HELP
+            ;;
+        proxy)
+            cat <<'HELP'
+Usage:
+  plak proxy <add|list|delete>
+
+Manage standalone reverse proxy entries in the Caddyfile.
+HELP
+            ;;
+        tailscale)
+            cat <<'HELP'
+Usage:
+  plak tailscale <enable|disable|status>
+
+Expose local sites to your Tailscale network.
+HELP
+            ;;
+        mappings)
+            echo "Usage: plak mappings <site> [add|remove|list] [domain]"
+            ;;
+        lan)
+            echo "Usage: plak lan <enable|disable|status|trust> [site]"
+            ;;
+        ports)
+            echo "Usage: plak ports [--http PORT] [--https PORT] [--skip-urls] [--dry-run]"
+            ;;
+        memory)
+            echo "Usage: plak memory [set <value>] [--yes]"
+            ;;
+        log)
+            echo "Usage: plak log [site] [-f|--follow]"
+            ;;
+        share)
+            echo "Usage: plak share [site]"
+            ;;
+        pull)
+            echo "Usage: plak pull [--proxy-uploads]"
+            ;;
+        push)
+            echo "Usage: plak push"
+            ;;
+        reload)
+            echo "Usage: plak reload"
+            ;;
+        trust)
+            echo "Usage: plak trust"
+            ;;
+        url)
+            echo "Usage: plak url <site>"
+            ;;
+        upgrade)
+            echo "Usage: plak upgrade [--yes]"
+            ;;
+        *)
+            plak_show_help
+            ;;
+    esac
+}
+
+# Source: commands/site/install
+# A robust function to check, validate, and install a given dependency.
+install_dependency() {
+    local cmd_name="$1"      # The command to check for (e.g., "gum")
+    local brew_pkg="$2"      # The package name for Homebrew (e.g., "gum")
+    local apt_pkg="$3"       # The package name for apt (Debian/Ubuntu)
+    local dnf_pkg="$4"       # The package name for dnf (Fedora/RHEL) - can differ from apt
+    local binary_url="$5"    # Optional URL to a binary/tarball for fallback
+
+    # If dnf_pkg not specified, default to apt_pkg
+    if [ -z "$dnf_pkg" ]; then
+        dnf_pkg="$apt_pkg"
+    fi
+
+    # 1. Validate the command. If it runs, we're done.
+    if command -v "$cmd_name" &>/dev/null; then
+        # Special cases: mariadb doesn't support --version, and wp's shebang
+        # uses /usr/bin/env php which won't resolve since Plak no longer
+        # installs a standalone php (wp-cli is invoked through frankenphp
+        # php-cli at runtime — see get_wp_cmd in main).
+        if [[ "$cmd_name" == "mariadb" || "$cmd_name" == "wp" ]] || "$cmd_name" --version &>/dev/null 2>&1; then
+            echo "✅ $cmd_name is already installed and valid."
+            return 0
+        fi
+    fi
+
+    # If gum isn't installed yet, we can't use it for styling this first message.
+    if ! command -v gum &>/dev/null; then
+        echo "--- Installing Dependency: $cmd_name ---"
+    else
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Installing Dependency: $cmd_name"
+    fi
+
+    local installed_successfully=false
+    local pkg_name=""
+
+    # 2. Attempt installation with the native package manager.
+    if [ "$OS" == "macos" ]; then
+        if brew install "$brew_pkg"; then
+            installed_successfully=true
+        fi
+    else # For Linux (apt/dnf)
+        # Determine the correct package name for this distro
+        if [ "$PKG_MANAGER" == "apt" ]; then
+            pkg_name="$apt_pkg"
+        else
+            pkg_name="$dnf_pkg"
+        fi
+        
+        # Only try native package manager if a name is provided
+        if [ -n "$pkg_name" ]; then
+            echo "   - Updating package cache..."
+            if [ "$PKG_MANAGER" == "apt" ]; then
+                $SUDO_CMD apt-get update -qq >/dev/null 2>&1
+            else
+                $SUDO_CMD dnf makecache -q >/dev/null 2>&1 || true
+            fi
+            
+            echo "   - Installing $pkg_name via $PKG_MANAGER..."
+            if [ "$PKG_MANAGER" == "apt" ]; then
+                if $SUDO_CMD apt-get install -y "$pkg_name" >/dev/null 2>&1; then
+                    installed_successfully=true
+                fi
+            else
+                if $SUDO_CMD dnf install -y "$pkg_name" >/dev/null 2>&1; then
+                    installed_successfully=true
+                fi
+            fi
+        fi
+        
+        # 3. If native package fails or isn't specified, and a binary URL is provided, try that.
+        if [ "$installed_successfully" = false ] && [ -n "$binary_url" ]; then
+            if ! command -v gum &>/dev/null; then
+                 echo "   - Native package not available. Falling back to binary download."
+            else
+                gum style --foreground "yellow" "   - Native package not available. Falling back to binary download."
+            fi
+            
+            local temp_dir
+            temp_dir=$(mktemp -d)
+            
+            # Check if URL is a tarball or direct binary
+            if [[ "$binary_url" == *.tar.gz ]] || [[ "$binary_url" == *.tgz ]]; then
+                echo "   - Downloading and extracting tarball..."
+                if curl -sL "$binary_url" | tar -xz -C "$temp_dir" 2>/dev/null; then
+                    # Find the binary in extracted contents
+                    local binary_file
+                    binary_file=$(find "$temp_dir" -name "$cmd_name" -type f -executable 2>/dev/null | head -1)
+                    if [ -z "$binary_file" ]; then
+                        # Try without executable flag (might need chmod)
+                        binary_file=$(find "$temp_dir" -name "$cmd_name" -type f 2>/dev/null | head -1)
+                    fi
+                    if [ -n "$binary_file" ]; then
+                        chmod +x "$binary_file"
+                        if $SUDO_CMD mv "$binary_file" "$BIN_DIR/$cmd_name"; then
+                            installed_successfully=true
+                        fi
+                    fi
+                fi
+            else
+                # Direct binary download
+                echo "   - Downloading binary..."
+                if curl -sL "$binary_url" -o "$temp_dir/$cmd_name"; then
+                    chmod +x "$temp_dir/$cmd_name"
+                    if $SUDO_CMD mv "$temp_dir/$cmd_name" "$BIN_DIR/$cmd_name"; then
+                        installed_successfully=true
+                    fi
+                fi
+            fi
+            rm -rf "$temp_dir"
+        fi
+    fi
+
+    # 4. Final verification and cache clearing.
+    if [ "$installed_successfully" = true ]; then
+        hash -r # Clear the shell's command cache for this script session.
+        if command -v "$cmd_name" &>/dev/null; then
+            echo "✅ $cmd_name installed successfully."
+            return 0
+        else
+            echo "⚠️  $cmd_name installed but not found in PATH. You may need to restart your shell."
+            return 0
+        fi
+    else
+        if command -v gum &>/dev/null; then
+            gum style --foreground red "❌ Failed to install $cmd_name."
+        else
+            echo "❌ Failed to install $cmd_name."
+        fi
+        exit 1
+    fi
+}
+
+plak_site_install() {
+    local auto_yes=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y|--force)
+                auto_yes=true
+                shift
+                ;;
+            *)
+                echo "❌ Unknown argument: $1" >&2
+                echo "Usage: plak install [--yes]" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Non-interactive callers (CI, installer piping, dashboards) have no TTY;
+    # gum confirm / gum choose abort there. Auto-promote so the install doesn't
+    # hang.
+    [ -t 0 ] || auto_yes=true
+
+    echo "🚀 Starting Plak installation..."
+
+    # --- WSL/Systemd Check ---
+    if [ "$OS" == "linux" ]; then
+        if [ "$IS_WSL" = true ]; then
+            echo "🐧 WSL environment detected."
+            # Check if systemd is running
+            if ! pidof systemd >/dev/null 2>&1; then
+                echo ""
+                echo "⚠️  WARNING: systemd is not running in WSL."
+                echo "   Plak requires systemd for service management."
+                echo ""
+                echo "   To enable systemd in WSL2, add to /etc/wsl.conf:"
+                echo "   [boot]"
+                echo "   systemd=true"
+                echo ""
+                echo "   Then restart WSL with: wsl --shutdown"
+                echo ""
+                if $auto_yes; then
+                    echo "   (--yes set — continuing anyway.)"
+                else
+                    read -p "Do you want to continue anyway? (y/N) " -n 1 -r
+                    echo
+                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                        echo "🚫 Installation cancelled."
+                        exit 0
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    # --- Gum (required for the port-selection UI that follows) ---
+    # Note: gum releases use format: gum_VERSION_Linux_x86_64.tar.gz
+    local gum_arch="x86_64"
+    if [ "$(uname -m)" == "aarch64" ] || [ "$(uname -m)" == "arm64" ]; then
+        gum_arch="arm64"
+    fi
+    local gum_url="https://github.com/charmbracelet/gum/releases/download/v0.14.1/gum_0.14.1_Linux_${gum_arch}.tar.gz"
+    install_dependency "gum" "gum" "gum" "gum" "$gum_url"
+
+    # --- Port Selection ---
+    # Two paths can run here:
+    #   1. Reconfigure path — saved config already has non-default ports; the
+    #      user gets a menu to keep, switch to defaults, or pick new values.
+    #   2. Conflict path — the target ports (post-reconfigure) are occupied
+    #      by a non-Plak process; the user gets the conflict menu.
+    # On a fresh install with free 80/443, both paths are skipped silently.
+    # If the chosen ports differ from the starting values, a DB URL update
+    # step runs after install services come up (same code path as plak ports).
+    local original_http="$HTTP_PORT"
+    local original_https="$HTTPS_PORT"
+    local port_choice_made=false
+
+    # --- Reconfigure path ---
+    if [ "$HTTP_PORT" != "80" ] || [ "$HTTPS_PORT" != "443" ]; then
+        echo ""
+        gum style --foreground "212" \
+            "Plak is currently configured for custom ports: ${HTTP_PORT} / ${HTTPS_PORT}"
+        echo ""
+
+        local default_label="Switch to default ports (80 / 443)"
+        if port_has_conflict 80 || port_has_conflict 443; then
+            default_label="Switch to default ports (80 / 443) — currently in use"
+        fi
+
+        local choice
+        choice=$(gum choose \
+            "Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})" \
+            "$default_label" \
+            "Pick different custom ports")
+
+        case "$choice" in
+            "Keep current"*)
+                : # no change
+                ;;
+            "Switch to default"*)
+                HTTP_PORT=80
+                HTTPS_PORT=443
+                ;;
+            "Pick different"*)
+                prompt_custom_ports 8090 8453
+                ;;
+        esac
+        port_choice_made=true
+    fi
+
+    # --- Conflict path (for target ports post-reconfigure) ---
+    local http_busy=false
+    local https_busy=false
+    port_has_conflict "$HTTP_PORT"  && http_busy=true
+    port_has_conflict "$HTTPS_PORT" && https_busy=true
+
+    if $http_busy || $https_busy; then
+        echo ""
+        echo "⚠️  Port Conflict Detected"
+        echo ""
+        if $http_busy; then
+            local app
+            app=$(port_listening_app "$HTTP_PORT")
+            echo "   Port ${HTTP_PORT} is in use by: ${app:-another process}"
+        fi
+        if $https_busy; then
+            local app
+            app=$(port_listening_app "$HTTPS_PORT")
+            echo "   Port ${HTTPS_PORT} is in use by: ${app:-another process}"
+        fi
+        echo ""
+        echo "Plak needs an HTTP and HTTPS port. How would you like to proceed?"
+        echo ""
+
+        local choice
+        choice=$(gum choose \
+            "Use alternative ports (8090 / 8453) — run alongside other tools" \
+            "Pick custom ports" \
+            "Proceed with ${HTTP_PORT}/${HTTPS_PORT} anyway" \
+            "Cancel installation")
+
+        case "$choice" in
+            "Use alternative ports"*)
+                HTTP_PORT=8090
+                HTTPS_PORT=8453
+                if ! port_is_free "$HTTP_PORT" || ! port_is_free "$HTTPS_PORT"; then
+                    gum style --foreground yellow \
+                        "⚠️  8090 or 8453 is also in use — please pick custom ports."
+                    prompt_custom_ports 8090 8453
+                fi
+                ;;
+            "Pick custom ports")
+                prompt_custom_ports 8090 8453
+                ;;
+            "Proceed with"*)
+                gum style --foreground yellow \
+                    "⚠️  Services may fail to bind on ${HTTP_PORT}/${HTTPS_PORT}."
+                ;;
+            "Cancel installation")
+                echo "🚫 Installation cancelled."
+                exit 1
+                ;;
+        esac
+        port_choice_made=true
+    fi
+
+    if $port_choice_made; then
+        gum style --foreground green \
+            "✅ Using ports ${HTTP_PORT} (HTTP) / ${HTTPS_PORT} (HTTPS)"
+    fi
+
+    # Persist the final choice — regenerate_caddyfile and get_wp_cmd both
+    # pick up the globals directly.
+    config_set HTTP_PORT "$HTTP_PORT"
+    config_set HTTPS_PORT "$HTTPS_PORT"
+
+    # --- Pre-install Checks ---
+    # $PLAK_SITE_DIR alone isn't a reliable "previous install" marker — config_set
+    # above creates it just to persist HTTP_PORT/HTTPS_PORT. Check for a
+    # directory that only a completed install writes (Adminer), so the prompt
+    # only fires when it's actually meaningful.
+    if [ -d "$ADMINER_DIR" ]; then
+        if ! $auto_yes && ! gum confirm "⚠️ Plak already appears to be installed at ~/Plak. Proceeding may overwrite some configurations. Continue?"; then
+            echo "🚫 Installation cancelled."
+            exit 0
+        fi
+    fi
+    
+    # FrankenPHP uses its own universal installer.
+    # The upstream installer tries to write to /usr/local/bin and silently
+    # falls back to CWD when that fails — which happens on a fresh Apple
+    # Silicon Mac (Homebrew lives at /opt/homebrew/bin). To handle both,
+    # we run the installer from a tempdir and, if the binary ends up there
+    # instead of on PATH, move it into $BIN_DIR ourselves.
+    if ! command -v frankenphp &> /dev/null; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Installing Dependency: frankenphp"
+        echo "   - Using the official FrankenPHP installer..."
+        local fp_tmpdir
+        fp_tmpdir=$(mktemp -d)
+        if (cd "$fp_tmpdir" && curl -sL https://frankenphp.dev/install.sh | $SUDO_CMD bash); then
+            hash -r
+            if ! command -v frankenphp &> /dev/null && [ -x "$fp_tmpdir/frankenphp" ]; then
+                $SUDO_CMD mv "$fp_tmpdir/frankenphp" "$BIN_DIR/frankenphp"
+                $SUDO_CMD chmod +x "$BIN_DIR/frankenphp"
+                hash -r
+            fi
+            rm -rf "$fp_tmpdir"
+            if command -v frankenphp &> /dev/null; then
+                echo "✅ FrankenPHP installed successfully."
+            else
+                gum style --foreground red "❌ FrankenPHP installer ran but the binary is not on PATH."
+                exit 1
+            fi
+        else
+            rm -rf "$fp_tmpdir"
+            gum style --foreground red "❌ The FrankenPHP download script failed."
+            exit 1
+        fi
+    else
+        echo "✅ FrankenPHP is already installed."
+    fi
+    
+    # On Linux with apt/dnf, FrankenPHP needs additional PHP extensions installed
+    # The DEB/RPM packages don't include all extensions by default
+    if [ "$OS" = "linux" ]; then
+        echo "📦 Installing FrankenPHP PHP extensions for WordPress..."
+        if [ "$PKG_MANAGER" = "apt" ]; then
+            # Install required PHP extensions for WordPress via apt
+            $SUDO_CMD apt install -y php-zts-mysqli php-zts-curl php-zts-gd php-zts-xml php-zts-mbstring php-zts-zip php-zts-intl php-zts-bcmath 2>/dev/null || true
+            echo "✅ FrankenPHP PHP extensions installed."
+        elif [ "$PKG_MANAGER" = "dnf" ]; then
+            # Install required PHP extensions for WordPress via dnf
+            $SUDO_CMD dnf install -y php-zts-mysqli php-zts-curl php-zts-gd php-zts-xml php-zts-mbstring php-zts-zip php-zts-intl php-zts-bcmath 2>/dev/null || true
+            echo "✅ FrankenPHP PHP extensions installed."
+        fi
+        
+        # Verify mysqli is available
+        if ! frankenphp php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
+            gum style --foreground yellow "⚠️ Warning: mysqli extension not found in FrankenPHP."
+            gum style --foreground yellow "   WordPress may not work correctly."
+            gum style --foreground yellow "   Try: sudo apt install php-zts-mysqli (for apt)"
+            gum style --foreground yellow "   Or:  sudo dnf install php-zts-mysqli (for dnf)"
+        fi
+
+        # Let FrankenPHP bind ports 80/443 as the user. Without this cap,
+        # Plak would need to sudo-start the server, which makes every
+        # dashboard-triggered file (sites, lock dirs, pidfile) root-owned.
+        if command -v setcap &>/dev/null; then
+            local fp_bin
+            fp_bin=$(command -v frankenphp)
+            if [ -n "$fp_bin" ]; then
+                echo "🔐 Granting FrankenPHP cap_net_bind_service..."
+                $SUDO_CMD setcap 'cap_net_bind_service=+ep' "$fp_bin" 2>/dev/null || \
+                    gum style --foreground yellow "⚠️ setcap failed — Plak may fall back to needing sudo."
+            fi
+        fi
+
+        # The apt frankenphp package ships a systemd unit that runs as
+        # user frankenphp reading /etc/frankenphp/Caddyfile. That contends
+        # with Plak for ports 80/443. Mask it so it stays out of our way.
+        if systemctl list-unit-files frankenphp.service &>/dev/null \
+            && systemctl cat frankenphp.service 2>/dev/null | grep -q '^\[Unit\]'; then
+            echo "🚫 Masking conflicting apt frankenphp.service..."
+            $SUDO_CMD systemctl stop frankenphp.service &>/dev/null || true
+            $SUDO_CMD systemctl disable frankenphp.service &>/dev/null || true
+            $SUDO_CMD systemctl mask frankenphp.service &>/dev/null || true
+        fi
+    fi
+
+    # MariaDB - Database server
+    install_dependency "mariadb" "mariadb" "mariadb-server" "mariadb-server" ""
+
+    # No standalone PHP install — wp-cli is invoked through frankenphp php-cli
+    # (see get_wp_cmd in main), so FrankenPHP's bundled PHP is the single PHP
+    # runtime for both web and CLI. On Linux the php-zts-* extensions installed
+    # above provide WordPress's required extensions to FrankenPHP.
+
+    # Mailpit - Email testing tool.
+    # On macOS we use the Homebrew formula. On Linux we use the upstream
+    # installer because mailpit isn't packaged in apt/dnf.
+    # Why: the upstream installer hardcodes /usr/local/bin, which doesn't
+    # exist on a fresh Apple Silicon Mac (Homebrew lives at /opt/homebrew).
+    if [ "$OS" == "macos" ]; then
+        install_dependency "mailpit" "mailpit" "" "" ""
+    elif ! command -v mailpit &> /dev/null; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Installing Dependency: mailpit"
+        echo "   - Using the official Mailpit installer..."
+        if curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | $SUDO_CMD bash; then
+            echo "✅ Mailpit installed successfully."
+        else
+            gum style --foreground red "❌ The Mailpit download script failed."
+            exit 1
+        fi
+    else
+        echo "✅ Mailpit is already installed."
+    fi
+
+    # WP-CLI - WordPress command line tool
+    # Not in default Linux repos, so we use the phar download as fallback
+    install_dependency "wp" "wp-cli" "" "" "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+
+    # --- Directory and Service Setup (Copied from original file) ---
+    echo "📁 Creating Plak directory structure..."
+    mkdir -p "$SITES_DIR" "$LOGS_DIR" "$GUI_DIR" "$ADMINER_DIR" "$CUSTOM_CADDY_DIR"
+
+    # Write the PHP ini that wp-cli (via frankenphp php-cli) will load.
+    # See the comment on $PHPRC export in main for the rationale.
+    # error_reporting=6143 is E_ALL minus E_DEPRECATED/E_USER_DEPRECATED/E_STRICT
+    # so wp-cli's bundled vendor code (react/promise, php-cli-tools/Colors.php)
+    # doesn't flood every command on PHP 8.5+.
+    echo "⚙️ Writing Plak PHP ini..."
+    cat > "$PHP_INI_FILE" <<'INI'
+memory_limit = 1G
+display_errors = 0
+error_reporting = 6143
+INI
+    echo "🗃️ Downloading Adminer 5.4.2..."
+    curl -sL "https://github.com/vrana/adminer/releases/download/v5.4.2/adminer-5.4.2.php" -o "$ADMINER_DIR/adminer-core.php"
+    # Entry point + theme assets. Keep in sync with plak_site_upgrade so upgraders
+    # pick up index.php/head() and CSS/JS changes without a full reinstall.
+    deploy_adminer_theme
+
+    echo "✨ Downloading Whoops error handler..."
+    rm -rf "$APP_DIR/whoops" # Remove any old versions first
+    mkdir -p "$APP_DIR/whoops"
+    curl -sL "https://github.com/filp/whoops/archive/refs/tags/2.15.3.tar.gz" | tar -xz -C "$APP_DIR/whoops" --strip-components=1
+
+    # --- Fedora/RHEL SELinux labeling ---
+    # The upstream FrankenPHP installer tags /usr/bin/frankenphp with the
+    # httpd_exec_t file context. On Fedora/RHEL that triggers an exec-time
+    # domain transition into httpd_t — a confined web-server domain that:
+    #   - can't read files labeled user_home_t (fails to open ~/Plak/Caddyfile
+    #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
+    #   - silently RSTs TLS connections under some configs (TCP accepts but
+    #     the TLS ClientHello gets no response)
+    # Neither failure logs an AVC — both are dontaudit'd. Retagging the binary
+    # as bin_t keeps systemd running it in unconfined_service_t, which can
+    # read user files normally. On non-SELinux distros (Debian/Ubuntu)
+    # semanage isn't in $PATH and this block is a no-op.
+    if [ "$OS" = "linux" ] && command -v semanage &>/dev/null; then
+        local fp_bin
+        fp_bin=$(command -v "$CADDY_CMD")
+        if [ -n "$fp_bin" ]; then
+            echo "🔐 Relabeling FrankenPHP for SELinux..."
+            $SUDO_CMD semanage fcontext -a -t bin_t "$fp_bin" &>/dev/null \
+                || $SUDO_CMD semanage fcontext -m -t bin_t "$fp_bin" &>/dev/null \
+                || true
+            $SUDO_CMD restorecon "$fp_bin" &>/dev/null || true
+        fi
+    fi
+
+    echo "⚙️ Starting services..."
+    if [ "$OS" == "macos" ]; then
+        if ! brew services restart mariadb; then
+            gum style --foreground red "❌ Failed to start MariaDB via Homebrew."
+            exit 1
+        fi
+    else # Linux
+        if ! $SUDO_CMD systemctl restart mariadb; then
+            gum style --foreground red "❌ Failed to start MariaDB via systemctl."
+            exit 1
+        fi
+    fi
+
+    # --- Database Configuration ---
+    # Reuse saved DB creds if present. $CONFIG_FILE always exists at this
+    # point (config_set above wrote HTTP_PORT/HTTPS_PORT), so probe for the
+    # DB keys specifically rather than just the file.
+    local has_db_config=false
+    if [ -f "$CONFIG_FILE" ] && grep -q '^DB_USER=' "$CONFIG_FILE" 2>/dev/null; then
+        has_db_config=true
+    fi
+    if $has_db_config && { $auto_yes || gum confirm "Existing Plak database config found. Use it and skip database setup?"; }; then
+        echo "✅ Using existing database configuration."
+    else
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Configuring MariaDB"
+        echo "   - Waiting for MariaDB service..."
+        i=0
+        while ! mysqladmin ping --silent; do
+            sleep 1;
+            i=$((i+1))
+            if [ $i -ge 20 ]; then
+                gum style --foreground red "❌ MariaDB did not become available in time."
+                exit 1
+            fi
+        done
+        echo "   - ✅ MariaDB is ready."
+        local db_user="plak_site_user"
+        local db_pass
+        db_pass=$(plak_site_random_password 16)
+        local sql_command="DROP USER IF EXISTS '$db_user'@'localhost'; CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+        local user_created_successfully=false
+
+        echo "   - Attempting automatic setup..."
+        if echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
+            echo "   - ✅ Automatic database user creation successful."
+            user_created_successfully=true
+        else
+            echo "   - ⚠️ Automatic setup failed. Falling back to manual credential entry..."
+            local root_user
+            root_user=$(gum input --value "root" --prompt "MariaDB Root Username: ")
+            local root_pass
+            root_pass=$(gum input --password --placeholder "Password for '$root_user'")
+
+            if echo "$sql_command" | mysql -u "$root_user" -p"$root_pass"; then
+                echo "   - ✅ Manual database user creation successful."
+                user_created_successfully=true
+            fi
+        fi
+
+        if $user_created_successfully; then
+            echo "   - 📝 Saving new configuration..."
+            config_set DB_USER "$db_user"
+            config_set DB_PASSWORD "$db_pass"
+        else
+            gum style --foreground red "❌ Database user creation failed. Please check credentials and MariaDB logs."
+            exit 1
+        fi
+    fi
+    
+    # --- Finalize ---
+    create_whoops_bootstrap
+    create_gui_file
+    regenerate_caddyfile
+
+    echo "✅ Initial configuration complete. Starting services..."
+    plak_site_enable
+
+    # Install the local CA into the system trust store and any browser NSS
+    # databases we can find. Needs Caddy up (for the admin API trust call)
+    # and the root cert to exist (Caddy generated it during the initial
+    # plak_site_enable above). Idempotent — users can re-run via plak trust.
+    echo ""
+    plak_site_trust
+
+    # If the user changed HTTPS ports during install AND there are pre-existing
+    # WordPress sites in $SITES_DIR, migrate their stored URLs to the new port.
+    # On a fresh install with no sites, this is a silent no-op.
+    if [ "$original_https" != "$HTTPS_PORT" ]; then
+        if [ -d "$SITES_DIR" ] && [ -n "$(find "$SITES_DIR" -maxdepth 2 -name wp-config.php -print -quit 2>/dev/null)" ]; then
+            echo ""
+            echo "🔄 Updating WordPress site URLs to new HTTPS port..."
+            update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"
+        fi
+    fi
+
+    # Show post-install guidance
+    echo ""
+    if [ "$HTTPS_PORT" != "443" ]; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
+            "📋 First-Time Setup Notes" \
+            "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}" \
+            "Access the dashboard at: $(url_for plak.localhost)"
+    else
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
+            "📋 First-Time Setup Notes"
+    fi
+    echo ""
+    echo "  Your browser will show a certificate warning when accessing Plak sites."
+    echo "  This is normal for local development with self-signed certificates."
+    echo ""
+    echo "  Options to resolve:"
+    echo "    1. Click 'Advanced' and 'Proceed' to accept the certificate"
+    echo "    2. Or trust Caddy's root CA certificate system-wide (recommended)"
+    echo ""
+    if [ "$OS" == "macos" ]; then
+        echo "  On macOS, Caddy typically auto-trusts its CA. If not, the CA cert is at:"
+        echo "    ~/Library/Application Support/Caddy/pki/authorities/local/root.crt"
+    else
+        echo "  On Linux, the CA certificate is located at:"
+        echo "    ~/.local/share/caddy/pki/authorities/local/root.crt"
+        echo ""
+        echo "  To trust it system-wide (Ubuntu/Debian):"
+        echo "    sudo cp ~/.local/share/caddy/pki/authorities/local/root.crt /usr/local/share/ca-certificates/caddy.crt"
+        echo "    sudo update-ca-certificates"
+        echo ""
+        echo "  For browser-only trust, import the certificate in your browser settings."
+    fi
+    
+    if [ "$IS_WSL" = true ]; then
+        echo ""
+        gum style --foreground yellow "  WSL: Run 'plak wsl-hosts' for Windows hosts file setup instructions."
+    fi
+}
+# Source: commands/site/lan
+# --- LAN Access Commands ---
+# Enables local network access to Plak sites for mobile app sync
+
+LAN_PORTS_FILE="$PLAK_SITE_DIR/lan_ports"
+LAN_START_PORT=8443
+
+# Get the next available LAN port
+get_next_lan_port() {
+    local port=$LAN_START_PORT
+    if [ -f "$LAN_PORTS_FILE" ]; then
+        # Find the highest port in use and add 1
+        local max_port
+        max_port=$(cut -d'=' -f2 "$LAN_PORTS_FILE" | sort -n | tail -1)
+        if [ -n "$max_port" ]; then
+            port=$((max_port + 1))
+        fi
+    fi
+    echo "$port"
+}
+
+# Get the assigned port for a site
+get_site_lan_port() {
+    local site_name="$1"
+    if [ -f "$LAN_PORTS_FILE" ]; then
+        grep "^${site_name}=" "$LAN_PORTS_FILE" | cut -d'=' -f2
+    fi
+}
+
+# Get local network IP address
+get_lan_ip() {
+    if [ "$OS" == "macos" ]; then
+        ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "unknown"
+    else
+        hostname -I 2>/dev/null | awk '{print $1}' || echo "unknown"
+    fi
+}
+
+# Create Bonjour advertisement LaunchAgent
+create_bonjour_service() {
+    local site_name="$1"
+    local port="$2"
+    local service_name="com.plak.${site_name}.lan"
+    local plist_path="$HOME/Library/LaunchAgents/${service_name}.plist"
+    
+    # Only supported on macOS
+    if [ "$OS" != "macos" ]; then
+        echo "   - Bonjour advertisement not supported on Linux (skipping)"
+        return 0
+    fi
+    
+    echo "   - Creating Bonjour advertisement for ${site_name}..."
+    
+    mkdir -p "$HOME/Library/LaunchAgents"
+    
+    cat > "$plist_path" << EOM
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${service_name}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/dns-sd</string>
+        <string>-R</string>
+        <string>${site_name}</string>
+        <string>_beckon._tcp</string>
+        <string>local</string>
+        <string>${port}</string>
+        <string>path=/</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+EOM
+    
+    # Load and start the service
+    launchctl unload "$plist_path" &>/dev/null
+    launchctl load "$plist_path"
+    launchctl start "$service_name"
+    
+    echo "   - Bonjour service started: _beckon._tcp (${site_name})"
+}
+
+# Remove Bonjour advertisement LaunchAgent
+remove_bonjour_service() {
+    local site_name="$1"
+    local service_name="com.plak.${site_name}.lan"
+    local plist_path="$HOME/Library/LaunchAgents/${service_name}.plist"
+    
+    if [ "$OS" != "macos" ]; then
+        return 0
+    fi
+    
+    if [ -f "$plist_path" ]; then
+        echo "   - Stopping Bonjour advertisement..."
+        launchctl unload "$plist_path" &>/dev/null
+        rm -f "$plist_path"
+    fi
+}
+
+plak_site_lan_enable() {
+    local site_name="$1"
+    
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "Error: Site name is required."
+        echo "Usage: plak lan enable <site>"
+        exit 1
+    fi
+    
+    # Normalize site name (remove .localhost suffix if present)
+    site_name="${site_name%.localhost}"
+    
+    local site_dir="$SITES_DIR/${site_name}.localhost"
+    
+    if [ ! -d "$site_dir" ]; then
+        gum style --foreground red "Error: Site '${site_name}' not found."
+        exit 1
+    fi
+    
+    local lan_config="$site_dir/lan_config"
+    
+    if [ -f "$lan_config" ]; then
+        local existing_port
+        existing_port=$(grep "^port=" "$lan_config" | cut -d'=' -f2)
+        gum style --foreground yellow "Site '${site_name}' already has LAN access enabled on port ${existing_port}."
+        exit 0
+    fi
+    
+    echo "Enabling LAN access for ${site_name}..."
+    
+    # Assign a port
+    local port
+    port=$(get_next_lan_port)
+    
+    # Save to lan_ports file
+    echo "${site_name}=${port}" >> "$LAN_PORTS_FILE"
+    
+    # Create lan_config file in site directory
+    echo "port=${port}" > "$lan_config"
+    echo "enabled_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$lan_config"
+    
+    # Create Bonjour advertisement
+    create_bonjour_service "$site_name" "$port"
+    
+    # Regenerate Caddyfile to include LAN binding
+    regenerate_caddyfile
+    
+    local lan_ip
+    lan_ip=$(get_lan_ip)
+    
+    echo ""
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "LAN Access Enabled for ${site_name}" \
+        "" \
+        "Port: ${port}" \
+        "Local URL: $(url_for "${site_name}.localhost")" \
+        "LAN URL: https://${lan_ip}:${port}" \
+        "" \
+        "Bonjour: _beckon._tcp (displakrable by iOS apps)" \
+        "" \
+        "Note: Mobile devices need to trust Caddy's CA certificate." \
+        "Run 'plak lan trust' for instructions."
+}
+
+plak_site_lan_disable() {
+    local site_name="$1"
+    
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "Error: Site name is required."
+        echo "Usage: plak lan disable <site>"
+        exit 1
+    fi
+    
+    # Normalize site name
+    site_name="${site_name%.localhost}"
+    
+    local site_dir="$SITES_DIR/${site_name}.localhost"
+    local lan_config="$site_dir/lan_config"
+    
+    if [ ! -f "$lan_config" ]; then
+        gum style --foreground yellow "Site '${site_name}' does not have LAN access enabled."
+        exit 0
+    fi
+    
+    echo "Disabling LAN access for ${site_name}..."
+    
+    # Remove Bonjour service
+    remove_bonjour_service "$site_name"
+    
+    # Remove from lan_ports file
+    if [ -f "$LAN_PORTS_FILE" ]; then
+        grep -v "^${site_name}=" "$LAN_PORTS_FILE" > "${LAN_PORTS_FILE}.tmp"
+        mv "${LAN_PORTS_FILE}.tmp" "$LAN_PORTS_FILE"
+    fi
+    
+    # Remove lan_config file
+    rm -f "$lan_config"
+    
+    # Regenerate Caddyfile
+    regenerate_caddyfile
+    
+    gum style --foreground green "LAN access disabled for ${site_name}."
+}
+
+plak_site_lan_status() {
+    echo "LAN Access Status"
+    echo "================="
+    echo ""
+    
+    local lan_ip
+    lan_ip=$(get_lan_ip)
+    echo "Your LAN IP: ${lan_ip}"
+    echo ""
+    
+    local found_any=false
+    
+    if [ -d "$SITES_DIR" ]; then
+        for site_path in "$SITES_DIR"/*; do
+            if [ -d "$site_path" ]; then
+                local site_name
+                site_name=$(basename "$site_path")
+                site_name="${site_name%.localhost}"
+                
+                local lan_config="$site_path/lan_config"
+                if [ -f "$lan_config" ]; then
+                    found_any=true
+                    local port
+                    port=$(grep "^port=" "$lan_config" | cut -d'=' -f2)
+                    echo "  ${site_name}"
+                    echo "    Port: ${port}"
+                    echo "    LAN URL: https://${lan_ip}:${port}"
+                    echo "    Bonjour: _beckon._tcp (${site_name})"
+                    echo ""
+                fi
+            fi
+        done
+    fi
+    
+    if [ "$found_any" = false ]; then
+        echo "  No sites have LAN access enabled."
+        echo ""
+        echo "  Enable LAN access for a site with:"
+        echo "    plak lan enable <site>"
+    fi
+}
+
+plak_site_lan_trust() {
+    echo "Trusting Caddy's CA Certificate on Mobile Devices"
+    echo "================================================="
+    echo ""
+    
+    local ca_cert=""
+    
+    # Find Caddy's root CA certificate
+    if [ "$OS" == "macos" ]; then
+        ca_cert="$HOME/Library/Application Support/Caddy/pki/authorities/local/root.crt"
+    else
+        ca_cert="$HOME/.local/share/caddy/pki/authorities/local/root.crt"
+    fi
+    
+    if [ ! -f "$ca_cert" ]; then
+        gum style --foreground red "Error: Caddy's root CA certificate not found."
+        echo "Expected location: $ca_cert"
+        echo ""
+        echo "Make sure Caddy has been started at least once with 'plak enable'."
+        exit 1
+    fi
+    
+    echo "Caddy's root CA certificate is located at:"
+    echo "  $ca_cert"
+    echo ""
+    
+    if [ "$OS" == "macos" ]; then
+        echo "To trust this certificate on your iPhone/iPad:"
+        echo ""
+        echo "  1. AirDrop the certificate to your device:"
+        gum style --foreground cyan "     Opening certificate location in Finder..."
+        open -R "$ca_cert"
+        echo ""
+        echo "  2. On your iOS device, go to:"
+        echo "     Settings > General > VPN & Device Management"
+        echo "     Tap the certificate profile and install it."
+        echo ""
+        echo "  3. Then go to:"
+        echo "     Settings > General > About > Certificate Trust Settings"
+        echo "     Enable full trust for the Caddy root certificate."
+        echo ""
+    else
+        echo "To trust this certificate on your mobile device:"
+        echo ""
+        echo "  1. Copy the certificate to your device (email, file transfer, etc.)"
+        echo "  2. Install and trust the certificate in your device's settings"
+        echo ""
+    fi
+    
+    echo "Alternative: The Beckon iOS app can be configured to accept"
+    echo "the self-signed certificate without system-wide trust."
+}
+
+plak_site_lan() {
+    local action="$1"
+    shift
+    
+    case "$action" in
+        enable)
+            plak_site_lan_enable "$@"
+            ;;
+        disable)
+            plak_site_lan_disable "$@"
+            ;;
+        status)
+            plak_site_lan_status "$@"
+            ;;
+        trust)
+            plak_site_lan_trust "$@"
+            ;;
+        *)
+            echo "Usage: plak lan <subcommand>"
+            echo ""
+            echo "Manage LAN access to Plak sites for mobile app sync."
+            echo ""
+            echo "Subcommands:"
+            echo "  enable <site>    Enable LAN access for a site"
+            echo "  disable <site>   Disable LAN access for a site"
+            echo "  status           Show which sites have LAN access enabled"
+            echo "  trust            Instructions for trusting Caddy's CA on mobile"
+            exit 0
+            ;;
+    esac
+}
+
+# Source: commands/site/list
+plak_site_list() {
+    local show_totals=false
+    if [[ "$1" == "--totals" ]]; then
+        show_totals=true
+    fi
+
+    # PHP script to find, sort, and format the site list with box-drawing characters
+    local php_output
+    php_output=$(SITES_DIR="$SITES_DIR" SHOW_TOTALS="$show_totals" HTTPS_PORT_SUFFIX="$(https_port_suffix)" frankenphp php-cli -r '
+        function getDirectorySize(string $path): int {
+            if (!is_dir($path)) return 0;
+            $total_size = 0;
+            $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS));
+            foreach ($iterator as $file) {
+                if ($file->isFile()) {
+                    $total_size += $file->getSize();
+                }
+            }
+            return $total_size;
+        }
+
+        function formatSize(int $bytes): string {
+            if ($bytes === 0) return "0 B";
+            $units = ["B", "KB", "MB", "GB", "TB"];
+            $i = floor(log($bytes, 1024));
+            return round($bytes / (1024 ** $i), 2) . " " . $units[$i];
+        }
+
+        $sites_dir = getenv("SITES_DIR");
+        $show_totals = getenv("SHOW_TOTALS") === "true";
+        $port_suffix = getenv("HTTPS_PORT_SUFFIX") ?: "";
+
+        if (!is_dir($sites_dir)) {
+            exit;
+        }
+
+        $sites = [];
+        $items = scandir($sites_dir);
+
+        foreach ($items as $item) {
+            if ($item === "." || $item === "..") continue;
+            $site_path = $sites_dir . "/" . $item;
+            if (is_dir($site_path)) {
+                $public_path = $site_path . "/public";
+                $size = $show_totals && is_dir($public_path) ? formatSize(getDirectorySize($public_path)) : null;
+                $sites[] = [
+                    "name" => str_replace(".localhost", "", $item),
+                    "domain" => "https://" . $item . $port_suffix,
+                    "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Plain",
+                    "size" => $size,
+                ];
+            }
+        }
+
+        if (empty($sites)) {
+             exit;
+        }
+
+        // Sort the array: first by type, then by name
+        array_multisort(
+            array_column($sites, "type"), SORT_ASC,
+            array_column($sites, "name"), SORT_ASC,
+            $sites
+        );
+
+        // Column padding/gap
+        $gap = 3;
+        
+        // Calculate column widths
+        $name_width = max(array_map(fn($s) => strlen($s["name"]), $sites));
+        $name_width = max($name_width, 4) + $gap;
+        
+        $domain_width = max(array_map(fn($s) => strlen($s["domain"]), $sites));
+        $domain_width = max($domain_width, 6) + $gap;
+        
+        $type_width = $show_totals ? 9 + $gap : 10; // "WordPress" + gap or padding
+        
+        $size_width = $show_totals ? 11 : 0;
+
+        // ANSI colors
+        $pink = "\033[38;5;212m";
+        $dim = "\033[2m";
+        $reset = "\033[0m";
+
+        // Box drawing characters
+        $tl = "╭"; $tr = "╮"; $bl = "╰"; $br = "╯";
+        $h = "─"; $v = "│";
+
+        // Calculate total width
+        $inner_width = $name_width + $domain_width + $type_width;
+        if ($show_totals) {
+            $inner_width += $size_width;
+        }
+
+        // Build horizontal lines
+        $top_line = $pink . $tl . str_repeat($h, $inner_width) . $tr . $reset;
+        $mid_line = $pink . $v . $reset . $dim . " " . str_repeat("-", $inner_width - 2) . " " . $reset . $pink . $v . $reset;
+        $bot_line = $pink . $bl . str_repeat($h, $inner_width) . $br . $reset;
+
+        // Header row (white text)
+        $header = $pink . $v . $reset . " " . str_pad("Name", $name_width - 1) . str_pad("Domain", $domain_width) . str_pad("Type", $type_width);
+        if ($show_totals) {
+            $header .= str_pad("Size", $size_width);
+        }
+        $header .= $pink . $v . $reset;
+
+        // Output
+        echo $top_line . "\n";
+        echo $header . "\n";
+        echo $mid_line . "\n";
+
+        foreach ($sites as $site) {
+            $row = $pink . $v . $reset . " " . str_pad($site["name"], $name_width - 1);
+            $row .= str_pad($site["domain"], $domain_width);
+            $row .= str_pad($site["type"], $type_width);
+            if ($show_totals) {
+                $row .= str_pad($site["size"] ?? "N/A", $size_width);
+            }
+            $row .= $pink . $v . $reset;
+            echo $row . "\n";
+        }
+
+        echo $bot_line . "\n";
+    ')
+
+    if [ -z "$php_output" ]; then
+        gum style --padding "1 2" "No sites found. Add one with 'plak add <name>'."
+    else
+        echo ""
+        gum style --faint "Sites are located in ~/Plak/Sites/"
+        echo ""
+        echo "$php_output"
+    fi
+}
+# Source: commands/site/log
+plak_site_log() {
+    local site_name=""
+    local follow_flag=""
+
+    # Parse arguments
+    for arg in "$@"; do
+        case "$arg" in
+            -f|--follow)
+                follow_flag="-f"
+                ;;
+            *)
+                if [[ -z "$site_name" ]]; then
+                    site_name="$arg"
+                fi
+                ;;
+        esac
+    done
+
+    # If no site specified, show the global error log
+    if [[ -z "$site_name" ]]; then
+        local log_file="$LOGS_DIR/errors.log"
+        if [[ ! -f "$log_file" ]]; then
+            echo "No global error log found at $log_file"
+            exit 1
+        fi
+
+        if [[ -n "$follow_flag" ]]; then
+            echo "Following global error log (Ctrl+C to stop)..."
+            tail -f "$log_file"
+        else
+            echo "Global error log (last 50 lines):"
+            echo ""
+            tail -50 "$log_file"
+        fi
+        exit 0
+    fi
+
+    # Normalize site name
+    local site_dir
+    if [[ "$site_name" == *.localhost ]]; then
+        site_dir="$SITES_DIR/$site_name"
+    else
+        site_dir="$SITES_DIR/${site_name}.localhost"
+        site_name="${site_name}.localhost"
+    fi
+
+    if [[ ! -d "$site_dir" ]]; then
+        echo "Site '$site_name' not found."
+        exit 1
+    fi
+
+    local logs_dir="$site_dir/logs"
+    if [[ ! -d "$logs_dir" ]]; then
+        echo "No logs directory found for '$site_name'."
+        exit 1
+    fi
+
+    # Find available log files
+    local caddy_log="$logs_dir/caddy.log"
+    local caddy_lan_log="$logs_dir/caddy-lan.log"
+
+    # Determine which logs exist
+    local available_logs=()
+    [[ -f "$caddy_log" ]] && available_logs+=("$caddy_log")
+    [[ -f "$caddy_lan_log" ]] && available_logs+=("$caddy_lan_log")
+
+    if [[ ${#available_logs[@]} -eq 0 ]]; then
+        echo "No log files found for '$site_name'."
+        exit 1
+    fi
+
+    if [[ -n "$follow_flag" ]]; then
+        echo "Following logs for $site_name (Ctrl+C to stop)..."
+        tail -f "${available_logs[@]}"
+    else
+        echo "Logs for $site_name (last 50 lines each):"
+        for log in "${available_logs[@]}"; do
+            echo ""
+            echo "--- $(basename "$log") ---"
+            tail -50 "$log"
+        done
+    fi
+}
+
+# Source: commands/site/login
+plak_site_login() {
+    local site_name="$1"
+    local user_identifier="$2" # Optional second argument for the user
+
+    # 1. Validate that a site name was provided.
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: A site name is required."
+        echo "Usage: plak login <site> [<user>]"
+        exit 1
+    fi
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local public_dir="$site_dir/public"
+    
+    # Get WP-CLI command (adds --allow-root if running as root)
+    local wp_cmd
+    wp_cmd=$(get_wp_cmd)
+
+    # 2. Check if the site exists and is a WordPress installation.
+    if [ ! -d "$site_dir" ] || [ ! -f "$public_dir/wp-config.php" ]; then
+        gum style --foreground red "❌ Error: WordPress site '$site_name.localhost' not found."
+        exit 1
+    fi
+
+    local admin_to_login
+    if [ -n "$user_identifier" ]; then
+        echo "🔎 Verifying user '$user_identifier' for '$site_name.localhost'..."
+        local user_roles
+        user_roles=$( (cd "$public_dir" && $wp_cmd user get "$user_identifier" --field=roles --format=json --skip-plugins --skip-themes 2>/dev/null) )
+
+        if [ -z "$user_roles" ]; then
+            gum style --foreground red "❌ Error: User '$user_identifier' not found on this site."
+            exit 1
+        fi
+
+        if ! echo "$user_roles" | grep -q "administrator"; then
+            gum style --foreground red "❌ Error: User '$user_identifier' is not an administrator."
+            exit 1
+        fi
+        
+        admin_to_login="$user_identifier"
+        echo "✅ User '$admin_to_login' verified."
+    else
+        echo "🔎 Finding an administrator for '$site_name.localhost'..."
+        admin_to_login=$( (cd "$public_dir" && $wp_cmd user list --role=administrator --field=user_login --format=csv --skip-plugins --skip-themes | head -n 1) )
+
+        if [ -z "$admin_to_login" ]; then
+            gum style --foreground red "❌ Error: Could not find any administrator users for this site."
+            exit 1
+        fi
+        echo "✅ Found admin: '$admin_to_login'."
+    fi
+
+    # 3. Refresh the MU-plugin before generating the URL. Always overwrite
+    # the file so sites created with older Plak versions pick up changes to
+    # the plugin (token format, query-arg name, etc.) without needing a
+    # re-add. The file is small and idempotent to regenerate.
+    inject_mu_plugin "$public_dir"
+
+    # 4. Generate the login URL.
+    echo "   Generating login link..."
+    local login_url
+    login_url=$( (cd "$public_dir" && $wp_cmd user login "$admin_to_login" --skip-plugins --skip-themes) )
+
+    # 5. Display the final URL or an error message.
+    if [ -n "$login_url" ]; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "🔗 One-Time Login URL for '$admin_to_login'" "$login_url"
+    else
+        gum style --foreground red "❌ Error: Failed to generate the login link after all checks."
+        exit 1
+    fi
+}
+# Source: commands/site/mappings
+plak_site_mappings() {
+    local site_name="$1"
+    local action="$2"
+    local domain="$3"
+
+    # --- 1. Validation ---
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: A site name is required."
+        echo "Usage: plak mappings <site> [add|remove] [domain]"
+        exit 1
+    fi
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local mappings_file="$site_dir/mappings"
+
+    if [ ! -d "$site_dir" ]; then
+        gum style --foreground red "❌ Error: Site '$site_name.localhost' not found."
+        exit 1
+    fi
+
+    # --- 2. List Mappings (Default Action) ---
+    if [ -z "$action" ] || [ "$action" == "list" ]; then
+        echo "🔎 Checking domain mappings for $site_name..."
+        
+        if [ ! -f "$mappings_file" ] || [ ! -s "$mappings_file" ]; then
+             gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "ℹ️  No additional mappings found." "Main domain: $site_name.localhost"
+        else
+            local content
+            content=$(cat "$mappings_file")
+            gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "📂 Domain Mappings ($site_name)" "" "$content"
+        fi
+        return 0
+    fi
+
+    # --- 3. Add Mapping ---
+    if [ "$action" == "add" ]; then
+        if [ -z "$domain" ]; then
+            gum style --foreground red "❌ Error: Please specify a domain to add."
+            exit 1
+        fi
+
+        # Simple validation: prevent duplicates
+        if [ -f "$mappings_file" ] && grep -Fxq "$domain" "$mappings_file"; then
+            gum style --foreground yellow "⚠️  Domain '$domain' is already mapped to this site."
+            exit 0
+        fi
+
+        # Create file if not exists and append
+        echo "$domain" >> "$mappings_file"
+        echo "✅ Added mapping: $domain"
+        
+        regenerate_caddyfile
+        update_etc_hosts
+        return 0
+    fi
+
+    # --- 4. Remove Mapping ---
+    if [ "$action" == "remove" ]; then
+        if [ -z "$domain" ]; then
+            gum style --foreground red "❌ Error: Please specify a domain to remove."
+            exit 1
+        fi
+
+        if [ -f "$mappings_file" ]; then
+            # Use grep to filter out the domain and write to a temp file
+            if grep -Fxq "$domain" "$mappings_file"; then
+                grep -Fxv "$domain" "$mappings_file" > "${mappings_file}.tmp"
+                mv "${mappings_file}.tmp" "$mappings_file"
+                echo "✅ Removed mapping: $domain"
+                
+                regenerate_caddyfile
+                update_etc_hosts
+            else
+                gum style --foreground red "❌ Error: Mapping '$domain' not found."
+            fi
+        else
+             gum style --foreground red "❌ Error: No mappings exist for this site."
+        fi
+        return 0
+    fi
+
+    # --- 5. Unknown Action ---
+    gum style --foreground red "❌ Error: Unknown action '$action'."
+    echo "Usage: plak mappings <site> [add|remove] [domain]"
+    exit 1
+}
+# Source: commands/site/memory
+plak_site_memory() {
+    # -----------------------------------------------------------------
+    #  plak memory [set <value>]
+    #  Show or tweak PHP memory_limit across every ini Plak or the
+    #  user's Homebrew PHPs load. Plak's own ini lives at
+    #  ~/Plak/php.ini and is read by FrankenPHP (both CLI via PHPRC and
+    #  the web server via the php_ini directive in the Caddyfile, which
+    #  reads its values from the same file through plak_site_ini_get).
+    # -----------------------------------------------------------------
+
+    local action="show"
+    local new_value=""
+    local auto_yes=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                display_command_help memory
+                exit 0
+                ;;
+            set)
+                action="set"
+                new_value="$2"
+                shift 2 || { gum style --foreground red "❌ 'set' requires a value (e.g. 2G)"; exit 1; }
+                ;;
+            --yes|-y|--force|--all)
+                auto_yes=true
+                shift
+                ;;
+            *)
+                gum style --foreground red "❌ Unknown argument: $1"
+                echo "Usage: plak memory [set <value>] [--yes]"
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ "$action" = "set" ]; then
+        plak_site_memory_set "$new_value" "$auto_yes"
+    else
+        plak_site_memory_show
+    fi
+}
+
+# Resolves the canonical path of a binary. Falls back to the original path
+# if neither GNU readlink nor BSD-era greadlink is available.
+plak_site_memory_realpath() {
+    local p="$1"
+    if readlink -f "$p" >/dev/null 2>&1; then
+        readlink -f "$p"
+    elif command -v greadlink >/dev/null 2>&1; then
+        greadlink -f "$p"
+    else
+        echo "$p"
+    fi
+}
+
+# Prints the php.ini path a given php binary loads, with surrounding
+# whitespace and quotes trimmed (php --ini quotes the path when it
+# contains special chars). PHPRC is unset so we see the ini each binary
+# loads by default — without Plak's CLI override leaking in.
+plak_site_memory_ini_for() {
+    local php="$1"
+    env -u PHPRC "$php" --ini 2>/dev/null \
+        | awk -F': ' '/^Loaded Configuration File:/ {sub(/^[[:space:]]+/,"",$2); print $2}' \
+        | sed -E 's/^"(.*)"$/\1/'
+}
+
+# Runs an inline PHP snippet against $1 without Plak's PHPRC, so the
+# returned ini values reflect what the binary sees when the user invokes
+# it from their own shell.
+plak_site_memory_php_probe() {
+    env -u PHPRC "$1" -r "$2" 2>/dev/null
+}
+
+plak_site_memory_show() {
+    gum style --foreground "212" --bold "PHP memory_limit audit"
+    echo ""
+
+    # 1) Plak CLI ini
+    local plak_site_mem
+    plak_site_mem=$(plak_site_ini_get memory_limit "")
+    echo "📁 Plak CLI  ($PHP_INI_FILE)"
+    if [ -f "$PHP_INI_FILE" ]; then
+        echo "   memory_limit         = ${plak_site_mem:-(unset — FrankenPHP default applies)}"
+        echo "   upload_max_filesize  = $(plak_site_ini_get upload_max_filesize '(unset)')"
+        echo "   post_max_size        = $(plak_site_ini_get post_max_size '(unset)')"
+    else
+        echo "   (file missing — run 'plak install')"
+    fi
+
+    # 2) Plak web server (Caddyfile frankenphp block)
+    echo ""
+    echo "🌐 Plak web ($CADDYFILE_PATH, frankenphp block)"
+    if [ -f "$CADDYFILE_PATH" ]; then
+        local caddy_mem
+        caddy_mem=$(awk '/^[[:space:]]*php_ini[[:space:]]+memory_limit[[:space:]]+/ {print $3; exit}' "$CADDYFILE_PATH")
+        if [ -n "$caddy_mem" ]; then
+            echo "   memory_limit = $caddy_mem"
+        else
+            echo "   (no explicit memory_limit — inherits from ~/Plak/php.ini)"
+        fi
+    else
+        echo "   (Caddyfile missing)"
+    fi
+
+    # 3) PHPs on PATH (dedup by canonical binary path)
+    echo ""
+    echo "🔍 PHP binaries on PATH"
+    local seen_paths=""
+    local php_path found=false
+    while IFS= read -r php_path; do
+        [ -z "$php_path" ] && continue
+        local real_path
+        real_path=$(plak_site_memory_realpath "$php_path")
+        case ",$seen_paths," in *",$real_path,"*) continue ;; esac
+        seen_paths="$seen_paths,$real_path"
+
+        local php_ver php_ini php_mem
+        php_ver=$(plak_site_memory_php_probe "$php_path" 'echo PHP_VERSION;')
+        php_ini=$(plak_site_memory_ini_for "$php_path")
+        php_mem=$(plak_site_memory_php_probe "$php_path" 'echo ini_get("memory_limit");')
+
+        echo "   • $php_path"
+        echo "       version       = ${php_ver:-unknown}"
+        echo "       php.ini       = ${php_ini:-<none>}"
+        echo "       memory_limit  = ${php_mem:-unknown}"
+        found=true
+    done < <(which -a php 2>/dev/null)
+    if ! $found; then
+        echo "   (no 'php' binary on PATH)"
+    fi
+
+    # 4) wp-cli's effective memory_limit (uses whichever php its shebang resolves)
+    echo ""
+    echo "🧰 wp-cli"
+    local wp_bin
+    wp_bin=$(command -v wp 2>/dev/null)
+    if [ -n "$wp_bin" ]; then
+        local wp_info wp_php wp_ver wp_mem
+        wp_info=$(env -u PHPRC "$wp_bin" cli info 2>/dev/null)
+        wp_php=$(echo "$wp_info" | awk -F':\t' '/^PHP binary:/ {sub(/^[[:space:]]+/,"",$2); print $2; exit}')
+        wp_ver=$(echo "$wp_info" | awk -F':\t' '/^PHP version:/ {sub(/^[[:space:]]+/,"",$2); print $2; exit}')
+        if [ -n "$wp_php" ] && [ -x "$wp_php" ]; then
+            wp_mem=$(plak_site_memory_php_probe "$wp_php" 'echo ini_get("memory_limit");')
+        fi
+        echo "   wp             = $wp_bin"
+        echo "   php binary     = ${wp_php:-unknown}"
+        echo "   php version    = ${wp_ver:-unknown}"
+        echo "   memory_limit   = ${wp_mem:-unknown}"
+    else
+        echo "   (wp-cli not found on PATH)"
+    fi
+
+    echo ""
+    gum style --faint "To raise the limit everywhere: plak memory set 2G"
+}
+
+plak_site_memory_set() {
+    local value="$1"
+    local auto_yes="${2:-false}"
+
+    if [ -z "$value" ]; then
+        gum style --foreground red "❌ Missing value. Usage: plak memory set <value> (e.g. 2G)"
+        exit 1
+    fi
+
+    # Non-interactive callers have no TTY; gum confirm aborts there. Auto-yes
+    # so scripted fleet updates can bump every writable ini without hanging.
+    [ -t 0 ] || auto_yes=true
+    if [ "$value" != "-1" ] && [[ ! "$value" =~ ^[0-9]+[KMG]?$ ]]; then
+        gum style --foreground red "❌ Invalid value '$value'. Use e.g. 512M, 2G, or -1 for unlimited."
+        exit 1
+    fi
+
+    echo ""
+    gum style --foreground "212" --bold "Setting memory_limit = $value"
+    echo ""
+
+    # 1) Plak CLI ini — source of truth for Plak
+    mkdir -p "$(dirname "$PHP_INI_FILE")"
+    touch "$PHP_INI_FILE"
+    echo "📁 Updating $PHP_INI_FILE"
+    local k
+    for k in memory_limit upload_max_filesize post_max_size; do
+        if grep -qE "^[[:space:]]*${k}[[:space:]]*=" "$PHP_INI_FILE"; then
+            sed -i.bak -E "s|^[[:space:]]*${k}[[:space:]]*=.*|${k} = ${value}|" "$PHP_INI_FILE"
+        else
+            echo "${k} = ${value}" >> "$PHP_INI_FILE"
+        fi
+        echo "   ✓ ${k} = ${value}"
+    done
+    rm -f "${PHP_INI_FILE}.bak"
+
+    # 2) Regenerate Caddyfile so FrankenPHP web server picks up the new values
+    echo ""
+    regenerate_caddyfile
+
+    # 3) External PHP inis (Homebrew, distro-packaged) — opt-in per file.
+    # Reads 'which -a php' on fd 3 so gum confirm inside the loop body can
+    # read from the real stdin without swallowing the remaining PHP paths.
+    echo ""
+    echo "🔍 Scanning Homebrew / system PHP inis on PATH…"
+    local seen_paths="" seen_inis=""
+    local php_path
+    while IFS= read -r php_path <&3; do
+        [ -z "$php_path" ] && continue
+        local real_path
+        real_path=$(plak_site_memory_realpath "$php_path")
+        case ",$seen_paths," in *",$real_path,"*) continue ;; esac
+        seen_paths="$seen_paths,$real_path"
+
+        local ini
+        ini=$(plak_site_memory_ini_for "$php_path")
+        [ -z "$ini" ] && continue
+        # Skip Plak's ini (already handled) and duplicates
+        [ "$(plak_site_memory_realpath "$ini")" = "$(plak_site_memory_realpath "$PHP_INI_FILE")" ] && continue
+        case ",$seen_inis," in *",$ini,"*) continue ;; esac
+        seen_inis="$seen_inis,$ini"
+
+        local current
+        current=$(grep -E "^[[:space:]]*memory_limit[[:space:]]*=" "$ini" 2>/dev/null \
+            | tail -1 \
+            | sed -E 's|^[[:space:]]*memory_limit[[:space:]]*=[[:space:]]*||' \
+            | tr -d ' "')
+        echo ""
+        echo "   • $ini (current: ${current:-unset})"
+
+        if ! [ -w "$ini" ]; then
+            gum style --faint "     (not writable by this user — skipping. Run: sudo sed -i.bak -E 's|^[[:space:]]*memory_limit[[:space:]]*=.*|memory_limit = ${value}|' \"$ini\")"
+            continue
+        fi
+
+        local do_update=false
+        if [ "$auto_yes" = true ]; then
+            do_update=true
+        elif gum confirm "     Update this ini's memory_limit to ${value}?"; then
+            do_update=true
+        fi
+
+        if $do_update; then
+            if grep -qE "^[[:space:]]*memory_limit[[:space:]]*=" "$ini"; then
+                sed -i.bak -E "s|^[[:space:]]*memory_limit[[:space:]]*=.*|memory_limit = ${value}|" "$ini"
+            else
+                echo "memory_limit = ${value}" >> "$ini"
+            fi
+            rm -f "${ini}.bak"
+            gum style --foreground green "     ✓ Updated"
+        else
+            gum style --faint "     (skipped)"
+        fi
+    done 3< <(which -a php 2>/dev/null)
+
+    echo ""
+    gum style --foreground green "✅ Done. Run 'plak memory' to verify."
+}
+
+# Source: commands/site/path
+plak_site_path() {
+    local site_name="$1"
+
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: A site name is required."
+        echo "Usage: plak path <name>"
+        exit 1
+    fi
+
+    local site_dir="$SITES_DIR/$site_name.localhost/public"
+
+    if [ ! -d "$site_dir" ]; then
+        gum style --foreground red "❌ Error: Site '$site_name.localhost' not found."
+        exit 1
+    fi
+
+    echo "$site_dir"
+}
+
+# Source: commands/site/ports
+plak_site_ports() {
+    # -----------------------------------------------------------------
+    #  plak ports
+    #  Reconfigure the HTTP / HTTPS ports Plak listens on and (by
+    #  default) migrate every WordPress site's stored URLs via
+    #  wp search-replace so they match the new port.
+    #
+    #  Flags:
+    #    --http PORT     Non-interactive: set HTTP port
+    #    --https PORT    Non-interactive: set HTTPS port
+    #    --skip-urls     Change ports without touching WordPress databases
+    #    --dry-run       Preview changes (including search-replace counts)
+    #                    without committing anything
+    # -----------------------------------------------------------------
+
+    local explicit_http=""
+    local explicit_https=""
+    local skip_urls=false
+    local dry_run=false
+    local auto_yes=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --http)
+                explicit_http="$2"
+                shift 2
+                ;;
+            --https)
+                explicit_https="$2"
+                shift 2
+                ;;
+            --skip-urls)
+                skip_urls=true
+                shift
+                ;;
+            --dry-run)
+                dry_run=true
+                shift
+                ;;
+            --yes|-y|--force)
+                auto_yes=true
+                shift
+                ;;
+            -h|--help)
+                display_command_help ports
+                exit 0
+                ;;
+            *)
+                gum style --foreground red "❌ Unknown option: $1"
+                echo "Usage: plak ports [--http PORT] [--https PORT] [--skip-urls] [--dry-run] [--yes]"
+                exit 1
+                ;;
+        esac
+    done
+
+    # Non-interactive shells (PHP shell_exec, ssh piped stdin, systemd) have
+    # no TTY; gum confirm aborts there with "could not open a new TTY". Auto-
+    # promote to --yes so the caller's flags are respected.
+    if [ ! -t 0 ]; then
+        auto_yes=true
+    fi
+
+    local original_http="$HTTP_PORT"
+    local original_https="$HTTPS_PORT"
+
+    # --- Determine target ports ---
+    if [ -n "$explicit_http" ] || [ -n "$explicit_https" ]; then
+        # Non-interactive path — validate and apply.
+        local target_http="${explicit_http:-$HTTP_PORT}"
+        local target_https="${explicit_https:-$HTTPS_PORT}"
+
+        if [[ ! "$target_http" =~ ^[0-9]+$ ]] || [ "$target_http" -lt 1 ] || [ "$target_http" -gt 65535 ]; then
+            gum style --foreground red "❌ Invalid HTTP port: $target_http"
+            exit 1
+        fi
+        if [[ ! "$target_https" =~ ^[0-9]+$ ]] || [ "$target_https" -lt 1 ] || [ "$target_https" -gt 65535 ]; then
+            gum style --foreground red "❌ Invalid HTTPS port: $target_https"
+            exit 1
+        fi
+        if [ "$target_http" = "$target_https" ]; then
+            gum style --foreground red "❌ HTTP and HTTPS ports must differ."
+            exit 1
+        fi
+
+        HTTP_PORT="$target_http"
+        HTTPS_PORT="$target_https"
+    else
+        # Interactive menu
+        echo ""
+        gum style --foreground "212" \
+            "Plak is currently on ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}"
+        echo ""
+
+        local default_label="Switch to default ports (80 / 443)"
+        if [ "$HTTP_PORT" != "80" ] || [ "$HTTPS_PORT" != "443" ]; then
+            if port_has_conflict 80 || port_has_conflict 443; then
+                default_label="Switch to default ports (80 / 443) — currently in use"
+            fi
+        fi
+
+        local alt_label="Use alternative ports (8090 / 8453)"
+        if [ "$HTTP_PORT" = "8090" ] && [ "$HTTPS_PORT" = "8453" ]; then
+            alt_label=""
+        elif port_has_conflict 8090 || port_has_conflict 8453; then
+            alt_label="Use alternative ports (8090 / 8453) — currently in use"
+        fi
+
+        local -a menu_opts
+        menu_opts=("Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})")
+        if [ "$HTTP_PORT" != "80" ] || [ "$HTTPS_PORT" != "443" ]; then
+            menu_opts+=("$default_label")
+        fi
+        if [ -n "$alt_label" ]; then
+            menu_opts+=("$alt_label")
+        fi
+        menu_opts+=("Pick custom ports" "Cancel")
+
+        local choice
+        choice=$(gum choose "${menu_opts[@]}")
+
+        case "$choice" in
+            "Keep current"*)
+                echo "ℹ️  No changes."
+                exit 0
+                ;;
+            "Switch to default"*)
+                HTTP_PORT=80
+                HTTPS_PORT=443
+                ;;
+            "Use alternative"*)
+                HTTP_PORT=8090
+                HTTPS_PORT=8453
+                ;;
+            "Pick custom ports")
+                prompt_custom_ports 8090 8453
+                ;;
+            "Cancel"|*)
+                echo "🚫 Cancelled."
+                exit 0
+                ;;
+        esac
+    fi
+
+    # --- Check if anything actually changed ---
+    if [ "$original_http" = "$HTTP_PORT" ] && [ "$original_https" = "$HTTPS_PORT" ]; then
+        echo "ℹ️  Ports unchanged."
+        exit 0
+    fi
+
+    # --- Preview ---
+    echo ""
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "Port change:" \
+        "  HTTP:  ${original_http} → ${HTTP_PORT}" \
+        "  HTTPS: ${original_https} → ${HTTPS_PORT}"
+
+    if ! $skip_urls && [ "$original_https" != "$HTTPS_PORT" ]; then
+        echo ""
+        local any_wp=false
+        if [ -d "$SITES_DIR" ]; then
+            local site_path site_name
+            for site_path in "$SITES_DIR"/*; do
+                [ -d "$site_path" ] || continue
+                [ -f "$site_path/public/wp-config.php" ] || continue
+                if ! $any_wp; then
+                    echo "The following WordPress sites will have stored URLs updated:"
+                    any_wp=true
+                fi
+                site_name=$(basename "$site_path")
+                echo "   • ${site_name}: $(port_url_for "$site_name" "$original_https") → $(port_url_for "$site_name" "$HTTPS_PORT")"
+            done
+        fi
+        if ! $any_wp; then
+            echo "(No WordPress sites to update.)"
+        fi
+    elif $skip_urls; then
+        echo ""
+        gum style --faint "(--skip-urls: WordPress databases will NOT be updated)"
+    fi
+
+    # --- Dry run exits here ---
+    if $dry_run; then
+        echo ""
+        echo "🔍 Dry run: running wp search-replace --dry-run..."
+        echo ""
+        if ! $skip_urls; then
+            update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT" --dry-run
+        fi
+        # Revert globals so nothing leaks to the caller
+        HTTP_PORT="$original_http"
+        HTTPS_PORT="$original_https"
+        echo ""
+        gum style --faint "Dry run complete. No changes committed."
+        exit 0
+    fi
+
+    # --- Confirm ---
+    echo ""
+    if [ "$auto_yes" = false ]; then
+        if ! gum confirm "Proceed with the port change?"; then
+            # Revert globals so nothing leaks to the caller
+            HTTP_PORT="$original_http"
+            HTTPS_PORT="$original_https"
+            echo "🚫 Cancelled."
+            exit 0
+        fi
+    fi
+
+    # --- Commit ---
+    echo ""
+    echo "💾 Saving port configuration..."
+    config_set HTTP_PORT "$HTTP_PORT"
+    config_set HTTPS_PORT "$HTTPS_PORT"
+
+    if ! $skip_urls && [ "$original_https" != "$HTTPS_PORT" ]; then
+        echo ""
+        echo "🔄 Updating WordPress site URLs..."
+        update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"
+    fi
+
+    echo ""
+    regenerate_caddyfile
+
+    echo ""
+    plak_site_enable
+
+    echo ""
+    gum style --foreground green "✅ Plak is now on ports ${HTTP_PORT} / ${HTTPS_PORT}"
+    if [ "$HTTPS_PORT" != "443" ]; then
+        gum style --faint "   Dashboard: $(url_for plak.localhost)"
+    fi
+}
+
+# Source: commands/site/proxy
+# --- Proxy Storage Directory ---
+PROXY_DIR="$APP_DIR/proxies"
+
+# --- Helper to get LAN IP (may already exist in main, but define here for safety) ---
+get_lan_ip() {
+    if [ "$OS" == "macos" ]; then
+        ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "127.0.0.1"
+    else
+        hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1"
+    fi
+}
+
+plak_site_proxy_add() {
+    local name=""
+    local domain=""
+    local target=""
+    local tls_mode="internal"
+    local force=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-tls)
+                tls_mode="none"
+                shift
+                ;;
+            --force|--yes|-y)
+                force=true
+                shift
+                ;;
+            *)
+                if [ -z "$name" ]; then
+                    name="$1"
+                elif [ -z "$domain" ]; then
+                    domain="$1"
+                elif [ -z "$target" ]; then
+                    target="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Without a TTY, gum confirm can't prompt — treat as --force so scripted
+    # callers (dashboard, CI) can overwrite safely.
+    [ -t 0 ] || force=true
+
+    # Interactive mode if arguments not provided
+    if [ -z "$name" ]; then
+        echo "📝 Adding a new reverse proxy entry..."
+        name=$(gum input --width 0 --placeholder "Proxy name (e.g., opencode)")
+    fi
+
+    if [ -z "$name" ]; then
+        gum style --foreground red "❌ Error: Proxy name is required."
+        exit 1
+    fi
+
+    # Validate name (alphanumeric and hyphens only)
+    if ! [[ "$name" =~ ^[a-zA-Z0-9-]+$ ]]; then
+        gum style --foreground red "❌ Error: Proxy name must contain only letters, numbers, and hyphens."
+        exit 1
+    fi
+
+    local proxy_file="$PROXY_DIR/$name"
+
+    # Check if proxy already exists
+    if [ -f "$proxy_file" ] && ! $force; then
+        if ! gum confirm "⚠️ Proxy '$name' already exists. Overwrite?"; then
+            echo "🚫 Cancelled."
+            exit 0
+        fi
+    fi
+
+    if [ -z "$domain" ]; then
+        domain=$(gum input --width 0 --placeholder "Domain to listen on (e.g., myhost.tailnet.ts.net)")
+    fi
+
+    if [ -z "$domain" ]; then
+        gum style --foreground red "❌ Error: Domain is required."
+        exit 1
+    fi
+
+    if [ -z "$target" ]; then
+        target=$(gum input --width 0 --placeholder "Target to proxy to (e.g., 127.0.0.1:4096)")
+    fi
+
+    if [ -z "$target" ]; then
+        gum style --foreground red "❌ Error: Target is required."
+        exit 1
+    fi
+
+    # Create proxy directory if it doesn't exist
+    mkdir -p "$PROXY_DIR"
+
+    # Save the proxy configuration
+    cat > "$proxy_file" << EOF
+domain=$domain
+target=$target
+tls=$tls_mode
+EOF
+
+    echo "✅ Proxy '$name' created:"
+    echo "   Domain: $domain"
+    echo "   Target: $target"
+    echo "   TLS: $tls_mode"
+
+    regenerate_caddyfile
+}
+
+plak_site_proxy_list() {
+    echo "🔎 Listing all reverse proxy entries..."
+    echo ""
+
+    if [ ! -d "$PROXY_DIR" ] || [ -z "$(ls -A "$PROXY_DIR" 2>/dev/null)" ]; then
+        gum style --foreground "yellow" "ℹ️ No proxy entries found."
+        echo ""
+        echo "Add one with: plak proxy add <name> <domain> <target>"
+        exit 0
+    fi
+
+    # Print header
+    printf "%-15s %-40s %-25s %-10s\n" "NAME" "DOMAIN" "TARGET" "TLS"
+    printf "%-15s %-40s %-25s %-10s\n" "----" "------" "------" "---"
+
+    for proxy_file in "$PROXY_DIR"/*; do
+        if [ -f "$proxy_file" ]; then
+            local name
+            name=$(basename "$proxy_file")
+            
+            local domain=""
+            local target=""
+            local tls="internal"
+
+            # Read the config file
+            while IFS='=' read -r key value; do
+                case "$key" in
+                    domain) domain="$value" ;;
+                    target) target="$value" ;;
+                    tls) tls="$value" ;;
+                esac
+            done < "$proxy_file"
+
+            printf "%-15s %-40s %-25s %-10s\n" "$name" "$domain" "$target" "$tls"
+        fi
+    done
+}
+
+plak_site_proxy_delete() {
+    local name=""
+    local force=false
+    for arg in "$@"; do
+        case "$arg" in
+            --force|--yes|-y) force=true ;;
+            -*)
+                gum style --foreground red "❌ Unknown option: $arg"
+                echo "Usage: plak proxy delete <name> [--force]"
+                exit 1
+                ;;
+            *) [ -z "$name" ] && name="$arg" ;;
+        esac
+    done
+
+    if [ -z "$name" ]; then
+        # Interactive mode - let user select from existing proxies
+        if [ ! -d "$PROXY_DIR" ] || [ -z "$(ls -A "$PROXY_DIR" 2>/dev/null)" ]; then
+            gum style --foreground "yellow" "ℹ️ No proxy entries to delete."
+            exit 0
+        fi
+
+        echo "🗑️ Select a proxy to delete:"
+        name=$(ls "$PROXY_DIR" | gum choose)
+
+        if [ -z "$name" ]; then
+            echo "🚫 Cancelled."
+            exit 0
+        fi
+    fi
+
+    local proxy_file="$PROXY_DIR/$name"
+
+    if [ ! -f "$proxy_file" ]; then
+        gum style --foreground red "❌ Error: Proxy '$name' not found."
+        exit 1
+    fi
+
+    # Show what will be deleted
+    echo "Proxy '$name' configuration:"
+    cat "$proxy_file"
+    echo ""
+
+    # Non-interactive callers have no TTY; auto-force so scripted deletes work.
+    [ -t 0 ] || force=true
+
+    if ! $force; then
+        if ! gum confirm "🚨 Are you sure you want to delete proxy '$name'?"; then
+            echo "🚫 Deletion cancelled."
+            return 0
+        fi
+    fi
+    rm "$proxy_file"
+    echo "✅ Proxy '$name' deleted."
+    regenerate_caddyfile
+}
+
+plak_site_proxy() {
+    local action="$1"
+    shift 2>/dev/null || true
+
+    case "$action" in
+        add)
+            plak_site_proxy_add "$@"
+            ;;
+        list|ls)
+            plak_site_proxy_list
+            ;;
+        delete|rm)
+            plak_site_proxy_delete "$@"
+            ;;
+        *)
+            echo "Usage: plak proxy <subcommand>"
+            echo ""
+            echo "Manage standalone reverse proxy entries in the Caddyfile."
+            echo "These are top-level server blocks, useful for exposing local services"
+            echo "via Tailscale or other external domains."
+            echo ""
+            echo "Subcommands:"
+            echo "  add <name> <domain> <target>   Add a new reverse proxy entry"
+            echo "  list                           List all proxy entries"
+            echo "  delete <name>                  Delete a proxy entry"
+            echo ""
+            echo "Flags:"
+            echo "  --no-tls   Disable TLS for this proxy (add only)"
+            echo "  --force    Skip confirmation prompts (add overwrite, delete)"
+            echo ""
+            echo "Examples:"
+            echo "  plak proxy add opencode myhost.tailnet.ts.net 127.0.0.1:4096"
+            echo "  plak proxy add api api.example.com localhost:3000 --no-tls"
+            echo "  plak proxy add api api.example.com localhost:3000 --force"
+            echo "  plak proxy list"
+            echo "  plak proxy delete opencode --force"
+            exit 0
+            ;;
+    esac
+}
+
+# Source: commands/site/pull
+plak_site_pull() {
+    # --- UI/Logging Functions ---
+    log_step() { 
+        echo ""
+        gum style --bold --foreground "yellow" "➡️  $1"
+    }
+    log_success() { 
+        gum style --foreground "green" "✅ $1" 
+    }
+    log_error() {
+        gum style --foreground "red" "❌ ERROR: $1" >&2
+        exit 1
+    }
+
+    # --- Argument Parsing ---
+    local proxy_uploads=false
+    for arg in "$@"; do
+        if [ "$arg" == "--proxy-uploads" ]; then
+            proxy_uploads=true
+            break
+        fi
+    done
+
+    # Define quiet SSH options to prevent host key warnings. ControlMaster
+    # shares a single authenticated connection across every ssh call below
+    # so the user enters their password (or unlocks their key) once — the
+    # validate, backup, and cleanup steps all piggyback on the first
+    # connection instead of re-prompting. The socket lives in a per-run
+    # path so parallel plak pull invocations don't collide.
+    local ssh_ctl
+    ssh_ctl=$(mktemp -u "${TMPDIR:-/tmp}/plak-ssh-XXXXXXXX")
+    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ControlMaster=auto -o ControlPath=$ssh_ctl -o ControlPersist=5m"
+    # Remove the socket on any exit path (success, failure, Ctrl-C). Any
+    # orphaned master process times out on its own via ControlPersist.
+    # shellcheck disable=SC2064 # we want $ssh_ctl expanded at trap-set time
+    trap "rm -f '$ssh_ctl'" EXIT
+
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pulling a remote WordPress site into Plak."
+    # --- 1. Gather Remote Info ---
+    log_step "Enter remote server details"
+    local remote_ssh
+    remote_ssh=$(gum input --width 0 --placeholder "user@host.com -p 2222" --prompt "SSH Connection: ")
+    if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+    # Trim the "ssh " prefix if the user includes it.
+    remote_ssh="${remote_ssh##ssh }"
+
+    local remote_path
+    remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
+    if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+    local remote_path_q
+    remote_path_q=$(shell_quote "$remote_path")
+
+    # --- 2. Validate Remote Site ---
+    log_step "Validating remote WordPress site..."
+    local remote_url
+    remote_url=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home 2>/dev/null")
+    domain=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//')
+    
+    if [ -z "$remote_url" ] || [[ ! "$remote_url" == http* ]]; then
+        log_error "Could not find a valid WordPress site at the specified path. Check your connection details and path."
+    fi
+    log_success "Found WordPress site: $remote_url"
+
+    # --- 3. Choose Destination ---
+    log_step "Choose a destination for the pulled site"
+    
+    local wp_sites=()
+    for site_dir in "$SITES_DIR"/*.localhost; do
+        if [ -f "$site_dir/public/wp-config.php" ]; then
+            wp_sites+=("$(basename "$site_dir" .localhost)")
+        fi
+    done
+    
+    local destination_choice
+    destination_choice=$(gum choose "New Site" "${wp_sites[@]}")
+
+    local site_name
+    local dest_path
+    local local_url
+    local db_name
+
+    if [ "$destination_choice" == "New Site" ]; then
+        local proposed_name
+        proposed_name=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//; s/\./-/g')
+        site_name=$(gum input --width 0 --value "$proposed_name" --prompt "Enter a name for the new local site: ")
+        if [ -z "$site_name" ]; then log_error "Site name cannot be empty."; fi
+
+        log_step "Creating new placeholder site: ${site_name}.localhost"
+        "$PLAK_SITE_CMD" add "$site_name"
+        if [ $? -ne 0 ]; then log_error "Failed to create placeholder site. Does it already exist?"; fi
+        
+    else
+        site_name="$destination_choice"
+        if ! gum confirm "Are you sure you want to overwrite '${site_name}'? All its files and database content will be replaced."; then
+            echo "🚫 Pull cancelled."
+            exit 0
+        fi
+        
+        log_step "Preparing to overwrite existing site: ${site_name}.localhost"
+        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
+    fi
+
+    dest_path="$SITES_DIR/$site_name.localhost/public"
+    local_url="$(url_for "$site_name.localhost")"
+
+    # --- 4. Perform Migration ---
+    log_step "Generating backup for ${remote_url}..."
+    local backup_extra_args=""
+    if [ "$proxy_uploads" = true ]; then
+        log_success "Uploads will be excluded from the backup and proxied instead."
+        backup_extra_args="--exclude=\"wp-content/uploads\""
+    fi
+
+    local backup_url
+    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://captaincore.io/do | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
+
+    if [[ -z "$backup_url" || ! "$backup_url" == *.zip ]]; then
+        log_error "Failed to generate backup or received an invalid backup URL."
+    fi
+    log_success "Backup created: ${backup_url}"
+
+    log_step "Restoring backup to ${site_name}.localhost..."
+    # Execute the migration script directly instead of using a variable with a pipe
+    if ! (cd "$dest_path" && curl -sL https://captaincore.io/do | bash -s -- migrate --url="$backup_url" --update-urls); then
+        log_error "The migration script failed to execute correctly."
+    fi
+    log_success "Restore complete."
+
+    # --- 5. Post-Migration Configuration ---
+    log_step "Configuring local site..."
+    source_config
+    inject_mu_plugin "$dest_path"
+
+    # --- 6. Add Proxy Directive if Flag is Set ---
+    if [ "$proxy_uploads" = true ]; then
+        log_step "Adding upload proxy directive..."
+        local new_directive
+        # Use a heredoc to create the multi-line directive string
+        read -r -d '' new_directive << EOM
+@local_upload {
+    path /wp-content/uploads/*
+    file {path}
+}
+handle @local_upload {
+    # If the file exists, serve it and stop processing.
+    file_server
+}
+
+handle /wp-content/uploads/* {
+    # Proxy the request to the live site.
+    reverse_proxy ${remote_url} {
+        header_up Host ${domain}
+        flush_interval -1
+    }
+}
+EOM
+        # Pipe the new directive into the add command
+        echo "$new_directive" | "$PLAK_SITE_CMD" directive add "$site_name"
+        log_success "Upload proxy directive added."
+    fi
+
+    # --- 7. Cleanup ---
+    log_step "Cleaning up remote backup file..."
+    local filename="${backup_url##*/}"
+    local remote_backup_q
+    remote_backup_q=$(shell_quote "$remote_path/$filename")
+    ssh $ssh_opts $remote_ssh "rm -f $remote_backup_q" 2>/dev/null
+    log_success "Cleanup complete."
+ 
+    # --- 8. Finalize ---
+    regenerate_caddyfile
+    
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site is ready." "URL: ${local_url}"
+}
+# Source: commands/site/push
+plak_site_push() {
+    # --- UI/Logging Functions ---
+    log_step() { 
+        echo ""
+        gum style --bold --foreground "yellow" "➡️  $1"
+    }
+    log_success() { 
+        gum style --foreground "green" "✅ $1" 
+    }
+    log_error() {
+        gum style --foreground "red" "❌ ERROR: $1" 
+        >&2
+        exit 1
+    }
+
+    # Define quiet SSH options to prevent host key warnings. ControlMaster
+    # shares a single authenticated connection across every ssh call below
+    # (validate, upload backup, restore, cleanup) so the user enters their
+    # password or unlocks their key once instead of four times.
+    local ssh_ctl
+    ssh_ctl=$(mktemp -u "${TMPDIR:-/tmp}/plak-ssh-XXXXXXXX")
+    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ControlMaster=auto -o ControlPath=$ssh_ctl -o ControlPersist=5m"
+    # shellcheck disable=SC2064 # we want $ssh_ctl expanded at trap-set time
+    trap "rm -f '$ssh_ctl'" EXIT
+
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pushing a local Plak site to a remote server."
+
+    # --- 1. Choose Local Site ---
+    log_step "Choose a local site to push"
+    local wp_sites=()
+    for site_dir in "$SITES_DIR"/*.localhost; do
+        if [ -f "$site_dir/public/wp-config.php" ]; then
+            wp_sites+=("$(basename "$site_dir" .localhost)")
+        fi
+    done
+
+    if [ ${#wp_sites[@]} -eq 0 ]; then
+        log_error "No local WordPress sites found to push."
+    fi
+
+    local site_name
+    site_name=$(gum choose "${wp_sites[@]}")
+    if [ -z "$site_name" ]; then log_error "No site selected."; fi
+
+    local local_path="$SITES_DIR/$site_name.localhost/public"
+    
+    # --- 2. Gather Remote Info ---
+    log_step "Enter remote server details"
+    local remote_ssh
+    remote_ssh=$(gum input --width 0 --placeholder "user@host.com -p 2222" --prompt "SSH Connection: ")
+    if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+    # Trim the "ssh " prefix if the user includes it.
+    remote_ssh="${remote_ssh##ssh }"
+
+    local remote_path
+    remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")
+    if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+    local remote_path_q
+    remote_path_q=$(shell_quote "$remote_path")
+
+    # --- 3. Validate Remote Site ---
+    log_step "Validating remote WordPress site..."
+    local remote_url
+    remote_url=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home 2>/dev/null")
+    
+    if [ -z "$remote_url" ] || [[ ! "$remote_url" == http* ]]; then
+        log_error "Could not find a valid WordPress site at the specified path. Check your connection details and path."
+    fi
+    log_success "Found remote site to overwrite: $remote_url"
+
+    # --- 4. Confirmation ---
+    if ! gum confirm "🚨 Are you sure you want to push '${site_name}' to '${remote_url}'? This will completely overwrite the remote site's files and database."; then
+        echo "🚫 Push cancelled."
+        exit 0
+    fi
+
+    # --- 5. Perform Local Backup ---
+    log_step "Generating local backup for ${site_name}..."
+    local backup_filename
+    backup_filename=$( (cd "$local_path" && curl -sL https://captaincore.io/do | bash -s -- backup . --quiet --format=filename) )
+    
+    if [[ ! -f "$backup_filename" || ! "$backup_filename" == *".zip" ]]; then
+        log_error "Failed to generate local backup. The captaincore script might have failed."
+    fi
+    
+    size=$(ls -lh "$backup_filename" | awk '{print $5}')
+    log_success "Local backup created: ${backup_filename} ($size)"
+
+    local backup_filename_q
+    backup_filename_q=$(shell_quote "$backup_filename")
+    local remote_backup_q
+    remote_backup_q=$(shell_quote "$remote_path/$backup_filename")
+
+    # --- 6. Upload Backup ---
+    log_step "Uploading backup to remote server..."
+    if ! cat "$backup_filename" | ssh $ssh_opts $remote_ssh "cat > $remote_backup_q"; then
+        # Clean up local backup on failure
+        rm -f "$backup_filename"
+        log_error "Failed to upload backup."
+    fi
+    log_success "Upload complete."
+
+    # --- 7. Remote Restore ---
+    log_step "Restoring backup on remote server..."
+    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://captaincore.io/do | bash -s -- migrate --url=$backup_filename_q --update-urls"; then
+        log_error "The remote migration script failed to execute correctly."
+    fi
+    log_success "Remote restore complete."
+
+    # --- 8. Cleanup ---
+    log_step "Cleaning up backup files..."
+    rm -f "$backup_filename"
+    ssh $ssh_opts $remote_ssh "rm -f $remote_backup_q"
+    log_success "Cleanup complete."
+
+    # --- 9. Finalize ---
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site has been pushed successfully." "Remote URL: ${remote_url}"
+}
+# Source: commands/site/reload
+plak_site_reload() {
+    # Auto-heal any root-owned state left over from a pre-1.10 install.
+    heal_plak_site_state_ownership
+    # Serialize reloads to keep Caddy's admin server healthy. The dashboard
+    # fires reload in the background after every site add/delete, so rapid
+    # actions can spawn many concurrent plak-reload processes; two concurrent
+    # frankenphp reload calls reliably deadlock Caddy's admin endpoint with
+    # a 10s shutdown timeout.
+    #
+    # Strategy: first caller holds the lock and does the work. Subsequent
+    # callers touch a "pending" marker and exit immediately. When the holder
+    # finishes it re-runs once if the marker is set, so the final state
+    # converges on the latest on-disk Sites listing.
+    #
+    # Implementation note: we use a single lock *file* (not a dir) opened with
+    # set -C (noclobber) so the pid is written atomically with the lock's
+    # creation. Earlier mkdir + echo > pid left a TOCTOU window where a
+    # competing reload could read an empty pid, decide the holder was dead,
+    # and stomp the lock — letting 3+ reloads run and race create_gui_file's
+    # .tmp files.
+    local lock_file="$PLAK_SITE_DIR/.reload.lock"
+    local pending="$PLAK_SITE_DIR/.reload.pending"
+
+    acquire_reload_lock() {
+        (set -C; echo "$$" > "$lock_file") 2>/dev/null
+    }
+
+    if ! acquire_reload_lock; then
+        local holder_pid
+        holder_pid=$(cat "$lock_file" 2>/dev/null)
+        if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
+            # A real holder is running — leave a breadcrumb and bail.
+            touch "$pending" 2>/dev/null || true
+            return 0
+        fi
+        # Stale (holder died, or was a pre-1.10 root-owned file). Reclaim,
+        # falling back to sudo in case ownership blocks us.
+        rm -f "$lock_file" 2>/dev/null || $SUDO_CMD -n rm -f "$lock_file" 2>/dev/null || true
+        if ! acquire_reload_lock; then
+            # Lost the race to another reclaimer — they've got it.
+            touch "$pending" 2>/dev/null || true
+            return 0
+        fi
+    fi
+
+    # Trap for abnormal exits (Ctrl-C, signals). The happy-path cleanup
+    # happens at the function end since the trap was observed not firing
+    # reliably when plak_site_reload is invoked via shell_exec(…&) from PHP.
+    trap 'rm -f "$lock_file" 2>/dev/null; trap - EXIT INT TERM' EXIT INT TERM
+
+    while :; do
+        rm -f "$pending"
+        create_gui_file
+        regenerate_caddyfile
+        update_etc_hosts
+        [ -f "$pending" ] || break
+    done
+
+    # Explicit unlock — belt-and-suspenders with the trap.
+    rm -f "$lock_file" 2>/dev/null
+    trap - EXIT INT TERM
+}
+
+# Source: commands/site/rename
+plak_site_rename() {
+    local old_name="$1"
+    local new_name="$2"
+
+    # --- Validation ---
+    if [ -z "$old_name" ] || [ -z "$new_name" ]; then
+        gum style --foreground red "❌ Error: Both old and new site names are required."
+        echo "Usage: plak rename <old-name> <new-name>"
+        exit 1
+    fi
+
+    if [ "$old_name" == "$new_name" ]; then
+         gum style --foreground red "❌ Error: The new name must be different from the old name."
+         exit 1
+    fi
+
+    local old_site_dir="$SITES_DIR/$old_name.localhost"
+    if [ ! -d "$old_site_dir" ]; then
+        gum style --foreground red "❌ Error: Site '$old_name.localhost' not found."
+        exit 1
+    fi
+
+    # Validate the new_name using the same rules as the 'add' command
+    if [[ "$new_name" =~ [^a-z0-9-] ]]; then
+        gum style --foreground red "❌ Error: Invalid new site name '$new_name'." "Site names can only contain lowercase letters, numbers, and hyphens."
+        exit 1
+    fi
+    if [[ "$new_name" == -* || "$new_name" == *- ]]; then
+        gum style --foreground red "❌ Error: Invalid new site name '$new_name'." "Site names cannot begin or end with a hyphen."
+        exit 1
+    fi
+    for protected_name in $PROTECTED_NAMES; do
+        if [ "$new_name" == "$protected_name" ]; then
+            gum style --foreground red "❌ Error: '$new_name' is a reserved name. Choose another."
+            exit 1
+        fi
+    done
+
+    local new_site_dir="$SITES_DIR/$new_name.localhost"
+    if [ -d "$new_site_dir" ]; then
+        gum style --foreground red "❌ Error: A site named '$new_name.localhost' already exists."
+        exit 1
+    fi
+
+    echo "🔄 Renaming '$old_name.localhost' to '$new_name.localhost'..."
+
+    # --- Rename Directory ---
+    mv "$old_site_dir" "$new_site_dir"
+    echo "   - Directory renamed."
+
+    # --- Handle WordPress Specifics ---
+    if [ -f "$new_site_dir/public/wp-config.php" ]; then
+        source_config
+        
+        # Get WP-CLI command (adds --allow-root if running as root)
+        local wp_cmd
+        wp_cmd=$(get_wp_cmd)
+        
+        local old_db_name
+        old_db_name=$(echo "plak_site_$old_name" | tr -c '[:alnum:]_' '_')
+        local new_db_name
+        new_db_name=$(echo "plak_site_$new_name" | tr -c '[:alnum:]_' '_')
+        local temp_sql_dump
+        temp_sql_dump=$(mktemp) || {
+            gum style --foreground red "❌ Error: Could not create a temporary file for the database dump."
+            mv "$new_site_dir" "$old_site_dir"
+            exit 1
+        }
+        trap 'rm -f "$temp_sql_dump"' EXIT
+
+        echo "   - Backing up old database '$old_db_name'..."
+        if ! mysqldump -u "$DB_USER" -p"$DB_PASSWORD" "$old_db_name" > "$temp_sql_dump"; then
+            gum style --foreground red "❌ Error: Failed to dump the old database. Aborting."
+            mv "$new_site_dir" "$old_site_dir" # Revert directory rename
+            exit 1
+        fi
+
+        echo "   - Creating and importing to new database '$new_db_name'..."
+        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$new_db_name\`;"
+        mysql -u "$DB_USER" -p"$DB_PASSWORD" "$new_db_name" < "$temp_sql_dump"
+
+        echo "   - Updating wp-config.php..."
+        (cd "$new_site_dir/public" && $wp_cmd config set DB_NAME "$new_db_name" --quiet)
+
+        echo "   - Running search-replace for site URL..."
+        (cd "$new_site_dir/public" && $wp_cmd search-replace "$(url_for "$old_name.localhost")" "$(url_for "$new_name.localhost")" --all-tables --skip-plugins --skip-themes --quiet)
+
+        echo "   - Dropping old database '$old_db_name'..."
+        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$old_db_name\`;"
+    fi
+
+    # --- Rename Custom Caddy Directives File ---
+    local old_custom_conf_file="$CUSTOM_CADDY_DIR/$old_name.localhost"
+    local new_custom_conf_file="$CUSTOM_CADDY_DIR/$new_name.localhost"
+    if [ -f "$old_custom_conf_file" ]; then
+        mv "$old_custom_conf_file" "$new_custom_conf_file"
+        echo "   - Custom Caddy directive file renamed."
+    fi
+
+    # --- Reload Server Configuration ---
+    regenerate_caddyfile
+
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Site renamed successfully!" "New URL: $(url_for "$new_name.localhost")"
+}
+# Source: commands/site/share
+# --- Share Command ---
+# Creates a temporary public tunnel to share a local site via Cloudflare Quick Tunnels
+# Requires cloudflared (installed on-demand if missing)
+
+SHARE_PROXY_PORT=19876
+
+plak_site_share() {
+    local site_name="$1"
+    
+    # --- 1. Validate Site ---
+    if [ -z "$site_name" ]; then
+        # Interactive mode: let user select a site
+        local all_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            if [ -d "$site_dir" ]; then
+                all_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
+        
+        if [ ${#all_sites[@]} -eq 0 ]; then
+            gum style --foreground red "Error: No sites found. Create one with 'plak add <name>'."
+            exit 1
+        fi
+        
+        echo "Select a site to share:"
+        site_name=$(gum choose "${all_sites[@]}")
+        
+        if [ -z "$site_name" ]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+    
+    # Normalize site name (remove .localhost suffix if present)
+    site_name="${site_name%.localhost}"
+    
+    local site_dir="$SITES_DIR/${site_name}.localhost"
+    
+    if [ ! -d "$site_dir" ]; then
+        gum style --foreground red "Error: Site '${site_name}.localhost' not found."
+        exit 1
+    fi
+    
+    local local_hostname="${site_name}.localhost"
+    
+    # --- 2. Check for cloudflared (install on-demand if missing) ---
+    if ! command -v cloudflared &> /dev/null; then
+        echo "cloudflared is required for plak share but is not installed."
+        echo ""
+        
+        local install_cmd=""
+        local install_name=""
+        
+        if command -v brew &> /dev/null; then
+            install_cmd="brew install cloudflared"
+            install_name="Homebrew"
+        elif command -v apt-get &> /dev/null; then
+            # Debian/Ubuntu - need to add Cloudflare's repo first
+            install_cmd="curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list && sudo apt-get update && sudo apt-get install -y cloudflared"
+            install_name="apt"
+        elif command -v dnf &> /dev/null; then
+            # Fedora/RHEL
+            install_cmd="curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo | sudo tee /etc/yum.repos.d/cloudflared.repo && sudo dnf install -y cloudflared"
+            install_name="dnf"
+        fi
+        
+        if [ -n "$install_cmd" ]; then
+            if gum confirm "Install cloudflared via ${install_name}?"; then
+                echo "Installing cloudflared..."
+                eval "$install_cmd"
+                if ! command -v cloudflared &> /dev/null; then
+                    gum style --foreground red "Error: Failed to install cloudflared."
+                    exit 1
+                fi
+                echo "cloudflared installed successfully."
+                echo ""
+            else
+                gum style --foreground red "Error: cloudflared is required."
+                exit 1
+            fi
+        else
+            gum style --foreground red "Error: cloudflared not found."
+            echo "Install it from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+            exit 1
+        fi
+    fi
+    
+    # --- 3. Check for Python (needed for the HTTP proxy) ---
+    local python_cmd=""
+    if command -v python3 &> /dev/null; then
+        python_cmd="python3"
+    elif command -v python &> /dev/null; then
+        python_cmd="python"
+    else
+        gum style --foreground red "Error: Python is required for plak share."
+        exit 1
+    fi
+    
+    # --- 4. Create temp files ---
+    local tunnel_output
+    tunnel_output=$(mktemp)
+    
+    # --- 5. Cleanup function ---
+    local cleanup_triggered=""
+    cleanup() {
+        cleanup_triggered=1
+        echo ""
+        echo "Stopping tunnel..."
+        # Kill processes and suppress job termination messages
+        if [ -n "$proxy_pid" ]; then
+            kill $proxy_pid 2>/dev/null
+            wait $proxy_pid 2>/dev/null
+        fi
+        if [ -n "$tunnel_pid" ]; then
+            kill $tunnel_pid 2>/dev/null
+            wait $tunnel_pid 2>/dev/null
+        fi
+        rm -f "$tunnel_output"
+        echo "Done."
+    }
+    trap cleanup EXIT
+    
+    # --- 6. Display initial message ---
+    echo ""
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "Starting public tunnel for ${site_name}" \
+        "" \
+        "Local: $(url_for "${local_hostname}")" \
+        "" \
+        "Press Ctrl+C to stop sharing."
+    echo ""
+    
+    echo "Starting Cloudflare tunnel..."
+    
+    # --- 7. Start cloudflared to get the public URL first ---
+    # Use --protocol http2 for better compatibility (QUIC can be blocked by firewalls)
+    cloudflared tunnel --url http://localhost:${SHARE_PROXY_PORT} \
+        --protocol http2 --no-autoupdate > "$tunnel_output" 2>&1 &
+    tunnel_pid=$!
+    
+    # Wait for the URL to appear in the output
+    local public_url=""
+    local attempts=0
+    local max_attempts=30
+    
+    while [ -z "$public_url" ] && [ $attempts -lt $max_attempts ]; do
+        sleep 1
+        ((attempts++))
+        
+        if ! kill -0 $tunnel_pid 2>/dev/null; then
+            gum style --foreground red "Error: Cloudflare tunnel failed to start."
+            cat "$tunnel_output"
+            exit 1
+        fi
+        
+        public_url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$tunnel_output" 2>/dev/null | head -1)
+    done
+    
+    if [ -z "$public_url" ]; then
+        gum style --foreground red "Error: Could not get public URL from Cloudflare"
+        cat "$tunnel_output"
+        exit 1
+    fi
+    
+    # Extract just the hostname from the URL
+    local public_host="${public_url#https://}"
+    
+    gum style --foreground 212 --bold "Public URL: $public_url"
+    echo ""
+    echo "Share this URL with anyone to give them access to your site."
+    echo ""
+    
+    # --- 8. Start Python HTTP proxy that rewrites URLs ---
+    echo "Starting local proxy with URL rewriting..."
+    
+    $python_cmd - "$local_hostname" "$SHARE_PROXY_PORT" "$public_host" "$HTTPS_PORT" << 'PYTHON_PROXY' &
+import sys
+import ssl
+import re
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.request import Request, urlopen
+
+TARGET_HOST = sys.argv[1]  # e.g., anchordev.localhost
+LISTEN_PORT = int(sys.argv[2])
+PUBLIC_HOST = sys.argv[3]  # e.g., random-words.trycloudflare.com
+HTTPS_PORT = int(sys.argv[4]) if len(sys.argv) > 4 else 443
+TARGET_AUTHORITY = TARGET_HOST if HTTPS_PORT == 443 else f"{TARGET_HOST}:{HTTPS_PORT}"
+
+# Create SSL context that doesn't verify certificates (for self-signed)
+ssl_ctx = ssl.create_default_context()
+ssl_ctx.check_hostname = False
+ssl_ctx.verify_mode = ssl.CERT_NONE
+
+# Content types that should have URL rewriting
+REWRITABLE_TYPES = ('text/html', 'text/css', 'application/javascript', 'application/json', 'text/javascript')
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    
+    def log_message(self, format, *args):
+        # Log requests in a nice format
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+        # Get client IP from CF-Connecting-IP (Cloudflare) or X-Forwarded-For
+        client_ip = self.headers.get('CF-Connecting-IP',
+                    self.headers.get('X-Forwarded-For', self.client_address[0]))
+        # If multiple IPs in X-Forwarded-For, take the first (original client)
+        if ',' in client_ip:
+            client_ip = client_ip.split(',')[0].strip()
+        # args[0] is typically "METHOD /path HTTP/1.1", args[1] is status code
+        if len(args) >= 2:
+            request_line = args[0]
+            status_code = args[1]
+            # Parse method and path from request line
+            parts = request_line.split(' ')
+            if len(parts) >= 2:
+                method = parts[0]
+                path = parts[1]
+                # Color code status
+                if str(status_code).startswith('2'):
+                    status_color = '\033[32m'  # Green
+                elif str(status_code).startswith('3'):
+                    status_color = '\033[33m'  # Yellow
+                elif str(status_code).startswith('4'):
+                    status_color = '\033[31m'  # Red
+                elif str(status_code).startswith('5'):
+                    status_color = '\033[35m'  # Magenta
+                else:
+                    status_color = '\033[0m'
+                reset = '\033[0m'
+                dim = '\033[2m'
+                print(f"{dim}{timestamp}{reset} {status_color}{status_code}{reset} {client_ip} {method} {path}", flush=True)
+                return
+        # Fallback for other log messages
+        print(format % args, flush=True)
+    
+    def do_request(self):
+        target_url = f"https://{TARGET_AUTHORITY}{self.path}"
+
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+
+        req = Request(target_url, data=body, method=self.command)
+
+        for key, value in self.headers.items():
+            if key.lower() not in ('host', 'connection', 'accept-encoding'):
+                req.add_header(key, value)
+        req.add_header('Host', TARGET_AUTHORITY)
+
+        try:
+            with urlopen(req, context=ssl_ctx, timeout=60) as response:
+                response_body = response.read()
+                content_type = response.headers.get('Content-Type', '')
+
+                # Rewrite URLs in text responses
+                if any(ct in content_type for ct in REWRITABLE_TYPES):
+                    try:
+                        text = response_body.decode('utf-8')
+                        # Replace https://site.localhost[:port] with https://public-url
+                        text = text.replace(f'https://{TARGET_AUTHORITY}', f'https://{PUBLIC_HOST}')
+                        text = text.replace(f'http://{TARGET_AUTHORITY}', f'https://{PUBLIC_HOST}')
+                        # Escaped versions (for JSON)
+                        text = text.replace(f'https:\\/\\/{TARGET_AUTHORITY}', f'https:\\/\\/{PUBLIC_HOST}')
+                        response_body = text.encode('utf-8')
+                    except:
+                        pass  # If decode fails, send original
+                
+                self.send_response(response.status)
+                for key, value in response.headers.items():
+                    if key.lower() not in ('transfer-encoding', 'connection', 'content-length', 'content-encoding'):
+                        self.send_header(key, value)
+                self.send_header('Content-Length', len(response_body))
+                self.end_headers()
+                self.wfile.write(response_body)
+        except Exception as e:
+            error_msg = f"Proxy Error: {e}".encode()
+            self.send_response(502)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', len(error_msg))
+            self.end_headers()
+            self.wfile.write(error_msg)
+    
+    def do_GET(self): self.do_request()
+    def do_POST(self): self.do_request()
+    def do_PUT(self): self.do_request()
+    def do_DELETE(self): self.do_request()
+    def do_HEAD(self): self.do_request()
+    def do_OPTIONS(self): self.do_request()
+    def do_PATCH(self): self.do_request()
+
+class QuietHTTPServer(HTTPServer):
+    """HTTPServer that silently ignores connection reset errors."""
+    def handle_error(self, request, client_address):
+        # Silently ignore connection reset errors (browser closed connection)
+        import sys
+        exc_type = sys.exc_info()[0]
+        if exc_type in (ConnectionResetError, BrokenPipeError):
+            return
+        # For other errors, use default handling
+        super().handle_error(request, client_address)
+
+server = QuietHTTPServer(('127.0.0.1', LISTEN_PORT), ProxyHandler)
+server.serve_forever()
+PYTHON_PROXY
+    proxy_pid=$!
+    
+    sleep 1
+    
+    if ! kill -0 $proxy_pid 2>/dev/null; then
+        gum style --foreground red "Error: Failed to start local proxy."
+        exit 1
+    fi
+    
+    echo "Tunnel is active. Press Ctrl+C to stop."
+    echo ""
+    
+    # Monitor tunnel connection - check every 5 seconds
+    while kill -0 $tunnel_pid 2>/dev/null; do
+        sleep 5
+    done
+    
+    # Tunnel process ended - check if it was unexpected
+    if [ -z "$cleanup_triggered" ]; then
+        echo ""
+        gum style --foreground yellow "Cloudflare tunnel disconnected."
+    fi
+}
+
+# Source: commands/site/status
+plak_site_status() {
+    echo "🔎 Checking Plak service status..."
+
+    local caddy_status="❌ Stopped"
+    local mariadb_status="❌ Stopped"
+    local mailpit_status="❌ Stopped"
+
+    # Probe Caddy's admin endpoint. The prior pidfile check fell over on
+    # Linux where sudo frankenphp start left the pidfile root-owned (0600),
+    # so the user reading it as austin got "" and the status falsely showed
+    # Stopped. The TCP probe is readable by any local user.
+    if is_caddy_running; then
+        caddy_status="✅ Running"
+    fi
+
+    # Check MariaDB and Mailpit status on MacOS
+    if [ "$OS" == "macos" ]; then
+        if brew services list 2>/dev/null | grep -q "mariadb.*started"; then 
+            mariadb_status="✅ Running"
+        fi
+        if launchctl list 2>/dev/null | grep -q "com.plak.mailpit"; then 
+            mailpit_status="✅ Running"
+        fi
+    fi
+    
+    # Check MariaDB and Mailpit status on Linux
+    if [ "$OS" == "linux" ]; then
+        # Check all possible MariaDB service names
+        local mariadb_service
+        mariadb_service=$(get_mariadb_service_name)
+        if systemctl is-active --quiet "$mariadb_service" 2>/dev/null; then 
+            mariadb_status="✅ Running"
+        fi
+        if systemctl is-active --quiet mailpit 2>/dev/null; then 
+            mailpit_status="✅ Running"
+        fi
+    fi
+    
+    echo ""
+    echo "  Caddy Server: $caddy_status"
+    echo "  MariaDB:      $mariadb_status"
+    echo "  Mailpit:      $mailpit_status"
+    echo ""
+
+    if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+            "✅ All services are running" \
+            "Dashboard: $(url_for plak.localhost)" \
+            "Adminer:   $(url_for db.plak.localhost)" \
+            "Mailpit:   $(url_for mail.plak.localhost)"
+        
+        # Show WSL-specific info
+        if [ "$IS_WSL" = true ]; then
+            local wsl_ip
+            wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            echo ""
+            echo "  WSL IP: $wsl_ip"
+        fi
+    else
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
+            "⚠️  Some services are stopped." \
+            "Run 'plak enable' to start them."
+    fi
+}
+# Source: commands/site/tailscale
+# --- Tailscale Configuration ---
+TAILSCALE_CONFIG="$APP_DIR/tailscale"
+
+plak_site_tailscale_enable() {
+    local hostname="$1"
+
+    # Try to auto-detect hostname if not provided
+    if [ -z "$hostname" ]; then
+        if command -v tailscale &> /dev/null; then
+            echo "🔎 Detecting Tailscale hostname..."
+            # Extract DNSName from Self section (handles both "key": "value" and "key":"value" formats)
+            hostname=$(tailscale status --json 2>/dev/null | grep -m1 '"DNSName"' | sed 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | sed 's/\.$//')
+        fi
+    fi
+
+    # Interactive mode if still no hostname
+    if [ -z "$hostname" ]; then
+        echo "📝 Enter your Tailscale machine hostname"
+        echo "   (e.g., mycomputer.tail1234.ts.net)"
+        hostname=$(gum input --width 0 --placeholder "your-machine.tailnet.ts.net")
+    fi
+
+    if [ -z "$hostname" ]; then
+        gum style --foreground red "❌ Error: Tailscale hostname is required."
+        exit 1
+    fi
+
+    # Remove any trailing dot
+    hostname="${hostname%.}"
+
+    # Validate it looks like a hostname
+    if [[ ! "$hostname" =~ \. ]]; then
+        gum style --foreground red "❌ Error: Invalid hostname. Expected format: machine.tailnet.ts.net"
+        exit 1
+    fi
+
+    # Save the configuration
+    mkdir -p "$APP_DIR"
+    echo "$hostname" > "$TAILSCALE_CONFIG"
+
+    echo "✅ Tailscale access enabled!"
+    echo "   Hostname: $hostname"
+    echo ""
+    echo "   Regenerating Caddyfile with port-based routing..."
+    echo ""
+    regenerate_caddyfile
+    
+    echo ""
+    echo "   Run 'plak tailscale status' to see all URLs."
+}
+
+plak_site_tailscale_disable() {
+    if [ -f "$TAILSCALE_CONFIG" ]; then
+        rm "$TAILSCALE_CONFIG"
+        
+        # Clean up port files
+        if [ -d "$SITES_DIR" ]; then
+            for site_path in "$SITES_DIR"/*; do
+                if [ -f "$site_path/tailscale_port" ]; then
+                    rm "$site_path/tailscale_port"
+                fi
+            done
+        fi
+        
+        echo "✅ Tailscale access disabled."
+        regenerate_caddyfile
+    else
+        echo "ℹ️ Tailscale access is not currently enabled."
+    fi
+}
+
+plak_site_tailscale_status() {
+    echo "🔎 Tailscale Access Status"
+    echo ""
+    
+    if [ -f "$TAILSCALE_CONFIG" ]; then
+        local hostname
+        hostname=$(cat "$TAILSCALE_CONFIG")
+        gum style --foreground green "✅ Enabled"
+        echo "   Hostname: $hostname"
+        echo ""
+        echo "   Your sites are accessible at:"
+        
+        if [ -d "$SITES_DIR" ]; then
+            for site_path in "$SITES_DIR"/*; do
+                if [ -d "$site_path" ]; then
+                    local site_name
+                    site_name=$(basename "$site_path" | sed 's/\.localhost$//')
+                    local port=""
+                    if [ -f "$site_path/tailscale_port" ]; then
+                        port=$(cat "$site_path/tailscale_port")
+                    fi
+                    if [ -n "$port" ]; then
+                        echo "   - https://${hostname}:${port}  (${site_name})"
+                    fi
+                fi
+            done
+        fi
+        
+        echo ""
+        echo "   Global services:"
+        echo "   - https://${hostname}:9900  (Dashboard)"
+        echo "   - https://${hostname}:9901  (Mailpit)"
+        echo "   - https://${hostname}:9902  (Adminer)"
+    else
+        gum style --foreground yellow "❌ Disabled"
+        echo ""
+        echo "   Enable with: plak tailscale enable [hostname]"
+    fi
+}
+
+plak_site_tailscale() {
+    local action="$1"
+    shift 2>/dev/null || true
+
+    case "$action" in
+        enable)
+            plak_site_tailscale_enable "$@"
+            ;;
+        disable)
+            plak_site_tailscale_disable
+            ;;
+        status)
+            plak_site_tailscale_status
+            ;;
+        *)
+            echo "Usage: plak tailscale <subcommand>"
+            echo ""
+            echo "Expose all Plak sites to your Tailscale network via port-based routing."
+            echo "This allows devices on your Tailnet (like your iPhone) to access"
+            echo "your local development sites."
+            echo ""
+            echo "Your Tailscale hostname is automatically detected when you run 'enable'."
+            echo "Each site gets a unique port (starting at 9001), so you can access them at:"
+            echo "  https://<your-tailscale-hostname>:<port>"
+            echo ""
+            echo "Subcommands:"
+            echo "  enable     Enable Tailscale access (auto-detects hostname)"
+            echo "  disable    Disable Tailscale access"
+            echo "  status     Show current Tailscale configuration and URLs"
+            echo ""
+            echo "Examples:"
+            echo "  plak tailscale enable"
+            echo "  plak tailscale status"
+            echo "  plak tailscale disable"
+            exit 0
+            ;;
+    esac
+}
+
+# Source: commands/site/trust
+plak_site_trust() {
+    echo "🔐 Installing Plak's local root certificate..."
+
+    # FrankenPHP's trust subcommand writes the Caddy local root into the
+    # system store and any NSS DBs it displakrs at the standard paths. On
+    # macOS that's the login keychain; on Linux it's /usr/local/share/ca-
+    # certificates + ~/.pki/nssdb + ~/.mozilla/firefox/*.
+    #
+    # Safe to re-run — all writes are idempotent.
+
+    if [ "$OS" = "linux" ]; then
+        # certutil (libnss3-tools / nss-tools) is needed to touch NSS DBs.
+        # Without it Firefox and Chromium keep showing the "Not Secure"
+        # warning even though curl and Chrome-with-system-roots are fine.
+        if ! command -v certutil &>/dev/null; then
+            echo "   - Installing NSS tools for browser trust..."
+            if [ "$PKG_MANAGER" = "apt" ]; then
+                $SUDO_CMD apt install -y libnss3-tools &>/dev/null || true
+            elif [ "$PKG_MANAGER" = "dnf" ]; then
+                $SUDO_CMD dnf install -y nss-tools &>/dev/null || true
+            fi
+        fi
+    fi
+
+    # Run the built-in trust installer. Needs sudo on Linux to write to
+    # /usr/local/share/ca-certificates and re-run update-ca-certificates.
+    # frankenphp trust talks to the Caddy admin API on :2019 to fetch the
+    # current root — so if Caddy isn't up (common right after plak install
+    # fails to start the service) the call errors with "connection refused"
+    # and the remainder of the trust work is a no-op. Capture the exit code
+    # so the final success banner only fires when something was actually
+    # installed.
+    echo "   - Running frankenphp trust..."
+    local trust_output trust_rc=0
+    if [ "$OS" = "linux" ]; then
+        trust_output=$($SUDO_CMD "$CADDY_CMD" trust 2>&1)
+        trust_rc=$?
+    else
+        trust_output=$("$CADDY_CMD" trust 2>&1)
+        trust_rc=$?
+    fi
+    echo "$trust_output" | grep -vE '^\{|^$' || true
+
+    # Linux-only: Firefox and Chromium ship as snaps on Ubuntu 22+ and
+    # store their NSS DBs under ~/snap/... — a path that neither Caddy nor
+    # mkcert scans. Inject the root explicitly for each profile we find.
+    if [ "$OS" = "linux" ] && command -v certutil &>/dev/null; then
+        local root_cert
+        root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
+            -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
+        # Fallback: the system-trust copy Caddy drops on first auto-install.
+        if [ -z "$root_cert" ]; then
+            root_cert=$(find /usr/local/share/ca-certificates \
+                -maxdepth 1 -name 'Caddy_Local_Authority*.crt' 2>/dev/null | head -1)
+        fi
+
+        if [ -n "$root_cert" ] && [ -r "$root_cert" ]; then
+            # Snap Firefox, snap Chromium, plus any other NSS DB under ~/snap.
+            # The sql: prefix tells certutil the DB is the modern cert9 format.
+            local db
+            while IFS= read -r db; do
+                [ -z "$db" ] && continue
+                local profile_dir
+                profile_dir=$(dirname "$db")
+                echo "   - Trusting in $(echo "$profile_dir" | sed "s|$HOME|~|")"
+                # Remove any prior entry under our nickname so re-runs don't
+                # layer stale copies, then add the current root.
+                certutil -D -d sql:"$profile_dir" -n "Plak Local Authority" 2>/dev/null || true
+                certutil -A -d sql:"$profile_dir" -n "Plak Local Authority" -t "C,," -i "$root_cert" 2>/dev/null || true
+            done < <(find "$HOME/snap" "$HOME/.mozilla/firefox" \
+                -name 'cert9.db' 2>/dev/null)
+        else
+            gum style --foreground yellow "⚠️ Could not locate Caddy root.crt — snap Firefox/Chromium trust skipped."
+        fi
+    fi
+
+    echo ""
+    if [ "$trust_rc" -eq 0 ]; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+            "✅ Local SSL trust installed" \
+            "If a browser was open during this run, restart it to pick up the new CA."
+    else
+        # Tailor the hint based on what frankenphp actually said — "connection
+        # refused" almost always means Caddy's admin API isn't up yet.
+        if echo "$trust_output" | grep -q "connection refused"; then
+            gum style --border normal --margin "1" --padding "1 2" --border-foreground yellow \
+                "⚠️ Trust install skipped — Plak server isn't running yet" \
+                "Run 'plak enable' then 'plak trust' to finish installing the local root."
+        else
+            gum style --border normal --margin "1" --padding "1 2" --border-foreground yellow \
+                "⚠️ Trust install did not complete" \
+                "Re-run 'plak trust' once Plak is running to try again."
+        fi
+    fi
+}
+
+# Source: commands/site/upgrade
+upgrade_frankenphp() {
+    local frankenphp_path
+    frankenphp_path=$(command -v frankenphp)
+    
+    # Check if installed via package manager (typically at /usr/bin/frankenphp)
+    if [ "$frankenphp_path" = "/usr/bin/frankenphp" ]; then
+        # Package manager installation - use apt/dnf to upgrade
+        if [ "$PKG_MANAGER" = "apt" ]; then
+            echo "   - FrankenPHP installed via apt. Upgrading with apt..."
+            if $SUDO_CMD apt update && $SUDO_CMD apt install --only-upgrade -y frankenphp; then
+                echo "   - ✅ FrankenPHP upgraded successfully via apt."
+            else
+                gum style --foreground red "❌ Failed to upgrade FrankenPHP via apt."
+                return 1
+            fi
+        elif [ "$PKG_MANAGER" = "dnf" ]; then
+            echo "   - FrankenPHP installed via dnf. Upgrading with dnf..."
+            if $SUDO_CMD dnf upgrade -y frankenphp; then
+                echo "   - ✅ FrankenPHP upgraded successfully via dnf."
+            else
+                gum style --foreground red "❌ Failed to upgrade FrankenPHP via dnf."
+                return 1
+            fi
+        else
+            echo "   - ⚠️ Unknown package manager for FrankenPHP at /usr/bin. Skipping upgrade."
+            return 1
+        fi
+    else
+        # Static binary installation - download directly
+        local target_bin_dir
+        if [ -n "$frankenphp_path" ]; then
+            target_bin_dir=$(dirname "$frankenphp_path")
+            echo "   - Detected static FrankenPHP binary in '$target_bin_dir'."
+        else
+            target_bin_dir="$BIN_DIR"
+            echo "   - FrankenPHP not found. Using default: $target_bin_dir"
+        fi
+        
+        echo "   - Downloading latest FrankenPHP static binary..."
+        
+        # Determine the correct binary for this platform
+        local arch=$(uname -m)
+        local os=$(uname -s)
+        local binary_name=""
+        
+        if [ "$os" = "Linux" ]; then
+            case $arch in
+                x86_64) binary_name="frankenphp-linux-x86_64" ;;
+                aarch64) binary_name="frankenphp-linux-aarch64" ;;
+            esac
+            # Check for glibc
+            if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+                binary_name="${binary_name}-gnu"
+            fi
+        elif [ "$os" = "Darwin" ]; then
+            case $arch in
+                arm64) binary_name="frankenphp-mac-arm64" ;;
+                x86_64) binary_name="frankenphp-mac-x86_64" ;;
+            esac
+        fi
+        
+        if [ -z "$binary_name" ]; then
+            gum style --foreground red "❌ No precompiled FrankenPHP binary available for $os/$arch"
+            return 1
+        fi
+        
+        local temp_binary="/tmp/frankenphp_new"
+        if curl -L --progress-bar "https://github.com/php/frankenphp/releases/latest/download/${binary_name}" -o "$temp_binary"; then
+            chmod +x "$temp_binary"
+            if sudo mv "$temp_binary" "$target_bin_dir/frankenphp"; then
+                # Set capability to bind to low ports without root
+                if command -v setcap &>/dev/null; then
+                    $SUDO_CMD setcap 'cap_net_bind_service=+ep' "$target_bin_dir/frankenphp" 2>/dev/null || true
+                fi
+                echo "   - ✅ FrankenPHP upgraded successfully."
+            else
+                gum style --foreground red "❌ Failed to move FrankenPHP to $target_bin_dir"
+                rm -f "$temp_binary"
+                return 1
+            fi
+        else
+            gum style --foreground red "❌ Failed to download FrankenPHP binary."
+            return 1
+        fi
+    fi
+    
+    # Verify mysqli is available after upgrade
+    echo "   - Verifying PHP mysqli extension..."
+    if ! frankenphp php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
+        gum style --foreground yellow "⚠️ Warning: mysqli extension not found in FrankenPHP."
+        gum style --foreground yellow "   WordPress sites may not work correctly."
+        return 1
+    fi
+    echo "   - ✅ mysqli extension verified."
+    
+    return 0
+}
+
+plak_site_upgrade() {
+    local auto_yes=false
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y|--force) auto_yes=true ;;
+        esac
+    done
+    # Non-interactive callers have no TTY — auto-yes so the Adminer prompt
+    # (only shown when the local version can't be parsed) doesn't hang.
+    [ -t 0 ] || auto_yes=true
+
+    echo "🔎 Checking for the latest version of Plak..."
+
+    local download_url="https://github.com/plakio/plak-cli/releases/latest/download/plak.sh"
+    local temp_script="/tmp/plak.sh.latest"
+    local install_path
+
+    # Find the real path of the currently running script
+    install_path=$(command -v plak)
+    if [ -z "$install_path" ]; then
+        install_path="/usr/local/bin/plak" # Fallback to default
+    fi
+
+    # 1. Download the latest script
+    echo "   - Downloading latest Plak script from GitHub..."
+    if ! curl -L --fail --progress-bar "$download_url" -o "$temp_script"; then
+        echo "❌ Error: Failed to download the latest version. Please check your connection."
+        rm -f "$temp_script" 2>/dev/null
+        return 1
+    fi
+
+    # 2. Make it executable
+    chmod +x "$temp_script"
+
+    # 3. Get the new version from the downloaded script
+    local new_version
+    new_version=$("$temp_script" version | awk '{print $2}' | sed 's/^v//')
+
+    if [ -z "$new_version" ]; then
+        echo "❌ Error: Could not determine the version from the downloaded script."
+        rm -f "$temp_script" 2>/dev/null
+        return 1
+    fi
+
+    # 4. Get the current version from the running script
+    local current_version="$PLAK_VERSION"
+    echo "   - Current Plak version:         $current_version"
+    echo "   - Latest available Plak version: $new_version"
+
+    # 5. Compare versions
+    local latest
+    latest=$(printf '%s\n' "$current_version" "$new_version" | sort -V | tail -n1)
+
+    if [[ "$latest" == "$current_version" ]] && [[ "$new_version" != "$current_version" ]]; then
+         echo "✅ Your current Plak version ($current_version) is newer than the latest release ($new_version). No action taken."
+         rm -f "$temp_script" 2>/dev/null
+    elif [[ "$latest" == "$current_version" ]]; then
+        echo "✅ You are already using the latest version of Plak."
+        rm -f "$temp_script" 2>/dev/null
+    else
+        # 6. Perform the Plak upgrade
+        echo "🚀 Upgrading Plak to version $new_version..."
+
+        if [ ! -w "$(dirname "$install_path")" ]; then
+            echo "❌ Error: No write permissions for '$(dirname "$install_path")'."
+            echo "   Please try running with sudo: 'sudo plak upgrade'"
+            rm -f "$temp_script" 2>/dev/null
+            return 1
+        fi
+
+        if ! mv "$temp_script" "$install_path"; then
+            echo "❌ Error: Failed to replace the old script at '$install_path'."
+            rm -f "$temp_script" 2>/dev/null
+        else
+            echo "✅ Plak has been successfully upgraded to version $new_version!"
+            echo "   Run 'plak version' to see the new version."
+        fi
+    fi
+
+    # --- New Section: FrankenPHP Upgrade Check ---
+    echo ""
+    echo "🔎 Checking for FrankenPHP updates..."
+
+    if ! command -v frankenphp &> /dev/null; then
+        echo "   - ⚠️ FrankenPHP not found. Skipping update check."
+        return 0
+    fi
+
+    # Get local version (strip 'v' prefix if present)
+    local local_frankenphp_version
+    local_frankenphp_version=$(frankenphp version | awk '{print $2}' | sed 's/^v//')
+    if [ -z "$local_frankenphp_version" ]; then
+        echo "   - ❌ Could not determine local FrankenPHP version. Skipping update check."
+        return 1
+    fi
+
+    # Get latest version from GitHub redirect (strip 'v' prefix)
+    local latest_frankenphp_version
+    latest_frankenphp_version=$(curl -sL -o /dev/null -w '%{url_effective}' https://github.com/php/frankenphp/releases/latest | sed 's/.*\/v//')
+
+    if [ -z "$latest_frankenphp_version" ]; then
+        echo "   - ❌ Could not determine the latest FrankenPHP version from GitHub. Skipping update check."
+        return 1
+    fi
+
+    echo "   - Current FrankenPHP version:  $local_frankenphp_version"
+    echo "   - Latest available version:    $latest_frankenphp_version"
+
+    # Compare versions using sort -V (works without PHP)
+    local needs_upgrade="false"
+    if [ "$local_frankenphp_version" != "$latest_frankenphp_version" ]; then
+        local older_version
+        older_version=$(printf '%s\n' "$local_frankenphp_version" "$latest_frankenphp_version" | sort -V | head -n1)
+        if [ "$older_version" = "$local_frankenphp_version" ]; then
+            needs_upgrade="true"
+        fi
+    fi
+
+    if [ "$needs_upgrade" == "true" ]; then
+        echo "🚀 Upgrading FrankenPHP to version $latest_frankenphp_version..."
+        upgrade_frankenphp
+    else
+        echo "✅ FrankenPHP is already up to date."
+    fi
+    
+    # --- Adminer Upgrade Check ---
+    echo ""
+    echo "🔎 Checking for Adminer updates..."
+    
+    local adminer_file="$ADMINER_DIR/adminer-core.php"
+    if [ ! -f "$adminer_file" ]; then
+        echo "   - ⚠️ Adminer not found. Skipping update check."
+        return 0
+    fi
+    
+    # Get current Adminer version from the file (portable — BSD grep has no -P/\K)
+    local current_adminer_version
+    current_adminer_version=$(LC_ALL=C sed -nE 's/.*VERSION="([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$adminer_file" 2>/dev/null | head -1)
+    if [ -z "$current_adminer_version" ]; then
+        current_adminer_version=$(LC_ALL=C sed -nE 's/.*@version[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$adminer_file" 2>/dev/null | head -1)
+    fi
+    
+    if [ -z "$current_adminer_version" ]; then
+        echo "   - ⚠️ Could not determine current Adminer version."
+        current_adminer_version="unknown"
+    fi
+    
+    # Get latest version from GitHub
+    local latest_adminer_version
+    latest_adminer_version=$(curl -sL -o /dev/null -w '%{url_effective}' https://github.com/vrana/adminer/releases/latest | sed 's/.*\/v//')
+    
+    if [ -z "$latest_adminer_version" ]; then
+        echo "   - ❌ Could not determine the latest Adminer version from GitHub."
+        return 0
+    fi
+    
+    echo "   - Current Adminer version:  $current_adminer_version"
+    echo "   - Latest available version: $latest_adminer_version"
+    
+    # Compare versions (skip if current is unknown)
+    if [ "$current_adminer_version" != "unknown" ]; then
+        local adminer_needs_upgrade
+        adminer_needs_upgrade=$(LOCAL_V="$current_adminer_version" REMOTE_V="$latest_adminer_version" frankenphp php-cli -r '
+            if (version_compare(getenv("LOCAL_V"), getenv("REMOTE_V"), "<")) {
+                echo "true";
+            } else {
+                echo "false";
+            }
+        ')
+        
+        if [ "$adminer_needs_upgrade" == "true" ]; then
+            echo "🚀 Upgrading Adminer to version $latest_adminer_version..."
+            if curl -sL "https://github.com/vrana/adminer/releases/download/v${latest_adminer_version}/adminer-${latest_adminer_version}.php" -o "$adminer_file"; then
+                echo "✅ Adminer upgraded successfully."
+            else
+                echo "❌ Failed to download Adminer $latest_adminer_version."
+            fi
+        else
+            echo "✅ Adminer is already up to date."
+        fi
+    else
+        # If version unknown, offer to upgrade anyway
+        local do_download=false
+        if [ "$auto_yes" = true ]; then
+            do_download=true
+        elif gum confirm "Current version unknown. Would you like to download the latest Adminer ($latest_adminer_version)?"; then
+            do_download=true
+        fi
+        if $do_download; then
+            echo "🚀 Downloading Adminer $latest_adminer_version..."
+            if curl -sL "https://github.com/vrana/adminer/releases/download/v${latest_adminer_version}/adminer-${latest_adminer_version}.php" -o "$adminer_file"; then
+                echo "✅ Adminer downloaded successfully."
+            else
+                echo "❌ Failed to download Adminer $latest_adminer_version."
+            fi
+        fi
+    fi
+
+    # Always refresh the Plak Adminer theme + entry point. Pre-1.10 installs
+    # shipped the Catppuccin CSS and a bare index.php without the head()
+    # hook — without this step upgraders would keep the old UI even after
+    # adminer-core.php gets the latest version.
+    echo ""
+    echo "🎨 Refreshing Plak Adminer theme..."
+    deploy_adminer_theme
+
+    # --- Floor Plak's PHP ini at the current installer default ---
+    # Pre-1.10 installers wrote memory_limit=512M (also upload/post=unset).
+    # Raise to the 1G floor the fresh installer uses today, but leave any
+    # value already >= 1G alone so a user who bumped to 2G stays at 2G.
+    local install_default_memory="1G"
+    local floor_bytes=$(( 1024 * 1024 * 1024 ))
+
+    mem_to_bytes() {
+        local s="${1:-0}" n suffix
+        n="${s%[KMGkmg]}"; suffix="${s#$n}"
+        case "$suffix" in
+            K|k) echo $((n * 1024)) ;;
+            M|m) echo $((n * 1024 * 1024)) ;;
+            G|g) echo $((n * 1024 * 1024 * 1024)) ;;
+            *)   echo "${n:-0}" ;;
+        esac
+    }
+
+    echo ""
+    echo "🧠 Checking PHP memory floor…"
+    local bumped_any=false
+    local k
+    for k in memory_limit upload_max_filesize post_max_size; do
+        local current
+        current=$(plak_site_ini_get "$k" "")
+        local current_bytes
+        current_bytes=$(mem_to_bytes "$current")
+        if [ -z "$current" ] || [ "$current_bytes" -lt "$floor_bytes" ]; then
+            mkdir -p "$(dirname "$PHP_INI_FILE")"
+            touch "$PHP_INI_FILE"
+            if grep -qE "^[[:space:]]*${k}[[:space:]]*=" "$PHP_INI_FILE"; then
+                sed -i.bak -E "s|^[[:space:]]*${k}[[:space:]]*=.*|${k} = ${install_default_memory}|" "$PHP_INI_FILE"
+            else
+                echo "${k} = ${install_default_memory}" >> "$PHP_INI_FILE"
+            fi
+            rm -f "${PHP_INI_FILE}.bak"
+            echo "   ↑ ${k}: ${current:-unset} → ${install_default_memory}"
+            bumped_any=true
+        else
+            echo "   ✓ ${k}: ${current} (already ≥ ${install_default_memory})"
+        fi
+    done
+    if [ "$bumped_any" = true ]; then
+        echo "   (plak reload below regenerates the Caddyfile so the web server picks up the new limits.)"
+    fi
+
+    # --- Reload to pull in any UI updates ---
+    # Invoke the on-disk binary so a freshly-upgraded script's new functions are used
+    # (the currently-running process still holds the pre-upgrade functions in memory).
+    echo ""
+    echo "🔄 Reloading Plak to apply UI updates..."
+    "$install_path" reload
+}
+
+# Source: commands/site/url
+plak_site_url() {
+    # -----------------------------------------------------------------
+    #  plak url <site>
+    #  Prints the HTTPS URL for a given site (e.g. https://foo.localhost)
+    # -----------------------------------------------------------------
+    local site_name="$1"
+
+    # -------------------------------------------------------------
+    #  Basic validation – the command requires exactly one argument.
+    # -------------------------------------------------------------
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: A site name is required."
+        echo "Usage: plak url <site>"
+        exit 1
+    fi
+
+    # -------------------------------------------------------------
+    #  Build the expected directory name and verify that it exists.
+    # -------------------------------------------------------------
+    local site_dir="${SITES_DIR}/${site_name}.localhost"
+    if [ ! -d "$site_dir" ]; then
+        gum style --foreground red "❌ Error: Site '${site_name}.localhost' not found."
+        exit 1
+    fi
+
+    # -------------------------------------------------------------
+    #  Print the URL – we keep the output plain so it can be piped.
+    # -------------------------------------------------------------
+    url_for "${site_name}.localhost"
+}
+# Source: commands/site/wsl-hosts
+plak_site_wsl_hosts() {
+    if [ "$IS_WSL" != true ]; then
+        echo "This command is only available in WSL environments."
+        exit 1
+    fi
+    
+    local wsl_ip
+    wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    
+    if [ -z "$wsl_ip" ]; then
+        gum style --foreground red "❌ Could not determine WSL IP address."
+        exit 1
+    fi
+    
+    # Build list of all hostnames
+    local hostnames="plak.localhost db.plak.localhost mail.plak.localhost"
+    
+    # Add all site hostnames
+    if [ -d "$SITES_DIR" ]; then
+        for site_path in "$SITES_DIR"/*; do
+            if [ -d "$site_path" ]; then
+                local site_hostname
+                site_hostname=$(basename "$site_path")
+                hostnames="$hostnames $site_hostname"
+                
+                # Also add any custom mappings
+                if [ -f "$site_path/mappings" ]; then
+                    while IFS= read -r mapping || [ -n "$mapping" ]; do
+                        if [ -n "$mapping" ]; then
+                            hostnames="$hostnames $mapping"
+                        fi
+                    done < "$site_path/mappings"
+                fi
+            fi
+        done
+    fi
+    
+    # Find Caddy's CA certificate path
+    local ca_cert="$HOME/.local/share/caddy/pki/authorities/local/root.crt"
+    local windows_cert_path=""
+    
+    # Convert WSL path to Windows path for the certificate
+    if [ -f "$ca_cert" ]; then
+        windows_cert_path=$(wslpath -w "$ca_cert" 2>/dev/null || echo "")
+    fi
+    
+    echo ""
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "WSL Setup Helper" \
+        "" \
+        "WSL IP Address: $wsl_ip"
+    
+    # --- STEP 1: Hosts File ---
+    echo ""
+    gum style --foreground 212 "━━━ Step 1: Update Windows Hosts File ━━━"
+    echo ""
+    echo "Run this command in PowerShell (as Administrator):"
+    echo ""
+    gum style --foreground cyan "Add-Content -Path C:\\Windows\\System32\\drivers\\etc\\hosts -Value \"\`n$wsl_ip $hostnames\""
+    echo ""
+    echo "Or manually add this line to C:\\Windows\\System32\\drivers\\etc\\hosts:"
+    echo ""
+    gum style --foreground cyan "$wsl_ip $hostnames"
+    
+    # --- STEP 2: Certificate Trust ---
+    echo ""
+    gum style --foreground 212 "━━━ Step 2: Trust Caddy's CA Certificate ━━━"
+    echo ""
+    echo "To remove browser certificate warnings, install Caddy's root CA in Windows."
+    echo ""
+    
+    if [ -n "$windows_cert_path" ]; then
+        echo "The certificate is located at:"
+        gum style --foreground cyan "$windows_cert_path"
+        echo ""
+        echo "Option A: Double-click the certificate in Windows Explorer and install it:"
+        echo "  1. Open the path above in Windows Explorer"
+        echo "  2. Double-click root.crt"
+        echo "  3. Click 'Install Certificate...'"
+        echo "  4. Select 'Local Machine' and click Next"
+        echo "  5. Select 'Place all certificates in the following store'"
+        echo "  6. Click Browse and select 'Trusted Root Certification Authorities'"
+        echo "  7. Click Next, then Finish"
+        echo ""
+        echo "Option B: Run this in PowerShell (as Administrator):"
+        echo ""
+        gum style --foreground cyan "Import-Certificate -FilePath \"$windows_cert_path\" -CertStoreLocation Cert:\\LocalMachine\\Root"
+    else
+        echo "Certificate not found at: $ca_cert"
+        echo "Make sure Caddy has been started at least once with 'plak enable'."
+    fi
+    
+    echo ""
+    gum style --foreground yellow "Note: WSL IP may change on restart. Run 'plak wsl-hosts' again to get updated info."
+    echo ""
+}
+
+# Source: commands/skill
+PLAK_SKILL_NAME="plak-cli"
+PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/plak-cli/main/skills/plak-cli}"
+
+plak_skill_help() {
+    cat <<'HELP'
+Usage:
+  plak skill install [codex|claude-code|opencode|pi|all]
+  plak skill help
+
+Installs the Plak CLI agent skill for supported coding agents.
+
+Targets:
+  codex        ~/.codex/skills/plak-cli/SKILL.md
+  claude-code  ~/.claude/skills/plak-cli/SKILL.md
+  opencode     ~/.config/opencode/skill/plak-cli/SKILL.md
+  pi           ~/.pi/agent/skills/plak-cli/SKILL.md
+  all          Install for every supported target
+HELP
+}
+
+plak_skill_target_path() {
+    case "$1" in
+        codex) echo "$HOME/.codex/skills/$PLAK_SKILL_NAME" ;;
+        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
+        opencode) echo "$HOME/.config/opencode/skill/$PLAK_SKILL_NAME" ;;
+        pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_skill_normalize_target() {
+    case "$1" in
+        codex|openai|openai-codex) echo "codex" ;;
+        claude|claude-code|claudecode) echo "claude-code" ;;
+        opencode|open-code) echo "opencode" ;;
+        pi) echo "pi" ;;
+        all) echo "all" ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_skill_source_dir() {
+    local script_dir cwd_dir
+    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+    cwd_dir=$(pwd)
+
+    if [ -f "$script_dir/skills/$PLAK_SKILL_NAME/SKILL.md" ]; then
+        echo "$script_dir/skills/$PLAK_SKILL_NAME"
+    elif [ -f "$cwd_dir/skills/$PLAK_SKILL_NAME/SKILL.md" ]; then
+        echo "$cwd_dir/skills/$PLAK_SKILL_NAME"
+    else
+        return 1
+    fi
+}
+
+plak_skill_install_target() {
+    local target="$1" dest source_dir
+    dest=$(plak_skill_target_path "$target") || return 1
+
+    mkdir -p "$dest"
+
+    if source_dir=$(plak_skill_source_dir); then
+        cp -R "$source_dir/." "$dest/"
+    else
+        if ! plak_command_exists curl; then
+            plak_ui_error "curl is required to download the Plak skill."
+            return 1
+        fi
+        curl -fsSL "$PLAK_SKILL_RAW_BASE/SKILL.md" -o "$dest/SKILL.md"
+    fi
+
+    if [ ! -f "$dest/SKILL.md" ]; then
+        plak_ui_error "Failed to install skill for $target."
+        return 1
+    fi
+
+    plak_ui_success "Installed Plak skill for $target: $dest/SKILL.md"
+}
+
+plak_skill_prompt_targets() {
+    local choices selected input
+    choices=$(cat <<'CHOICES'
+codex
+claude-code
+opencode
+pi
+CHOICES
+)
+
+    if plak_command_exists gum && plak_has_tty; then
+        selected=$(printf '%s\n' "$choices" | gum choose --no-limit --header "Which agents do you use?")
+        [ -n "$selected" ] || return 1
+        printf '%s\n' "$selected"
+        return 0
+    fi
+
+    echo "Which agents do you use? Enter one or more numbers separated by commas:"
+    echo "  1) codex"
+    echo "  2) claude-code"
+    echo "  3) opencode"
+    echo "  4) pi"
+    printf "> "
+    read -r input
+
+    case ",$input," in *",1,"*) echo "codex" ;; esac
+    case ",$input," in *",2,"*) echo "claude-code" ;; esac
+    case ",$input," in *",3,"*) echo "opencode" ;; esac
+    case ",$input," in *",4,"*) echo "pi" ;; esac
+}
+
+plak_skill_install() {
+    local targets=() arg normalized target failed=false
+
+    if [ "$#" -eq 0 ]; then
+        while IFS= read -r target; do
+            [ -n "$target" ] && targets+=("$target")
+        done < <(plak_skill_prompt_targets)
+    else
+        for arg in "$@"; do
+            case "$arg" in
+                --help|-h)
+                    plak_skill_help
+                    return 0
+                    ;;
+                *)
+                    if ! normalized=$(plak_skill_normalize_target "$arg"); then
+                        plak_ui_error "Unknown skill target: $arg"
+                        plak_skill_help
+                        return 1
+                    fi
+                    if [ "$normalized" = "all" ]; then
+                        targets=(codex claude-code opencode pi)
+                    else
+                        targets+=("$normalized")
+                    fi
+                    ;;
+            esac
+        done
+    fi
+
+    if [ "${#targets[@]}" -eq 0 ]; then
+        plak_ui_warn "No agent selected."
+        return 0
+    fi
+
+    local seen=","
+    for target in "${targets[@]}"; do
+        case "$seen" in
+            *",$target,"*) continue ;;
+        esac
+        seen="$seen$target,"
+        if ! plak_skill_install_target "$target"; then
+            failed=true
+        fi
+    done
+
+    if $failed; then
+        return 1
+    fi
+
+    echo ""
+    echo "Restart your agent session so it can discover the new skill."
+}
+
+plak_skill() {
+    local action="${1:-help}"
+    [ "$#" -gt 0 ] && shift
+
+    case "$action" in
+        install)
+            plak_skill_install "$@"
+            ;;
+        help|--help|-h)
+            plak_skill_help
+            ;;
+        *)
+            plak_ui_error "Unknown skill action: $action"
+            plak_skill_help
+            return 1
+            ;;
+    esac
+}
+
 # Source: commands/sshkey
 plak_sshkey_private_keys() {
     local ssh_dir="${1:-$HOME/.ssh}"
@@ -982,13 +8327,14 @@ plak_status() {
     echo ""
     echo "OS:          $PLAK_OS"
     echo "Plak home:   $PLAK_HOME"
+    echo "Sites home:  $PLAK_SITE_DIR"
     echo "SSH config:  $PLAK_SSH_CONFIG"
     echo "Hosts file:  $PLAK_HOSTS_FILE"
     echo ""
     echo "Dependencies:"
 
     local dep status
-    for dep in gum ssh ssh-keygen awk sed grep mktemp; do
+    for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
         if plak_command_exists "$dep"; then
             status="found"
         else
@@ -996,6 +8342,15 @@ plak_status() {
         fi
         printf '  %-10s %s\n' "$dep" "$status"
     done
+
+    if [ -f "$CONFIG_FILE" ] && plak_command_exists "$CADDY_CMD" && plak_command_exists gum; then
+        echo ""
+        plak_site_status
+    else
+        echo ""
+        echo "Site services: not installed yet"
+        echo "Dashboard:     $(url_for plak.localhost)"
+    fi
 }
 
 # Source: commands/version

@@ -1,0 +1,614 @@
+# A robust function to check, validate, and install a given dependency.
+install_dependency() {
+    local cmd_name="$1"      # The command to check for (e.g., "gum")
+    local brew_pkg="$2"      # The package name for Homebrew (e.g., "gum")
+    local apt_pkg="$3"       # The package name for apt (Debian/Ubuntu)
+    local dnf_pkg="$4"       # The package name for dnf (Fedora/RHEL) - can differ from apt
+    local binary_url="$5"    # Optional URL to a binary/tarball for fallback
+
+    # If dnf_pkg not specified, default to apt_pkg
+    if [ -z "$dnf_pkg" ]; then
+        dnf_pkg="$apt_pkg"
+    fi
+
+    # 1. Validate the command. If it runs, we're done.
+    if command -v "$cmd_name" &>/dev/null; then
+        # Special cases: mariadb doesn't support --version, and wp's shebang
+        # uses /usr/bin/env php which won't resolve since Plak no longer
+        # installs a standalone php (wp-cli is invoked through frankenphp
+        # php-cli at runtime — see get_wp_cmd in main).
+        if [[ "$cmd_name" == "mariadb" || "$cmd_name" == "wp" ]] || "$cmd_name" --version &>/dev/null 2>&1; then
+            echo "✅ $cmd_name is already installed and valid."
+            return 0
+        fi
+    fi
+
+    # If gum isn't installed yet, we can't use it for styling this first message.
+    if ! command -v gum &>/dev/null; then
+        echo "--- Installing Dependency: $cmd_name ---"
+    else
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Installing Dependency: $cmd_name"
+    fi
+
+    local installed_successfully=false
+    local pkg_name=""
+
+    # 2. Attempt installation with the native package manager.
+    if [ "$OS" == "macos" ]; then
+        if brew install "$brew_pkg"; then
+            installed_successfully=true
+        fi
+    else # For Linux (apt/dnf)
+        # Determine the correct package name for this distro
+        if [ "$PKG_MANAGER" == "apt" ]; then
+            pkg_name="$apt_pkg"
+        else
+            pkg_name="$dnf_pkg"
+        fi
+        
+        # Only try native package manager if a name is provided
+        if [ -n "$pkg_name" ]; then
+            echo "   - Updating package cache..."
+            if [ "$PKG_MANAGER" == "apt" ]; then
+                $SUDO_CMD apt-get update -qq >/dev/null 2>&1
+            else
+                $SUDO_CMD dnf makecache -q >/dev/null 2>&1 || true
+            fi
+            
+            echo "   - Installing $pkg_name via $PKG_MANAGER..."
+            if [ "$PKG_MANAGER" == "apt" ]; then
+                if $SUDO_CMD apt-get install -y "$pkg_name" >/dev/null 2>&1; then
+                    installed_successfully=true
+                fi
+            else
+                if $SUDO_CMD dnf install -y "$pkg_name" >/dev/null 2>&1; then
+                    installed_successfully=true
+                fi
+            fi
+        fi
+        
+        # 3. If native package fails or isn't specified, and a binary URL is provided, try that.
+        if [ "$installed_successfully" = false ] && [ -n "$binary_url" ]; then
+            if ! command -v gum &>/dev/null; then
+                 echo "   - Native package not available. Falling back to binary download."
+            else
+                gum style --foreground "yellow" "   - Native package not available. Falling back to binary download."
+            fi
+            
+            local temp_dir
+            temp_dir=$(mktemp -d)
+            
+            # Check if URL is a tarball or direct binary
+            if [[ "$binary_url" == *.tar.gz ]] || [[ "$binary_url" == *.tgz ]]; then
+                echo "   - Downloading and extracting tarball..."
+                if curl -sL "$binary_url" | tar -xz -C "$temp_dir" 2>/dev/null; then
+                    # Find the binary in extracted contents
+                    local binary_file
+                    binary_file=$(find "$temp_dir" -name "$cmd_name" -type f -executable 2>/dev/null | head -1)
+                    if [ -z "$binary_file" ]; then
+                        # Try without executable flag (might need chmod)
+                        binary_file=$(find "$temp_dir" -name "$cmd_name" -type f 2>/dev/null | head -1)
+                    fi
+                    if [ -n "$binary_file" ]; then
+                        chmod +x "$binary_file"
+                        if $SUDO_CMD mv "$binary_file" "$BIN_DIR/$cmd_name"; then
+                            installed_successfully=true
+                        fi
+                    fi
+                fi
+            else
+                # Direct binary download
+                echo "   - Downloading binary..."
+                if curl -sL "$binary_url" -o "$temp_dir/$cmd_name"; then
+                    chmod +x "$temp_dir/$cmd_name"
+                    if $SUDO_CMD mv "$temp_dir/$cmd_name" "$BIN_DIR/$cmd_name"; then
+                        installed_successfully=true
+                    fi
+                fi
+            fi
+            rm -rf "$temp_dir"
+        fi
+    fi
+
+    # 4. Final verification and cache clearing.
+    if [ "$installed_successfully" = true ]; then
+        hash -r # Clear the shell's command cache for this script session.
+        if command -v "$cmd_name" &>/dev/null; then
+            echo "✅ $cmd_name installed successfully."
+            return 0
+        else
+            echo "⚠️  $cmd_name installed but not found in PATH. You may need to restart your shell."
+            return 0
+        fi
+    else
+        if command -v gum &>/dev/null; then
+            gum style --foreground red "❌ Failed to install $cmd_name."
+        else
+            echo "❌ Failed to install $cmd_name."
+        fi
+        exit 1
+    fi
+}
+
+plak_site_install() {
+    local auto_yes=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y|--force)
+                auto_yes=true
+                shift
+                ;;
+            *)
+                echo "❌ Unknown argument: $1" >&2
+                echo "Usage: plak install [--yes]" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Non-interactive callers (CI, installer piping, dashboards) have no TTY;
+    # gum confirm / gum choose abort there. Auto-promote so the install doesn't
+    # hang.
+    [ -t 0 ] || auto_yes=true
+
+    echo "🚀 Starting Plak installation..."
+
+    # --- WSL/Systemd Check ---
+    if [ "$OS" == "linux" ]; then
+        if [ "$IS_WSL" = true ]; then
+            echo "🐧 WSL environment detected."
+            # Check if systemd is running
+            if ! pidof systemd >/dev/null 2>&1; then
+                echo ""
+                echo "⚠️  WARNING: systemd is not running in WSL."
+                echo "   Plak requires systemd for service management."
+                echo ""
+                echo "   To enable systemd in WSL2, add to /etc/wsl.conf:"
+                echo "   [boot]"
+                echo "   systemd=true"
+                echo ""
+                echo "   Then restart WSL with: wsl --shutdown"
+                echo ""
+                if $auto_yes; then
+                    echo "   (--yes set — continuing anyway.)"
+                else
+                    read -p "Do you want to continue anyway? (y/N) " -n 1 -r
+                    echo
+                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                        echo "🚫 Installation cancelled."
+                        exit 0
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    # --- Gum (required for the port-selection UI that follows) ---
+    # Note: gum releases use format: gum_VERSION_Linux_x86_64.tar.gz
+    local gum_arch="x86_64"
+    if [ "$(uname -m)" == "aarch64" ] || [ "$(uname -m)" == "arm64" ]; then
+        gum_arch="arm64"
+    fi
+    local gum_url="https://github.com/charmbracelet/gum/releases/download/v0.14.1/gum_0.14.1_Linux_${gum_arch}.tar.gz"
+    install_dependency "gum" "gum" "gum" "gum" "$gum_url"
+
+    # --- Port Selection ---
+    # Two paths can run here:
+    #   1. Reconfigure path — saved config already has non-default ports; the
+    #      user gets a menu to keep, switch to defaults, or pick new values.
+    #   2. Conflict path — the target ports (post-reconfigure) are occupied
+    #      by a non-Plak process; the user gets the conflict menu.
+    # On a fresh install with free 80/443, both paths are skipped silently.
+    # If the chosen ports differ from the starting values, a DB URL update
+    # step runs after install services come up (same code path as plak ports).
+    local original_http="$HTTP_PORT"
+    local original_https="$HTTPS_PORT"
+    local port_choice_made=false
+
+    # --- Reconfigure path ---
+    if [ "$HTTP_PORT" != "80" ] || [ "$HTTPS_PORT" != "443" ]; then
+        echo ""
+        gum style --foreground "212" \
+            "Plak is currently configured for custom ports: ${HTTP_PORT} / ${HTTPS_PORT}"
+        echo ""
+
+        local default_label="Switch to default ports (80 / 443)"
+        if port_has_conflict 80 || port_has_conflict 443; then
+            default_label="Switch to default ports (80 / 443) — currently in use"
+        fi
+
+        local choice
+        choice=$(gum choose \
+            "Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})" \
+            "$default_label" \
+            "Pick different custom ports")
+
+        case "$choice" in
+            "Keep current"*)
+                : # no change
+                ;;
+            "Switch to default"*)
+                HTTP_PORT=80
+                HTTPS_PORT=443
+                ;;
+            "Pick different"*)
+                prompt_custom_ports 8090 8453
+                ;;
+        esac
+        port_choice_made=true
+    fi
+
+    # --- Conflict path (for target ports post-reconfigure) ---
+    local http_busy=false
+    local https_busy=false
+    port_has_conflict "$HTTP_PORT"  && http_busy=true
+    port_has_conflict "$HTTPS_PORT" && https_busy=true
+
+    if $http_busy || $https_busy; then
+        echo ""
+        echo "⚠️  Port Conflict Detected"
+        echo ""
+        if $http_busy; then
+            local app
+            app=$(port_listening_app "$HTTP_PORT")
+            echo "   Port ${HTTP_PORT} is in use by: ${app:-another process}"
+        fi
+        if $https_busy; then
+            local app
+            app=$(port_listening_app "$HTTPS_PORT")
+            echo "   Port ${HTTPS_PORT} is in use by: ${app:-another process}"
+        fi
+        echo ""
+        echo "Plak needs an HTTP and HTTPS port. How would you like to proceed?"
+        echo ""
+
+        local choice
+        choice=$(gum choose \
+            "Use alternative ports (8090 / 8453) — run alongside other tools" \
+            "Pick custom ports" \
+            "Proceed with ${HTTP_PORT}/${HTTPS_PORT} anyway" \
+            "Cancel installation")
+
+        case "$choice" in
+            "Use alternative ports"*)
+                HTTP_PORT=8090
+                HTTPS_PORT=8453
+                if ! port_is_free "$HTTP_PORT" || ! port_is_free "$HTTPS_PORT"; then
+                    gum style --foreground yellow \
+                        "⚠️  8090 or 8453 is also in use — please pick custom ports."
+                    prompt_custom_ports 8090 8453
+                fi
+                ;;
+            "Pick custom ports")
+                prompt_custom_ports 8090 8453
+                ;;
+            "Proceed with"*)
+                gum style --foreground yellow \
+                    "⚠️  Services may fail to bind on ${HTTP_PORT}/${HTTPS_PORT}."
+                ;;
+            "Cancel installation")
+                echo "🚫 Installation cancelled."
+                exit 1
+                ;;
+        esac
+        port_choice_made=true
+    fi
+
+    if $port_choice_made; then
+        gum style --foreground green \
+            "✅ Using ports ${HTTP_PORT} (HTTP) / ${HTTPS_PORT} (HTTPS)"
+    fi
+
+    # Persist the final choice — regenerate_caddyfile and get_wp_cmd both
+    # pick up the globals directly.
+    config_set HTTP_PORT "$HTTP_PORT"
+    config_set HTTPS_PORT "$HTTPS_PORT"
+
+    # --- Pre-install Checks ---
+    # $PLAK_SITE_DIR alone isn't a reliable "previous install" marker — config_set
+    # above creates it just to persist HTTP_PORT/HTTPS_PORT. Check for a
+    # directory that only a completed install writes (Adminer), so the prompt
+    # only fires when it's actually meaningful.
+    if [ -d "$ADMINER_DIR" ]; then
+        if ! $auto_yes && ! gum confirm "⚠️ Plak already appears to be installed at ~/Plak. Proceeding may overwrite some configurations. Continue?"; then
+            echo "🚫 Installation cancelled."
+            exit 0
+        fi
+    fi
+    
+    # FrankenPHP uses its own universal installer.
+    # The upstream installer tries to write to /usr/local/bin and silently
+    # falls back to CWD when that fails — which happens on a fresh Apple
+    # Silicon Mac (Homebrew lives at /opt/homebrew/bin). To handle both,
+    # we run the installer from a tempdir and, if the binary ends up there
+    # instead of on PATH, move it into $BIN_DIR ourselves.
+    if ! command -v frankenphp &> /dev/null; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Installing Dependency: frankenphp"
+        echo "   - Using the official FrankenPHP installer..."
+        local fp_tmpdir
+        fp_tmpdir=$(mktemp -d)
+        if (cd "$fp_tmpdir" && curl -sL https://frankenphp.dev/install.sh | $SUDO_CMD bash); then
+            hash -r
+            if ! command -v frankenphp &> /dev/null && [ -x "$fp_tmpdir/frankenphp" ]; then
+                $SUDO_CMD mv "$fp_tmpdir/frankenphp" "$BIN_DIR/frankenphp"
+                $SUDO_CMD chmod +x "$BIN_DIR/frankenphp"
+                hash -r
+            fi
+            rm -rf "$fp_tmpdir"
+            if command -v frankenphp &> /dev/null; then
+                echo "✅ FrankenPHP installed successfully."
+            else
+                gum style --foreground red "❌ FrankenPHP installer ran but the binary is not on PATH."
+                exit 1
+            fi
+        else
+            rm -rf "$fp_tmpdir"
+            gum style --foreground red "❌ The FrankenPHP download script failed."
+            exit 1
+        fi
+    else
+        echo "✅ FrankenPHP is already installed."
+    fi
+    
+    # On Linux with apt/dnf, FrankenPHP needs additional PHP extensions installed
+    # The DEB/RPM packages don't include all extensions by default
+    if [ "$OS" = "linux" ]; then
+        echo "📦 Installing FrankenPHP PHP extensions for WordPress..."
+        if [ "$PKG_MANAGER" = "apt" ]; then
+            # Install required PHP extensions for WordPress via apt
+            $SUDO_CMD apt install -y php-zts-mysqli php-zts-curl php-zts-gd php-zts-xml php-zts-mbstring php-zts-zip php-zts-intl php-zts-bcmath 2>/dev/null || true
+            echo "✅ FrankenPHP PHP extensions installed."
+        elif [ "$PKG_MANAGER" = "dnf" ]; then
+            # Install required PHP extensions for WordPress via dnf
+            $SUDO_CMD dnf install -y php-zts-mysqli php-zts-curl php-zts-gd php-zts-xml php-zts-mbstring php-zts-zip php-zts-intl php-zts-bcmath 2>/dev/null || true
+            echo "✅ FrankenPHP PHP extensions installed."
+        fi
+        
+        # Verify mysqli is available
+        if ! frankenphp php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
+            gum style --foreground yellow "⚠️ Warning: mysqli extension not found in FrankenPHP."
+            gum style --foreground yellow "   WordPress may not work correctly."
+            gum style --foreground yellow "   Try: sudo apt install php-zts-mysqli (for apt)"
+            gum style --foreground yellow "   Or:  sudo dnf install php-zts-mysqli (for dnf)"
+        fi
+
+        # Let FrankenPHP bind ports 80/443 as the user. Without this cap,
+        # Plak would need to sudo-start the server, which makes every
+        # dashboard-triggered file (sites, lock dirs, pidfile) root-owned.
+        if command -v setcap &>/dev/null; then
+            local fp_bin
+            fp_bin=$(command -v frankenphp)
+            if [ -n "$fp_bin" ]; then
+                echo "🔐 Granting FrankenPHP cap_net_bind_service..."
+                $SUDO_CMD setcap 'cap_net_bind_service=+ep' "$fp_bin" 2>/dev/null || \
+                    gum style --foreground yellow "⚠️ setcap failed — Plak may fall back to needing sudo."
+            fi
+        fi
+
+        # The apt frankenphp package ships a systemd unit that runs as
+        # user frankenphp reading /etc/frankenphp/Caddyfile. That contends
+        # with Plak for ports 80/443. Mask it so it stays out of our way.
+        if systemctl list-unit-files frankenphp.service &>/dev/null \
+            && systemctl cat frankenphp.service 2>/dev/null | grep -q '^\[Unit\]'; then
+            echo "🚫 Masking conflicting apt frankenphp.service..."
+            $SUDO_CMD systemctl stop frankenphp.service &>/dev/null || true
+            $SUDO_CMD systemctl disable frankenphp.service &>/dev/null || true
+            $SUDO_CMD systemctl mask frankenphp.service &>/dev/null || true
+        fi
+    fi
+
+    # MariaDB - Database server
+    install_dependency "mariadb" "mariadb" "mariadb-server" "mariadb-server" ""
+
+    # No standalone PHP install — wp-cli is invoked through frankenphp php-cli
+    # (see get_wp_cmd in main), so FrankenPHP's bundled PHP is the single PHP
+    # runtime for both web and CLI. On Linux the php-zts-* extensions installed
+    # above provide WordPress's required extensions to FrankenPHP.
+
+    # Mailpit - Email testing tool.
+    # On macOS we use the Homebrew formula. On Linux we use the upstream
+    # installer because mailpit isn't packaged in apt/dnf.
+    # Why: the upstream installer hardcodes /usr/local/bin, which doesn't
+    # exist on a fresh Apple Silicon Mac (Homebrew lives at /opt/homebrew).
+    if [ "$OS" == "macos" ]; then
+        install_dependency "mailpit" "mailpit" "" "" ""
+    elif ! command -v mailpit &> /dev/null; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Installing Dependency: mailpit"
+        echo "   - Using the official Mailpit installer..."
+        if curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | $SUDO_CMD bash; then
+            echo "✅ Mailpit installed successfully."
+        else
+            gum style --foreground red "❌ The Mailpit download script failed."
+            exit 1
+        fi
+    else
+        echo "✅ Mailpit is already installed."
+    fi
+
+    # WP-CLI - WordPress command line tool
+    # Not in default Linux repos, so we use the phar download as fallback
+    install_dependency "wp" "wp-cli" "" "" "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+
+    # --- Directory and Service Setup (Copied from original file) ---
+    echo "📁 Creating Plak directory structure..."
+    mkdir -p "$SITES_DIR" "$LOGS_DIR" "$GUI_DIR" "$ADMINER_DIR" "$CUSTOM_CADDY_DIR"
+
+    # Write the PHP ini that wp-cli (via frankenphp php-cli) will load.
+    # See the comment on $PHPRC export in main for the rationale.
+    # error_reporting=6143 is E_ALL minus E_DEPRECATED/E_USER_DEPRECATED/E_STRICT
+    # so wp-cli's bundled vendor code (react/promise, php-cli-tools/Colors.php)
+    # doesn't flood every command on PHP 8.5+.
+    echo "⚙️ Writing Plak PHP ini..."
+    cat > "$PHP_INI_FILE" <<'INI'
+memory_limit = 1G
+display_errors = 0
+error_reporting = 6143
+INI
+    echo "🗃️ Downloading Adminer 5.4.2..."
+    curl -sL "https://github.com/vrana/adminer/releases/download/v5.4.2/adminer-5.4.2.php" -o "$ADMINER_DIR/adminer-core.php"
+    # Entry point + theme assets. Keep in sync with plak_site_upgrade so upgraders
+    # pick up index.php/head() and CSS/JS changes without a full reinstall.
+    deploy_adminer_theme
+
+    echo "✨ Downloading Whoops error handler..."
+    rm -rf "$APP_DIR/whoops" # Remove any old versions first
+    mkdir -p "$APP_DIR/whoops"
+    curl -sL "https://github.com/filp/whoops/archive/refs/tags/2.15.3.tar.gz" | tar -xz -C "$APP_DIR/whoops" --strip-components=1
+
+    # --- Fedora/RHEL SELinux labeling ---
+    # The upstream FrankenPHP installer tags /usr/bin/frankenphp with the
+    # httpd_exec_t file context. On Fedora/RHEL that triggers an exec-time
+    # domain transition into httpd_t — a confined web-server domain that:
+    #   - can't read files labeled user_home_t (fails to open ~/Plak/Caddyfile
+    #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
+    #   - silently RSTs TLS connections under some configs (TCP accepts but
+    #     the TLS ClientHello gets no response)
+    # Neither failure logs an AVC — both are dontaudit'd. Retagging the binary
+    # as bin_t keeps systemd running it in unconfined_service_t, which can
+    # read user files normally. On non-SELinux distros (Debian/Ubuntu)
+    # semanage isn't in $PATH and this block is a no-op.
+    if [ "$OS" = "linux" ] && command -v semanage &>/dev/null; then
+        local fp_bin
+        fp_bin=$(command -v "$CADDY_CMD")
+        if [ -n "$fp_bin" ]; then
+            echo "🔐 Relabeling FrankenPHP for SELinux..."
+            $SUDO_CMD semanage fcontext -a -t bin_t "$fp_bin" &>/dev/null \
+                || $SUDO_CMD semanage fcontext -m -t bin_t "$fp_bin" &>/dev/null \
+                || true
+            $SUDO_CMD restorecon "$fp_bin" &>/dev/null || true
+        fi
+    fi
+
+    echo "⚙️ Starting services..."
+    if [ "$OS" == "macos" ]; then
+        if ! brew services restart mariadb; then
+            gum style --foreground red "❌ Failed to start MariaDB via Homebrew."
+            exit 1
+        fi
+    else # Linux
+        if ! $SUDO_CMD systemctl restart mariadb; then
+            gum style --foreground red "❌ Failed to start MariaDB via systemctl."
+            exit 1
+        fi
+    fi
+
+    # --- Database Configuration ---
+    # Reuse saved DB creds if present. $CONFIG_FILE always exists at this
+    # point (config_set above wrote HTTP_PORT/HTTPS_PORT), so probe for the
+    # DB keys specifically rather than just the file.
+    local has_db_config=false
+    if [ -f "$CONFIG_FILE" ] && grep -q '^DB_USER=' "$CONFIG_FILE" 2>/dev/null; then
+        has_db_config=true
+    fi
+    if $has_db_config && { $auto_yes || gum confirm "Existing Plak database config found. Use it and skip database setup?"; }; then
+        echo "✅ Using existing database configuration."
+    else
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Configuring MariaDB"
+        echo "   - Waiting for MariaDB service..."
+        i=0
+        while ! mysqladmin ping --silent; do
+            sleep 1;
+            i=$((i+1))
+            if [ $i -ge 20 ]; then
+                gum style --foreground red "❌ MariaDB did not become available in time."
+                exit 1
+            fi
+        done
+        echo "   - ✅ MariaDB is ready."
+        local db_user="plak_site_user"
+        local db_pass
+        db_pass=$(plak_site_random_password 16)
+        local sql_command="DROP USER IF EXISTS '$db_user'@'localhost'; CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+        local user_created_successfully=false
+
+        echo "   - Attempting automatic setup..."
+        if echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
+            echo "   - ✅ Automatic database user creation successful."
+            user_created_successfully=true
+        else
+            echo "   - ⚠️ Automatic setup failed. Falling back to manual credential entry..."
+            local root_user
+            root_user=$(gum input --value "root" --prompt "MariaDB Root Username: ")
+            local root_pass
+            root_pass=$(gum input --password --placeholder "Password for '$root_user'")
+
+            if echo "$sql_command" | mysql -u "$root_user" -p"$root_pass"; then
+                echo "   - ✅ Manual database user creation successful."
+                user_created_successfully=true
+            fi
+        fi
+
+        if $user_created_successfully; then
+            echo "   - 📝 Saving new configuration..."
+            config_set DB_USER "$db_user"
+            config_set DB_PASSWORD "$db_pass"
+        else
+            gum style --foreground red "❌ Database user creation failed. Please check credentials and MariaDB logs."
+            exit 1
+        fi
+    fi
+    
+    # --- Finalize ---
+    create_whoops_bootstrap
+    create_gui_file
+    regenerate_caddyfile
+
+    echo "✅ Initial configuration complete. Starting services..."
+    plak_site_enable
+
+    # Install the local CA into the system trust store and any browser NSS
+    # databases we can find. Needs Caddy up (for the admin API trust call)
+    # and the root cert to exist (Caddy generated it during the initial
+    # plak_site_enable above). Idempotent — users can re-run via plak trust.
+    echo ""
+    plak_site_trust
+
+    # If the user changed HTTPS ports during install AND there are pre-existing
+    # WordPress sites in $SITES_DIR, migrate their stored URLs to the new port.
+    # On a fresh install with no sites, this is a silent no-op.
+    if [ "$original_https" != "$HTTPS_PORT" ]; then
+        if [ -d "$SITES_DIR" ] && [ -n "$(find "$SITES_DIR" -maxdepth 2 -name wp-config.php -print -quit 2>/dev/null)" ]; then
+            echo ""
+            echo "🔄 Updating WordPress site URLs to new HTTPS port..."
+            update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"
+        fi
+    fi
+
+    # Show post-install guidance
+    echo ""
+    if [ "$HTTPS_PORT" != "443" ]; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
+            "📋 First-Time Setup Notes" \
+            "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}" \
+            "Access the dashboard at: $(url_for plak.localhost)"
+    else
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
+            "📋 First-Time Setup Notes"
+    fi
+    echo ""
+    echo "  Your browser will show a certificate warning when accessing Plak sites."
+    echo "  This is normal for local development with self-signed certificates."
+    echo ""
+    echo "  Options to resolve:"
+    echo "    1. Click 'Advanced' and 'Proceed' to accept the certificate"
+    echo "    2. Or trust Caddy's root CA certificate system-wide (recommended)"
+    echo ""
+    if [ "$OS" == "macos" ]; then
+        echo "  On macOS, Caddy typically auto-trusts its CA. If not, the CA cert is at:"
+        echo "    ~/Library/Application Support/Caddy/pki/authorities/local/root.crt"
+    else
+        echo "  On Linux, the CA certificate is located at:"
+        echo "    ~/.local/share/caddy/pki/authorities/local/root.crt"
+        echo ""
+        echo "  To trust it system-wide (Ubuntu/Debian):"
+        echo "    sudo cp ~/.local/share/caddy/pki/authorities/local/root.crt /usr/local/share/ca-certificates/caddy.crt"
+        echo "    sudo update-ca-certificates"
+        echo ""
+        echo "  For browser-only trust, import the certificate in your browser settings."
+    fi
+    
+    if [ "$IS_WSL" = true ]; then
+        echo ""
+        gum style --foreground yellow "  WSL: Run 'plak wsl-hosts' for Windows hosts file setup instructions."
+    fi
+}

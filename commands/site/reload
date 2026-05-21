@@ -1,0 +1,62 @@
+plak_site_reload() {
+    # Auto-heal any root-owned state left over from a pre-1.10 install.
+    heal_plak_site_state_ownership
+    # Serialize reloads to keep Caddy's admin server healthy. The dashboard
+    # fires reload in the background after every site add/delete, so rapid
+    # actions can spawn many concurrent plak-reload processes; two concurrent
+    # frankenphp reload calls reliably deadlock Caddy's admin endpoint with
+    # a 10s shutdown timeout.
+    #
+    # Strategy: first caller holds the lock and does the work. Subsequent
+    # callers touch a "pending" marker and exit immediately. When the holder
+    # finishes it re-runs once if the marker is set, so the final state
+    # converges on the latest on-disk Sites listing.
+    #
+    # Implementation note: we use a single lock *file* (not a dir) opened with
+    # set -C (noclobber) so the pid is written atomically with the lock's
+    # creation. Earlier mkdir + echo > pid left a TOCTOU window where a
+    # competing reload could read an empty pid, decide the holder was dead,
+    # and stomp the lock — letting 3+ reloads run and race create_gui_file's
+    # .tmp files.
+    local lock_file="$PLAK_SITE_DIR/.reload.lock"
+    local pending="$PLAK_SITE_DIR/.reload.pending"
+
+    acquire_reload_lock() {
+        (set -C; echo "$$" > "$lock_file") 2>/dev/null
+    }
+
+    if ! acquire_reload_lock; then
+        local holder_pid
+        holder_pid=$(cat "$lock_file" 2>/dev/null)
+        if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
+            # A real holder is running — leave a breadcrumb and bail.
+            touch "$pending" 2>/dev/null || true
+            return 0
+        fi
+        # Stale (holder died, or was a pre-1.10 root-owned file). Reclaim,
+        # falling back to sudo in case ownership blocks us.
+        rm -f "$lock_file" 2>/dev/null || $SUDO_CMD -n rm -f "$lock_file" 2>/dev/null || true
+        if ! acquire_reload_lock; then
+            # Lost the race to another reclaimer — they've got it.
+            touch "$pending" 2>/dev/null || true
+            return 0
+        fi
+    fi
+
+    # Trap for abnormal exits (Ctrl-C, signals). The happy-path cleanup
+    # happens at the function end since the trap was observed not firing
+    # reliably when plak_site_reload is invoked via shell_exec(…&) from PHP.
+    trap 'rm -f "$lock_file" 2>/dev/null; trap - EXIT INT TERM' EXIT INT TERM
+
+    while :; do
+        rm -f "$pending"
+        create_gui_file
+        regenerate_caddyfile
+        update_etc_hosts
+        [ -f "$pending" ] || break
+    done
+
+    # Explicit unlock — belt-and-suspenders with the trap.
+    rm -f "$lock_file" 2>/dev/null
+    trap - EXIT INT TERM
+}

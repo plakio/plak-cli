@@ -1,0 +1,182 @@
+PLAK_SKILL_NAME="plak-cli"
+PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/plak-cli/main/skills/plak-cli}"
+
+plak_skill_help() {
+    cat <<'HELP'
+Usage:
+  plak skill install [codex|claude-code|opencode|pi|all]
+  plak skill help
+
+Installs the Plak CLI agent skill for supported coding agents.
+
+Targets:
+  codex        ~/.codex/skills/plak-cli/SKILL.md
+  claude-code  ~/.claude/skills/plak-cli/SKILL.md
+  opencode     ~/.config/opencode/skill/plak-cli/SKILL.md
+  pi           ~/.pi/agent/skills/plak-cli/SKILL.md
+  all          Install for every supported target
+HELP
+}
+
+plak_skill_target_path() {
+    case "$1" in
+        codex) echo "$HOME/.codex/skills/$PLAK_SKILL_NAME" ;;
+        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
+        opencode) echo "$HOME/.config/opencode/skill/$PLAK_SKILL_NAME" ;;
+        pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_skill_normalize_target() {
+    case "$1" in
+        codex|openai|openai-codex) echo "codex" ;;
+        claude|claude-code|claudecode) echo "claude-code" ;;
+        opencode|open-code) echo "opencode" ;;
+        pi) echo "pi" ;;
+        all) echo "all" ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_skill_source_dir() {
+    local script_dir cwd_dir
+    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+    cwd_dir=$(pwd)
+
+    if [ -f "$script_dir/skills/$PLAK_SKILL_NAME/SKILL.md" ]; then
+        echo "$script_dir/skills/$PLAK_SKILL_NAME"
+    elif [ -f "$cwd_dir/skills/$PLAK_SKILL_NAME/SKILL.md" ]; then
+        echo "$cwd_dir/skills/$PLAK_SKILL_NAME"
+    else
+        return 1
+    fi
+}
+
+plak_skill_install_target() {
+    local target="$1" dest source_dir
+    dest=$(plak_skill_target_path "$target") || return 1
+
+    mkdir -p "$dest"
+
+    if source_dir=$(plak_skill_source_dir); then
+        cp -R "$source_dir/." "$dest/"
+    else
+        if ! plak_command_exists curl; then
+            plak_ui_error "curl is required to download the Plak skill."
+            return 1
+        fi
+        curl -fsSL "$PLAK_SKILL_RAW_BASE/SKILL.md" -o "$dest/SKILL.md"
+    fi
+
+    if [ ! -f "$dest/SKILL.md" ]; then
+        plak_ui_error "Failed to install skill for $target."
+        return 1
+    fi
+
+    plak_ui_success "Installed Plak skill for $target: $dest/SKILL.md"
+}
+
+plak_skill_prompt_targets() {
+    local choices selected input
+    choices=$(cat <<'CHOICES'
+codex
+claude-code
+opencode
+pi
+CHOICES
+)
+
+    if plak_command_exists gum && plak_has_tty; then
+        selected=$(printf '%s\n' "$choices" | gum choose --no-limit --header "Which agents do you use?")
+        [ -n "$selected" ] || return 1
+        printf '%s\n' "$selected"
+        return 0
+    fi
+
+    echo "Which agents do you use? Enter one or more numbers separated by commas:"
+    echo "  1) codex"
+    echo "  2) claude-code"
+    echo "  3) opencode"
+    echo "  4) pi"
+    printf "> "
+    read -r input
+
+    case ",$input," in *",1,"*) echo "codex" ;; esac
+    case ",$input," in *",2,"*) echo "claude-code" ;; esac
+    case ",$input," in *",3,"*) echo "opencode" ;; esac
+    case ",$input," in *",4,"*) echo "pi" ;; esac
+}
+
+plak_skill_install() {
+    local targets=() arg normalized target failed=false
+
+    if [ "$#" -eq 0 ]; then
+        while IFS= read -r target; do
+            [ -n "$target" ] && targets+=("$target")
+        done < <(plak_skill_prompt_targets)
+    else
+        for arg in "$@"; do
+            case "$arg" in
+                --help|-h)
+                    plak_skill_help
+                    return 0
+                    ;;
+                *)
+                    if ! normalized=$(plak_skill_normalize_target "$arg"); then
+                        plak_ui_error "Unknown skill target: $arg"
+                        plak_skill_help
+                        return 1
+                    fi
+                    if [ "$normalized" = "all" ]; then
+                        targets=(codex claude-code opencode pi)
+                    else
+                        targets+=("$normalized")
+                    fi
+                    ;;
+            esac
+        done
+    fi
+
+    if [ "${#targets[@]}" -eq 0 ]; then
+        plak_ui_warn "No agent selected."
+        return 0
+    fi
+
+    local seen=","
+    for target in "${targets[@]}"; do
+        case "$seen" in
+            *",$target,"*) continue ;;
+        esac
+        seen="$seen$target,"
+        if ! plak_skill_install_target "$target"; then
+            failed=true
+        fi
+    done
+
+    if $failed; then
+        return 1
+    fi
+
+    echo ""
+    echo "Restart your agent session so it can discover the new skill."
+}
+
+plak_skill() {
+    local action="${1:-help}"
+    [ "$#" -gt 0 ] && shift
+
+    case "$action" in
+        install)
+            plak_skill_install "$@"
+            ;;
+        help|--help|-h)
+            plak_skill_help
+            ;;
+        *)
+            plak_ui_error "Unknown skill action: $action"
+            plak_skill_help
+            return 1
+            ;;
+    esac
+}

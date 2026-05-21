@@ -1,0 +1,37 @@
+plak_site_disable() {
+    echo "🛑 Disabling Plak services..."
+    
+    echo "   - Stopping Caddy/FrankenPHP..."
+
+    # Stop services on MacOS
+    if [ "$OS" == "macos" ]; then
+        launchctl unload "$PLAK_SITE_DIR/com.plak.caddy.plist" &>/dev/null
+        "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null 2>&1
+        echo "   - Stopping MariaDB..."
+        brew services stop mariadb &>/dev/null
+        echo "   - Stopping Mailpit..."
+        launchctl unload "$PLAK_SITE_DIR/com.plak.mailpit.plist" &>/dev/null
+    fi
+
+    # Stop services on Linux
+    if [ "$OS" == "linux" ]; then
+        # v1.10+: FrankenPHP runs as plak.service under systemd. Try that
+        # first; fall back to frankenphp stop in case a user skipped
+        # plak_site_enable since the upgrade and still has an ad-hoc instance.
+        $SUDO_CMD systemctl stop plak.service &>/dev/null \
+            || "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || $SUDO_CMD -n "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || true
+
+        # Get the correct MariaDB service name
+        local mariadb_service
+        mariadb_service=$(get_mariadb_service_name)
+
+        echo "   - Stopping MariaDB ($mariadb_service)..."
+        $SUDO_CMD systemctl stop "$mariadb_service" &>/dev/null
+        echo "   - Stopping Mailpit..."
+        $SUDO_CMD systemctl stop mailpit &>/dev/null
+    fi
+    
+    echo "✅ Services stopped."
+}

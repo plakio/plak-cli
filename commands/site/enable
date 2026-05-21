@@ -1,0 +1,164 @@
+plak_site_enable() {
+    echo "🚀 Enabling Plak services..."
+    
+    # Ensure log directory exists
+    mkdir -p "$LOGS_DIR"
+
+    if [ "$OS" == "macos" ]; then
+        echo "   - Starting MariaDB..."
+        brew services start mariadb
+
+        local plist_path="$PLAK_SITE_DIR/com.plak.mailpit.plist"
+        local mailpit_bin
+        mailpit_bin=$(command -v mailpit)
+
+        # Stop and unload any existing service to ensure our custom one is used.
+        launchctl unload "$plist_path" &>/dev/null
+        brew services stop mailpit &>/dev/null
+
+        echo "   - Generating custom Mailpit service file..."
+        cat > "$plist_path" << EOM
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+        <key>KeepAlive</key>
+        <true/>
+        <key>Label</key>
+        <string>com.plak.mailpit</string>
+        <key>ProgramArguments</key>
+        <array>
+                <string>$mailpit_bin</string>
+                <string>--database</string>
+                <string>$PLAK_SITE_DIR/mailpit.db</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>StandardErrorPath</key>
+        <string>$LOGS_DIR/mailpit.log</string>
+        <key>StandardOutPath</key>
+        <string>$LOGS_DIR/mailpit.log</string>
+</dict>
+</plist>
+EOM
+        # Load and start the new service.
+        launchctl load "$plist_path"
+        launchctl start com.plak.mailpit
+    fi
+    
+    if [ "$OS" == "linux" ]; then
+        # Get the correct MariaDB service name for this distro
+        local mariadb_service
+        mariadb_service=$(get_mariadb_service_name)
+        
+        echo "   - Starting MariaDB ($mariadb_service)..."
+        $SUDO_CMD systemctl enable "$mariadb_service" &>/dev/null
+        $SUDO_CMD systemctl restart "$mariadb_service"
+        
+        local service_path="/etc/systemd/system/mailpit.service"
+        local mailpit_bin
+        mailpit_bin=$(command -v mailpit)
+        local current_user
+        current_user=$(whoami)
+
+        echo "   - Generating custom Mailpit service file..."
+        # Write the unit file directly to its destination via sudo tee.
+        # Previously we used mktemp + sudo mv, but on Fedora/SELinux mv
+        # preserves the source file's user_tmp_t context from /tmp, and
+        # systemd refuses to load units outside the systemd_unit_file_t
+        # type. Writing fresh into /etc/systemd/system/ picks up that
+        # directory's type-transition rule automatically.
+        $SUDO_CMD tee "$service_path" >/dev/null << EOM
+[Unit]
+Description=Mailpit Service for Plak
+After=network.target
+
+[Service]
+ExecStart=$mailpit_bin --database $PLAK_SITE_DIR/mailpit.db
+Restart=always
+User=$current_user
+
+[Install]
+WantedBy=multi-user.target
+EOM
+        $SUDO_CMD chmod 644 "$service_path"
+
+        # --- FrankenPHP / Plak systemd unit ---
+        # Mirrors the mailpit pattern so the stack survives a reboot. The
+        # apt frankenphp.service was masked during plak install so there
+        # is no name conflict; we use plak.service to keep the scope
+        # clear ("this is Plak's managed FrankenPHP").
+        local plak_site_service_path="/etc/systemd/system/plak.service"
+        local frankenphp_bin
+        frankenphp_bin=$(command -v "$CADDY_CMD")
+
+        echo "   - Generating Plak FrankenPHP service file..."
+        # Same sudo-tee pattern as the mailpit unit above; see the note
+        # there for why mktemp + sudo mv doesn't survive SELinux.
+        $SUDO_CMD tee "$plak_site_service_path" >/dev/null << EOM
+[Unit]
+Description=FrankenPHP for Plak
+After=network.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+ExecStart=$frankenphp_bin run --config $CADDYFILE_PATH --pidfile $PLAK_SITE_DIR/caddy.pid
+ExecReload=$frankenphp_bin reload --config $CADDYFILE_PATH --address localhost:2019
+Restart=on-failure
+RestartSec=2s
+User=$current_user
+Environment=HOME=/home/$current_user
+Environment=PHPRC=$PHP_INI_FILE
+
+[Install]
+WantedBy=multi-user.target
+EOM
+        $SUDO_CMD chmod 644 "$plak_site_service_path"
+
+        # Reload systemd, then enable and start both Plak-managed services
+        $SUDO_CMD systemctl daemon-reload
+        $SUDO_CMD systemctl enable mailpit &>/dev/null
+        $SUDO_CMD systemctl restart mailpit
+        $SUDO_CMD systemctl enable plak.service &>/dev/null
+        # Stop any ad-hoc frankenphp started by a pre-1.10 plak_site_enable so
+        # systemctl can take ownership of the listening sockets cleanly.
+        "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || $SUDO_CMD -n "$CADDY_CMD" stop --config "$CADDYFILE_PATH" &>/dev/null \
+            || true
+        $SUDO_CMD systemctl restart plak.service
+    fi
+
+    # Skip the ad-hoc Caddy start on Linux — systemd handles it now.
+    if [ "$OS" != "linux" ]; then
+        start_caddy_service
+    fi
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+            "✅ Services are running" \
+            "Dashboard: $(url_for plak.localhost)" \
+            "Adminer:   $(url_for db.plak.localhost)" \
+            "Mailpit:   $(url_for mail.plak.localhost)"
+        
+        # Show WSL-specific info
+        if [ "$IS_WSL" = true ]; then
+            local wsl_ip
+            wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            echo ""
+            gum style --foreground yellow "WSL Note: To access sites from Windows browser, update Windows hosts file."
+            echo ""
+            echo "  Run this in PowerShell (as Administrator):"
+            echo ""
+            echo "  Add-Content -Path C:\\Windows\\System32\\drivers\\etc\\hosts -Value \"\`n$wsl_ip plak.localhost db.plak.localhost mail.plak.localhost\""
+            echo ""
+            echo "  Or manually add this line to C:\\Windows\\System32\\drivers\\etc\\hosts:"
+            echo "  $wsl_ip plak.localhost db.plak.localhost mail.plak.localhost"
+            echo ""
+            echo "  Note: WSL IP may change on restart. Run 'plak wsl-hosts' to get updated commands."
+        fi
+    else
+        gum style --foreground red "❌ Caddy server failed to start. Check $LOGS_DIR/caddy-process.log for errors."
+    fi
+}

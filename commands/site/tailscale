@@ -1,0 +1,149 @@
+# --- Tailscale Configuration ---
+TAILSCALE_CONFIG="$APP_DIR/tailscale"
+
+plak_site_tailscale_enable() {
+    local hostname="$1"
+
+    # Try to auto-detect hostname if not provided
+    if [ -z "$hostname" ]; then
+        if command -v tailscale &> /dev/null; then
+            echo "🔎 Detecting Tailscale hostname..."
+            # Extract DNSName from Self section (handles both "key": "value" and "key":"value" formats)
+            hostname=$(tailscale status --json 2>/dev/null | grep -m1 '"DNSName"' | sed 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | sed 's/\.$//')
+        fi
+    fi
+
+    # Interactive mode if still no hostname
+    if [ -z "$hostname" ]; then
+        echo "📝 Enter your Tailscale machine hostname"
+        echo "   (e.g., mycomputer.tail1234.ts.net)"
+        hostname=$(gum input --width 0 --placeholder "your-machine.tailnet.ts.net")
+    fi
+
+    if [ -z "$hostname" ]; then
+        gum style --foreground red "❌ Error: Tailscale hostname is required."
+        exit 1
+    fi
+
+    # Remove any trailing dot
+    hostname="${hostname%.}"
+
+    # Validate it looks like a hostname
+    if [[ ! "$hostname" =~ \. ]]; then
+        gum style --foreground red "❌ Error: Invalid hostname. Expected format: machine.tailnet.ts.net"
+        exit 1
+    fi
+
+    # Save the configuration
+    mkdir -p "$APP_DIR"
+    echo "$hostname" > "$TAILSCALE_CONFIG"
+
+    echo "✅ Tailscale access enabled!"
+    echo "   Hostname: $hostname"
+    echo ""
+    echo "   Regenerating Caddyfile with port-based routing..."
+    echo ""
+    regenerate_caddyfile
+    
+    echo ""
+    echo "   Run 'plak tailscale status' to see all URLs."
+}
+
+plak_site_tailscale_disable() {
+    if [ -f "$TAILSCALE_CONFIG" ]; then
+        rm "$TAILSCALE_CONFIG"
+        
+        # Clean up port files
+        if [ -d "$SITES_DIR" ]; then
+            for site_path in "$SITES_DIR"/*; do
+                if [ -f "$site_path/tailscale_port" ]; then
+                    rm "$site_path/tailscale_port"
+                fi
+            done
+        fi
+        
+        echo "✅ Tailscale access disabled."
+        regenerate_caddyfile
+    else
+        echo "ℹ️ Tailscale access is not currently enabled."
+    fi
+}
+
+plak_site_tailscale_status() {
+    echo "🔎 Tailscale Access Status"
+    echo ""
+    
+    if [ -f "$TAILSCALE_CONFIG" ]; then
+        local hostname
+        hostname=$(cat "$TAILSCALE_CONFIG")
+        gum style --foreground green "✅ Enabled"
+        echo "   Hostname: $hostname"
+        echo ""
+        echo "   Your sites are accessible at:"
+        
+        if [ -d "$SITES_DIR" ]; then
+            for site_path in "$SITES_DIR"/*; do
+                if [ -d "$site_path" ]; then
+                    local site_name
+                    site_name=$(basename "$site_path" | sed 's/\.localhost$//')
+                    local port=""
+                    if [ -f "$site_path/tailscale_port" ]; then
+                        port=$(cat "$site_path/tailscale_port")
+                    fi
+                    if [ -n "$port" ]; then
+                        echo "   - https://${hostname}:${port}  (${site_name})"
+                    fi
+                fi
+            done
+        fi
+        
+        echo ""
+        echo "   Global services:"
+        echo "   - https://${hostname}:9900  (Dashboard)"
+        echo "   - https://${hostname}:9901  (Mailpit)"
+        echo "   - https://${hostname}:9902  (Adminer)"
+    else
+        gum style --foreground yellow "❌ Disabled"
+        echo ""
+        echo "   Enable with: plak tailscale enable [hostname]"
+    fi
+}
+
+plak_site_tailscale() {
+    local action="$1"
+    shift 2>/dev/null || true
+
+    case "$action" in
+        enable)
+            plak_site_tailscale_enable "$@"
+            ;;
+        disable)
+            plak_site_tailscale_disable
+            ;;
+        status)
+            plak_site_tailscale_status
+            ;;
+        *)
+            echo "Usage: plak tailscale <subcommand>"
+            echo ""
+            echo "Expose all Plak sites to your Tailscale network via port-based routing."
+            echo "This allows devices on your Tailnet (like your iPhone) to access"
+            echo "your local development sites."
+            echo ""
+            echo "Your Tailscale hostname is automatically detected when you run 'enable'."
+            echo "Each site gets a unique port (starting at 9001), so you can access them at:"
+            echo "  https://<your-tailscale-hostname>:<port>"
+            echo ""
+            echo "Subcommands:"
+            echo "  enable     Enable Tailscale access (auto-detects hostname)"
+            echo "  disable    Disable Tailscale access"
+            echo "  status     Show current Tailscale configuration and URLs"
+            echo ""
+            echo "Examples:"
+            echo "  plak tailscale enable"
+            echo "  plak tailscale status"
+            echo "  plak tailscale disable"
+            exit 0
+            ;;
+    esac
+}

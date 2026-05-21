@@ -1,0 +1,114 @@
+plak_site_delete() {
+    source_config
+    local site_name="$1"
+    for protected_name in $PROTECTED_NAMES; do
+        if [ "$site_name" == "$protected_name" ]; then
+            gum style --foreground red "❌ Error: '$site_name' is a reserved name and cannot be deleted."
+            exit 1
+        fi
+    done
+
+    local force_delete=false
+    local no_reload=false
+    for arg in "$@"; do
+        case "$arg" in
+            --force|--yes|-y) force_delete=true ;;
+            --no-reload) no_reload=true ;;
+        esac
+    done
+    # Non-interactive callers (dashboard shell_exec, scripted cleanup) have no
+    # TTY; gum confirm aborts there. Auto-promote so the delete doesn't hang.
+    [ -t 0 ] || force_delete=true
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    if [ ! -d "$site_dir" ]; then
+        echo "⚠️ Site '$site_name.localhost' not found."
+        exit 1
+    fi
+
+    if ! $force_delete; then
+        if ! gum confirm "🚨 Are you sure you want to delete '$site_name.localhost'? This will remove its files and potentially its database."; then
+            echo "🚫 Deletion cancelled."
+            exit 0
+        fi
+    fi
+
+    # Collect hostnames to strip from /etc/hosts BEFORE we rm -rf the site dir
+    local hosts_to_remove=("$site_name.localhost")
+    if [ -f "$site_dir/mappings" ]; then
+        while IFS= read -r mapping || [ -n "$mapping" ]; do
+            if [ -n "$mapping" ]; then
+                hosts_to_remove+=("$mapping")
+            fi
+        done < "$site_dir/mappings"
+    fi
+
+    echo "🔥 Deleting site: $site_name.localhost"
+    if [ -f "$site_dir/public/wp-config.php" ]; then
+        local db_name
+        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+        echo "🗄️ Deleting database: $db_name"
+        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
+    fi
+
+    # Don't trust the bare rm — a pre-1.10 dashboard-created site would be
+    # root-owned (sudo-started FrankenPHP), and a silent rm failure would
+    # previously still report "removed" while leaving the dir on disk. Try
+    # sudo -n as a fallback, then surface the failure to the caller.
+    if ! rm -rf "$site_dir" 2>/dev/null; then
+        if ! $SUDO_CMD -n rm -rf "$site_dir" 2>/dev/null; then
+            gum style --foreground red "❌ Failed to delete '$site_dir' — permission denied."
+            gum style --foreground yellow "   Run: sudo rm -rf '$site_dir'"
+            exit 1
+        fi
+    fi
+    echo "✅ Directory deleted."
+
+    # --- Delete Custom Caddy Directives ---
+    local custom_conf_file="$CUSTOM_CADDY_DIR/$site_name.localhost"
+    if [ -f "$custom_conf_file" ]; then
+        rm "$custom_conf_file"
+        echo "⚙️ Custom directives deleted."
+    fi
+
+    # --- Clean /etc/hosts entries ---
+    local entries_exist=false
+    local host
+    for host in "${hosts_to_remove[@]}"; do
+        if grep -qE "^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$" /etc/hosts 2>/dev/null; then
+            entries_exist=true
+            break
+        fi
+    done
+
+    if $entries_exist; then
+        echo "🧹 Removing /etc/hosts entries (requires sudo)..."
+        local sed_args=()
+        for host in "${hosts_to_remove[@]}"; do
+            sed_args+=(-e "/^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$/d")
+        done
+        # Use non-interactive sudo when we don't have a TTY (e.g., the dashboard's
+        # PHP shell_exec). In that context an interactive sudo prompt can hang
+        # the caller waiting for a password that will never arrive. From a real
+        # terminal the flag is empty, so sudo prompts as normal.
+        local sudo_flag=""
+        [ -t 0 ] || sudo_flag="-n"
+        if sudo $sudo_flag sed -i.bak -E "${sed_args[@]}" /etc/hosts 2>/dev/null; then
+            sudo $sudo_flag rm -f /etc/hosts.bak 2>/dev/null
+            echo "   - ✅ /etc/hosts cleaned."
+        else
+            gum style --foreground yellow "   - ⚠️ Skipped /etc/hosts cleanup (sudo unavailable from this context). Run 'plak reload' from a terminal to sync."
+        fi
+    fi
+
+    # Regenerate the Caddyfile so Caddy stops holding log file handles for
+    # this site. Without this, a later Caddy restart would re-create the
+    # deleted directory skeleton from the stale Caddyfile entry. The
+    # dashboard passes --no-reload because it batches one reload per
+    # delete queue drain.
+    if [ "$no_reload" = false ]; then
+        regenerate_caddyfile &>/dev/null
+    fi
+
+    echo "✅ Site '$site_name.localhost' has been removed."
+}

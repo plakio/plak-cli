@@ -1,0 +1,327 @@
+# --- Share Command ---
+# Creates a temporary public tunnel to share a local site via Cloudflare Quick Tunnels
+# Requires cloudflared (installed on-demand if missing)
+
+SHARE_PROXY_PORT=19876
+
+plak_site_share() {
+    local site_name="$1"
+    
+    # --- 1. Validate Site ---
+    if [ -z "$site_name" ]; then
+        # Interactive mode: let user select a site
+        local all_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            if [ -d "$site_dir" ]; then
+                all_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
+        
+        if [ ${#all_sites[@]} -eq 0 ]; then
+            gum style --foreground red "Error: No sites found. Create one with 'plak add <name>'."
+            exit 1
+        fi
+        
+        echo "Select a site to share:"
+        site_name=$(gum choose "${all_sites[@]}")
+        
+        if [ -z "$site_name" ]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+    
+    # Normalize site name (remove .localhost suffix if present)
+    site_name="${site_name%.localhost}"
+    
+    local site_dir="$SITES_DIR/${site_name}.localhost"
+    
+    if [ ! -d "$site_dir" ]; then
+        gum style --foreground red "Error: Site '${site_name}.localhost' not found."
+        exit 1
+    fi
+    
+    local local_hostname="${site_name}.localhost"
+    
+    # --- 2. Check for cloudflared (install on-demand if missing) ---
+    if ! command -v cloudflared &> /dev/null; then
+        echo "cloudflared is required for plak share but is not installed."
+        echo ""
+        
+        local install_cmd=""
+        local install_name=""
+        
+        if command -v brew &> /dev/null; then
+            install_cmd="brew install cloudflared"
+            install_name="Homebrew"
+        elif command -v apt-get &> /dev/null; then
+            # Debian/Ubuntu - need to add Cloudflare's repo first
+            install_cmd="curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list && sudo apt-get update && sudo apt-get install -y cloudflared"
+            install_name="apt"
+        elif command -v dnf &> /dev/null; then
+            # Fedora/RHEL
+            install_cmd="curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo | sudo tee /etc/yum.repos.d/cloudflared.repo && sudo dnf install -y cloudflared"
+            install_name="dnf"
+        fi
+        
+        if [ -n "$install_cmd" ]; then
+            if gum confirm "Install cloudflared via ${install_name}?"; then
+                echo "Installing cloudflared..."
+                eval "$install_cmd"
+                if ! command -v cloudflared &> /dev/null; then
+                    gum style --foreground red "Error: Failed to install cloudflared."
+                    exit 1
+                fi
+                echo "cloudflared installed successfully."
+                echo ""
+            else
+                gum style --foreground red "Error: cloudflared is required."
+                exit 1
+            fi
+        else
+            gum style --foreground red "Error: cloudflared not found."
+            echo "Install it from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+            exit 1
+        fi
+    fi
+    
+    # --- 3. Check for Python (needed for the HTTP proxy) ---
+    local python_cmd=""
+    if command -v python3 &> /dev/null; then
+        python_cmd="python3"
+    elif command -v python &> /dev/null; then
+        python_cmd="python"
+    else
+        gum style --foreground red "Error: Python is required for plak share."
+        exit 1
+    fi
+    
+    # --- 4. Create temp files ---
+    local tunnel_output
+    tunnel_output=$(mktemp)
+    
+    # --- 5. Cleanup function ---
+    local cleanup_triggered=""
+    cleanup() {
+        cleanup_triggered=1
+        echo ""
+        echo "Stopping tunnel..."
+        # Kill processes and suppress job termination messages
+        if [ -n "$proxy_pid" ]; then
+            kill $proxy_pid 2>/dev/null
+            wait $proxy_pid 2>/dev/null
+        fi
+        if [ -n "$tunnel_pid" ]; then
+            kill $tunnel_pid 2>/dev/null
+            wait $tunnel_pid 2>/dev/null
+        fi
+        rm -f "$tunnel_output"
+        echo "Done."
+    }
+    trap cleanup EXIT
+    
+    # --- 6. Display initial message ---
+    echo ""
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "Starting public tunnel for ${site_name}" \
+        "" \
+        "Local: $(url_for "${local_hostname}")" \
+        "" \
+        "Press Ctrl+C to stop sharing."
+    echo ""
+    
+    echo "Starting Cloudflare tunnel..."
+    
+    # --- 7. Start cloudflared to get the public URL first ---
+    # Use --protocol http2 for better compatibility (QUIC can be blocked by firewalls)
+    cloudflared tunnel --url http://localhost:${SHARE_PROXY_PORT} \
+        --protocol http2 --no-autoupdate > "$tunnel_output" 2>&1 &
+    tunnel_pid=$!
+    
+    # Wait for the URL to appear in the output
+    local public_url=""
+    local attempts=0
+    local max_attempts=30
+    
+    while [ -z "$public_url" ] && [ $attempts -lt $max_attempts ]; do
+        sleep 1
+        ((attempts++))
+        
+        if ! kill -0 $tunnel_pid 2>/dev/null; then
+            gum style --foreground red "Error: Cloudflare tunnel failed to start."
+            cat "$tunnel_output"
+            exit 1
+        fi
+        
+        public_url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$tunnel_output" 2>/dev/null | head -1)
+    done
+    
+    if [ -z "$public_url" ]; then
+        gum style --foreground red "Error: Could not get public URL from Cloudflare"
+        cat "$tunnel_output"
+        exit 1
+    fi
+    
+    # Extract just the hostname from the URL
+    local public_host="${public_url#https://}"
+    
+    gum style --foreground 212 --bold "Public URL: $public_url"
+    echo ""
+    echo "Share this URL with anyone to give them access to your site."
+    echo ""
+    
+    # --- 8. Start Python HTTP proxy that rewrites URLs ---
+    echo "Starting local proxy with URL rewriting..."
+    
+    $python_cmd - "$local_hostname" "$SHARE_PROXY_PORT" "$public_host" "$HTTPS_PORT" << 'PYTHON_PROXY' &
+import sys
+import ssl
+import re
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.request import Request, urlopen
+
+TARGET_HOST = sys.argv[1]  # e.g., anchordev.localhost
+LISTEN_PORT = int(sys.argv[2])
+PUBLIC_HOST = sys.argv[3]  # e.g., random-words.trycloudflare.com
+HTTPS_PORT = int(sys.argv[4]) if len(sys.argv) > 4 else 443
+TARGET_AUTHORITY = TARGET_HOST if HTTPS_PORT == 443 else f"{TARGET_HOST}:{HTTPS_PORT}"
+
+# Create SSL context that doesn't verify certificates (for self-signed)
+ssl_ctx = ssl.create_default_context()
+ssl_ctx.check_hostname = False
+ssl_ctx.verify_mode = ssl.CERT_NONE
+
+# Content types that should have URL rewriting
+REWRITABLE_TYPES = ('text/html', 'text/css', 'application/javascript', 'application/json', 'text/javascript')
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    
+    def log_message(self, format, *args):
+        # Log requests in a nice format
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+        # Get client IP from CF-Connecting-IP (Cloudflare) or X-Forwarded-For
+        client_ip = self.headers.get('CF-Connecting-IP',
+                    self.headers.get('X-Forwarded-For', self.client_address[0]))
+        # If multiple IPs in X-Forwarded-For, take the first (original client)
+        if ',' in client_ip:
+            client_ip = client_ip.split(',')[0].strip()
+        # args[0] is typically "METHOD /path HTTP/1.1", args[1] is status code
+        if len(args) >= 2:
+            request_line = args[0]
+            status_code = args[1]
+            # Parse method and path from request line
+            parts = request_line.split(' ')
+            if len(parts) >= 2:
+                method = parts[0]
+                path = parts[1]
+                # Color code status
+                if str(status_code).startswith('2'):
+                    status_color = '\033[32m'  # Green
+                elif str(status_code).startswith('3'):
+                    status_color = '\033[33m'  # Yellow
+                elif str(status_code).startswith('4'):
+                    status_color = '\033[31m'  # Red
+                elif str(status_code).startswith('5'):
+                    status_color = '\033[35m'  # Magenta
+                else:
+                    status_color = '\033[0m'
+                reset = '\033[0m'
+                dim = '\033[2m'
+                print(f"{dim}{timestamp}{reset} {status_color}{status_code}{reset} {client_ip} {method} {path}", flush=True)
+                return
+        # Fallback for other log messages
+        print(format % args, flush=True)
+    
+    def do_request(self):
+        target_url = f"https://{TARGET_AUTHORITY}{self.path}"
+
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+
+        req = Request(target_url, data=body, method=self.command)
+
+        for key, value in self.headers.items():
+            if key.lower() not in ('host', 'connection', 'accept-encoding'):
+                req.add_header(key, value)
+        req.add_header('Host', TARGET_AUTHORITY)
+
+        try:
+            with urlopen(req, context=ssl_ctx, timeout=60) as response:
+                response_body = response.read()
+                content_type = response.headers.get('Content-Type', '')
+
+                # Rewrite URLs in text responses
+                if any(ct in content_type for ct in REWRITABLE_TYPES):
+                    try:
+                        text = response_body.decode('utf-8')
+                        # Replace https://site.localhost[:port] with https://public-url
+                        text = text.replace(f'https://{TARGET_AUTHORITY}', f'https://{PUBLIC_HOST}')
+                        text = text.replace(f'http://{TARGET_AUTHORITY}', f'https://{PUBLIC_HOST}')
+                        # Escaped versions (for JSON)
+                        text = text.replace(f'https:\\/\\/{TARGET_AUTHORITY}', f'https:\\/\\/{PUBLIC_HOST}')
+                        response_body = text.encode('utf-8')
+                    except:
+                        pass  # If decode fails, send original
+                
+                self.send_response(response.status)
+                for key, value in response.headers.items():
+                    if key.lower() not in ('transfer-encoding', 'connection', 'content-length', 'content-encoding'):
+                        self.send_header(key, value)
+                self.send_header('Content-Length', len(response_body))
+                self.end_headers()
+                self.wfile.write(response_body)
+        except Exception as e:
+            error_msg = f"Proxy Error: {e}".encode()
+            self.send_response(502)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', len(error_msg))
+            self.end_headers()
+            self.wfile.write(error_msg)
+    
+    def do_GET(self): self.do_request()
+    def do_POST(self): self.do_request()
+    def do_PUT(self): self.do_request()
+    def do_DELETE(self): self.do_request()
+    def do_HEAD(self): self.do_request()
+    def do_OPTIONS(self): self.do_request()
+    def do_PATCH(self): self.do_request()
+
+class QuietHTTPServer(HTTPServer):
+    """HTTPServer that silently ignores connection reset errors."""
+    def handle_error(self, request, client_address):
+        # Silently ignore connection reset errors (browser closed connection)
+        import sys
+        exc_type = sys.exc_info()[0]
+        if exc_type in (ConnectionResetError, BrokenPipeError):
+            return
+        # For other errors, use default handling
+        super().handle_error(request, client_address)
+
+server = QuietHTTPServer(('127.0.0.1', LISTEN_PORT), ProxyHandler)
+server.serve_forever()
+PYTHON_PROXY
+    proxy_pid=$!
+    
+    sleep 1
+    
+    if ! kill -0 $proxy_pid 2>/dev/null; then
+        gum style --foreground red "Error: Failed to start local proxy."
+        exit 1
+    fi
+    
+    echo "Tunnel is active. Press Ctrl+C to stop."
+    echo ""
+    
+    # Monitor tunnel connection - check every 5 seconds
+    while kill -0 $tunnel_pid 2>/dev/null; do
+        sleep 5
+    done
+    
+    # Tunnel process ended - check if it was unexpected
+    if [ -z "$cleanup_triggered" ]; then
+        echo ""
+        gum style --foreground yellow "Cloudflare tunnel disconnected."
+    fi
+}

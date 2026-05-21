@@ -1,0 +1,134 @@
+plak_site_list() {
+    local show_totals=false
+    if [[ "$1" == "--totals" ]]; then
+        show_totals=true
+    fi
+
+    # PHP script to find, sort, and format the site list with box-drawing characters
+    local php_output
+    php_output=$(SITES_DIR="$SITES_DIR" SHOW_TOTALS="$show_totals" HTTPS_PORT_SUFFIX="$(https_port_suffix)" frankenphp php-cli -r '
+        function getDirectorySize(string $path): int {
+            if (!is_dir($path)) return 0;
+            $total_size = 0;
+            $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS));
+            foreach ($iterator as $file) {
+                if ($file->isFile()) {
+                    $total_size += $file->getSize();
+                }
+            }
+            return $total_size;
+        }
+
+        function formatSize(int $bytes): string {
+            if ($bytes === 0) return "0 B";
+            $units = ["B", "KB", "MB", "GB", "TB"];
+            $i = floor(log($bytes, 1024));
+            return round($bytes / (1024 ** $i), 2) . " " . $units[$i];
+        }
+
+        $sites_dir = getenv("SITES_DIR");
+        $show_totals = getenv("SHOW_TOTALS") === "true";
+        $port_suffix = getenv("HTTPS_PORT_SUFFIX") ?: "";
+
+        if (!is_dir($sites_dir)) {
+            exit;
+        }
+
+        $sites = [];
+        $items = scandir($sites_dir);
+
+        foreach ($items as $item) {
+            if ($item === "." || $item === "..") continue;
+            $site_path = $sites_dir . "/" . $item;
+            if (is_dir($site_path)) {
+                $public_path = $site_path . "/public";
+                $size = $show_totals && is_dir($public_path) ? formatSize(getDirectorySize($public_path)) : null;
+                $sites[] = [
+                    "name" => str_replace(".localhost", "", $item),
+                    "domain" => "https://" . $item . $port_suffix,
+                    "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Plain",
+                    "size" => $size,
+                ];
+            }
+        }
+
+        if (empty($sites)) {
+             exit;
+        }
+
+        // Sort the array: first by type, then by name
+        array_multisort(
+            array_column($sites, "type"), SORT_ASC,
+            array_column($sites, "name"), SORT_ASC,
+            $sites
+        );
+
+        // Column padding/gap
+        $gap = 3;
+        
+        // Calculate column widths
+        $name_width = max(array_map(fn($s) => strlen($s["name"]), $sites));
+        $name_width = max($name_width, 4) + $gap;
+        
+        $domain_width = max(array_map(fn($s) => strlen($s["domain"]), $sites));
+        $domain_width = max($domain_width, 6) + $gap;
+        
+        $type_width = $show_totals ? 9 + $gap : 10; // "WordPress" + gap or padding
+        
+        $size_width = $show_totals ? 11 : 0;
+
+        // ANSI colors
+        $pink = "\033[38;5;212m";
+        $dim = "\033[2m";
+        $reset = "\033[0m";
+
+        // Box drawing characters
+        $tl = "╭"; $tr = "╮"; $bl = "╰"; $br = "╯";
+        $h = "─"; $v = "│";
+
+        // Calculate total width
+        $inner_width = $name_width + $domain_width + $type_width;
+        if ($show_totals) {
+            $inner_width += $size_width;
+        }
+
+        // Build horizontal lines
+        $top_line = $pink . $tl . str_repeat($h, $inner_width) . $tr . $reset;
+        $mid_line = $pink . $v . $reset . $dim . " " . str_repeat("-", $inner_width - 2) . " " . $reset . $pink . $v . $reset;
+        $bot_line = $pink . $bl . str_repeat($h, $inner_width) . $br . $reset;
+
+        // Header row (white text)
+        $header = $pink . $v . $reset . " " . str_pad("Name", $name_width - 1) . str_pad("Domain", $domain_width) . str_pad("Type", $type_width);
+        if ($show_totals) {
+            $header .= str_pad("Size", $size_width);
+        }
+        $header .= $pink . $v . $reset;
+
+        // Output
+        echo $top_line . "\n";
+        echo $header . "\n";
+        echo $mid_line . "\n";
+
+        foreach ($sites as $site) {
+            $row = $pink . $v . $reset . " " . str_pad($site["name"], $name_width - 1);
+            $row .= str_pad($site["domain"], $domain_width);
+            $row .= str_pad($site["type"], $type_width);
+            if ($show_totals) {
+                $row .= str_pad($site["size"] ?? "N/A", $size_width);
+            }
+            $row .= $pink . $v . $reset;
+            echo $row . "\n";
+        }
+
+        echo $bot_line . "\n";
+    ')
+
+    if [ -z "$php_output" ]; then
+        gum style --padding "1 2" "No sites found. Add one with 'plak add <name>'."
+    else
+        echo ""
+        gum style --faint "Sites are located in ~/Plak/Sites/"
+        echo ""
+        echo "$php_output"
+    fi
+}

@@ -1,29 +1,3 @@
 plak_install() {
-    plak_ui_title "Plak install"
-    echo ""
-
-    if plak_command_exists gum; then
-        plak_ui_success "gum is already installed."
-        return 0
-    fi
-
-    case "$PLAK_OS" in
-        macos)
-            if plak_command_exists brew; then
-                echo "Installing gum with Homebrew..."
-                brew install gum
-            else
-                plak_ui_warn "Homebrew is not installed. Install gum from: https://github.com/charmbracelet/gum"
-                return 1
-            fi
-            ;;
-        linux)
-            plak_ui_warn "gum is missing. Install instructions: https://github.com/charmbracelet/gum#installation"
-            return 1
-            ;;
-        *)
-            plak_ui_warn "Unsupported OS. Install gum manually from: https://github.com/charmbracelet/gum"
-            return 1
-            ;;
-    esac
+    plak_site_install "$@"
 }

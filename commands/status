@@ -3,13 +3,14 @@ plak_status() {
     echo ""
     echo "OS:          $PLAK_OS"
     echo "Plak home:   $PLAK_HOME"
+    echo "Sites home:  $PLAK_SITE_DIR"
     echo "SSH config:  $PLAK_SSH_CONFIG"
     echo "Hosts file:  $PLAK_HOSTS_FILE"
     echo ""
     echo "Dependencies:"
 
     local dep status
-    for dep in gum ssh ssh-keygen awk sed grep mktemp; do
+    for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
         if plak_command_exists "$dep"; then
             status="found"
         else
@@ -17,4 +18,13 @@ plak_status() {
         fi
         printf '  %-10s %s\n' "$dep" "$status"
     done
+
+    if [ -f "$CONFIG_FILE" ] && plak_command_exists "$CADDY_CMD" && plak_command_exists gum; then
+        echo ""
+        plak_site_status
+    else
+        echo ""
+        echo "Site services: not installed yet"
+        echo "Dashboard:     $(url_for plak.localhost)"
+    fi
 }

@@ -1,18 +1,20 @@
 # plak
 
-Plak CLI is a small Bash + [gum](https://github.com/charmbracelet/gum) tool for managing everyday local developer SSH tasks:
+Plak CLI is a Bash + [gum](https://github.com/charmbracelet/gum) tool for everyday local developer tasks:
 
 - SSH server aliases in `~/.ssh/config`
 - Local domain entries in `/etc/hosts`
 - SSH keys in `~/.ssh`
+- Local WordPress and plain static sites served through Caddy/FrankenPHP
 
-It follows a Cove-style structure: modular source files are compiled into a single distributable `plak.sh` script.
+It follows a modular structure: source files are compiled into a single distributable `plak.sh` script.
 
 ## Requirements
 
 - Bash
 - `gum`
 - `ssh` and `ssh-keygen`
+- `frankenphp`, `mariadb`, `mailpit`, and `wp-cli` for local site management
 - `sudo` for writing to `/etc/hosts` when needed
 
 ## Installation
@@ -36,7 +38,23 @@ You can also install Plak directly with the installer script:
 bash <(curl -sL https://plak.sh/install.sh)
 ```
 
-For local development, Plak can also install/check `gum` with Homebrew:
+Install the Plak agent skill for Codex, Claude Code, OpenCode, or Pi:
+
+```bash
+plak skill install
+```
+
+For scripted setup:
+
+```bash
+plak skill install codex
+plak skill install claude-code
+plak skill install opencode
+plak skill install pi
+plak skill install all
+```
+
+For local development, Plak can also install/check the local site stack:
 
 ```bash
 ./plak.sh install
@@ -88,6 +106,60 @@ install.sh        # local installer
 plak status
 plak version
 plak install
+plak skill install
+plak enable
+plak disable
+plak reload
+```
+
+The local site dashboard is served at `https://plak.localhost` after install.
+
+### Sites
+
+```bash
+plak add <name> [--plain]
+plak delete <name> [--force]
+plak rename <old-name> <new-name>
+plak list [--totals]
+plak login <site> [<user>]
+plak path <name>
+plak url <name>
+plak log [site] [-f]
+```
+
+### Migration
+
+```bash
+plak pull [--proxy-uploads]
+plak push
+```
+
+### Database
+
+```bash
+plak db backup
+plak db list
+```
+
+### Site Configuration
+
+```bash
+plak ports [--http PORT] [--https PORT] [--skip-urls] [--dry-run]
+plak memory [set <value>] [--yes]
+plak directive <add|update|delete|list> [site]
+plak mappings <site> [add|remove|list] [domain]
+plak proxy <add|list|delete>
+```
+
+### Network Access
+
+```bash
+plak share [site]
+plak lan <enable|disable|status|trust> [site]
+plak tailscale <enable|disable|status>
+plak wsl-hosts
+plak trust
+plak upgrade
 ```
 
 ### SSH Servers

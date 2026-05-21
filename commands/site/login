@@ -1,0 +1,72 @@
+plak_site_login() {
+    local site_name="$1"
+    local user_identifier="$2" # Optional second argument for the user
+
+    # 1. Validate that a site name was provided.
+    if [ -z "$site_name" ]; then
+        gum style --foreground red "❌ Error: A site name is required."
+        echo "Usage: plak login <site> [<user>]"
+        exit 1
+    fi
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local public_dir="$site_dir/public"
+    
+    # Get WP-CLI command (adds --allow-root if running as root)
+    local wp_cmd
+    wp_cmd=$(get_wp_cmd)
+
+    # 2. Check if the site exists and is a WordPress installation.
+    if [ ! -d "$site_dir" ] || [ ! -f "$public_dir/wp-config.php" ]; then
+        gum style --foreground red "❌ Error: WordPress site '$site_name.localhost' not found."
+        exit 1
+    fi
+
+    local admin_to_login
+    if [ -n "$user_identifier" ]; then
+        echo "🔎 Verifying user '$user_identifier' for '$site_name.localhost'..."
+        local user_roles
+        user_roles=$( (cd "$public_dir" && $wp_cmd user get "$user_identifier" --field=roles --format=json --skip-plugins --skip-themes 2>/dev/null) )
+
+        if [ -z "$user_roles" ]; then
+            gum style --foreground red "❌ Error: User '$user_identifier' not found on this site."
+            exit 1
+        fi
+
+        if ! echo "$user_roles" | grep -q "administrator"; then
+            gum style --foreground red "❌ Error: User '$user_identifier' is not an administrator."
+            exit 1
+        fi
+        
+        admin_to_login="$user_identifier"
+        echo "✅ User '$admin_to_login' verified."
+    else
+        echo "🔎 Finding an administrator for '$site_name.localhost'..."
+        admin_to_login=$( (cd "$public_dir" && $wp_cmd user list --role=administrator --field=user_login --format=csv --skip-plugins --skip-themes | head -n 1) )
+
+        if [ -z "$admin_to_login" ]; then
+            gum style --foreground red "❌ Error: Could not find any administrator users for this site."
+            exit 1
+        fi
+        echo "✅ Found admin: '$admin_to_login'."
+    fi
+
+    # 3. Refresh the MU-plugin before generating the URL. Always overwrite
+    # the file so sites created with older Plak versions pick up changes to
+    # the plugin (token format, query-arg name, etc.) without needing a
+    # re-add. The file is small and idempotent to regenerate.
+    inject_mu_plugin "$public_dir"
+
+    # 4. Generate the login URL.
+    echo "   Generating login link..."
+    local login_url
+    login_url=$( (cd "$public_dir" && $wp_cmd user login "$admin_to_login" --skip-plugins --skip-themes) )
+
+    # 5. Display the final URL or an error message.
+    if [ -n "$login_url" ]; then
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "🔗 One-Time Login URL for '$admin_to_login'" "$login_url"
+    else
+        gum style --foreground red "❌ Error: Failed to generate the login link after all checks."
+        exit 1
+    fi
+}

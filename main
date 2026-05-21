@@ -72,8 +72,29 @@ Commands:
   server      Manage SSH server connections
   domain      Manage local hosts entries
   sshkey      Manage SSH keys
+  add         Create a WordPress or plain local site
+  delete      Delete a local site
+  list        List local sites
+  login       Generate a one-time WordPress admin login link
+  db          Manage local site databases
+  pull        Pull a remote WordPress site into Plak
+  push        Push a local Plak site to a remote WordPress site
+  enable      Start local site services
+  disable     Stop local site services
+  reload      Regenerate and reload the local site server
+  trust       Trust the local HTTPS certificate
+  ports       Reconfigure HTTP/HTTPS ports
+  memory      Show or raise PHP memory_limit
+  directive   Manage custom Caddyfile rules
+  mappings    Manage extra domains for a site
+  proxy       Manage standalone reverse proxies
+  share       Create a temporary public tunnel for a site
+  lan         Manage LAN access for local sites
+  tailscale   Expose sites to a Tailscale network
   status      Check local dependencies and paths
   install     Install required dependencies
+  skill       Install the Plak agent skill
+  upgrade     Upgrade the local site stack
   version     Show Plak version
   help        Show this help
 
@@ -126,21 +147,47 @@ Actions:
   help        Show sshkey help
 HELP
             ;;
+        skill)
+            if declare -F plak_skill_help >/dev/null 2>&1; then
+                plak_skill_help
+            else
+                echo "Usage: plak skill install [codex|claude-code|opencode|pi|all]"
+            fi
+            ;;
         install)
             cat <<'HELP'
 Usage:
-  plak install
+  plak install [--yes]
 
-Installs or guides installation for dependencies used by Plak.
+Installs or guides installation for dependencies used by Plak sites.
 HELP
             ;;
         status)
             echo "Usage: plak status"
             ;;
+        add)
+            echo "Usage: plak add <name> [--plain]"
+            ;;
+        delete)
+            echo "Usage: plak delete <name> [--force]"
+            ;;
+        list)
+            echo "Usage: plak list [--totals]"
+            ;;
+        login)
+            echo "Usage: plak login <site> [<user>]"
+            ;;
+        db)
+            echo "Usage: plak db <backup|list>"
+            ;;
         version)
             echo "Usage: plak version"
             ;;
         *)
+            if declare -F plak_site_display_command_help >/dev/null 2>&1; then
+                plak_site_display_command_help "$command"
+                return
+            fi
             plak_show_help
             ;;
     esac
@@ -148,6 +195,14 @@ HELP
 
 main() {
     plak_setup_environment
+
+    local PLAK_SITE_CMD
+    if command -v plak >/dev/null 2>&1; then
+        PLAK_SITE_CMD="plak"
+    else
+        PLAK_SITE_CMD="$0"
+    fi
+    export PLAK_SITE_CMD
 
     for arg in "$@"; do
         if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
@@ -162,6 +217,12 @@ main() {
     fi
 
     case "$command" in
+        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+            set +e
+            ;;
+    esac
+
+    case "$command" in
         server)
             plak_server "$@"
             ;;
@@ -170,6 +231,135 @@ main() {
             ;;
         sshkey)
             plak_sshkey "$@"
+            ;;
+        skill)
+            plak_skill "$@"
+            ;;
+        add)
+            check_dependencies
+            plak_site_add "$@"
+            ;;
+        delete)
+            check_dependencies
+            plak_site_delete "$@"
+            ;;
+        rename)
+            check_dependencies
+            plak_site_rename "$@"
+            ;;
+        list)
+            check_dependencies
+            plak_site_list "$@"
+            ;;
+        path)
+            check_dependencies
+            plak_site_path "$@"
+            ;;
+        pull)
+            check_dependencies
+            plak_site_pull "$@"
+            ;;
+        push)
+            check_dependencies
+            plak_site_push "$@"
+            ;;
+        login)
+            check_dependencies
+            plak_site_login "$@"
+            ;;
+        enable)
+            check_dependencies
+            plak_site_enable "$@"
+            ;;
+        disable)
+            check_dependencies
+            plak_site_disable "$@"
+            ;;
+        reload)
+            check_dependencies
+            plak_site_reload "$@"
+            ;;
+        trust)
+            check_dependencies
+            plak_site_trust "$@"
+            ;;
+        db)
+            check_dependencies
+            local action="${1:-}"
+            [ "$#" -gt 0 ] && shift
+            case "$action" in
+                backup)
+                    plak_site_db_backup "$@"
+                    ;;
+                list)
+                    plak_site_db_list "$@"
+                    ;;
+                *)
+                    plak_display_command_help "db"
+                    exit 0
+                    ;;
+            esac
+            ;;
+        directive)
+            check_dependencies
+            local action="${1:-}"
+            [ "$#" -gt 0 ] && shift
+            case "$action" in
+                add|update)
+                    plak_site_directive_add_or_update "$@"
+                    ;;
+                delete)
+                    plak_site_directive_delete "$@"
+                    ;;
+                list)
+                    plak_site_directive_list "$@"
+                    ;;
+                *)
+                    plak_site_display_command_help "directive"
+                    exit 0
+                    ;;
+            esac
+            ;;
+        proxy)
+            check_dependencies
+            plak_site_proxy "$@"
+            ;;
+        tailscale)
+            check_dependencies
+            plak_site_tailscale "$@"
+            ;;
+        mappings)
+            check_dependencies
+            plak_site_mappings "$@"
+            ;;
+        lan)
+            check_dependencies
+            plak_site_lan "$@"
+            ;;
+        ports)
+            check_dependencies
+            plak_site_ports "$@"
+            ;;
+        memory)
+            check_dependencies
+            plak_site_memory "$@"
+            ;;
+        log)
+            plak_site_log "$@"
+            ;;
+        share)
+            check_dependencies
+            plak_site_share "$@"
+            ;;
+        wsl-hosts)
+            plak_site_wsl_hosts "$@"
+            ;;
+        url)
+            check_dependencies
+            plak_site_url "$@"
+            ;;
+        upgrade)
+            plak_site_upgrade "$@"
             ;;
         status|doctor)
             plak_status "$@"

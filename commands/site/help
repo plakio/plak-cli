@@ -1,0 +1,68 @@
+plak_site_display_command_help() {
+    local cmd="$1"
+    case "$cmd" in
+        directive)
+            cat <<'HELP'
+Usage:
+  plak directive <add|update|delete|list> [site]
+
+Manage custom Caddyfile rules for local sites.
+HELP
+            ;;
+        proxy)
+            cat <<'HELP'
+Usage:
+  plak proxy <add|list|delete>
+
+Manage standalone reverse proxy entries in the Caddyfile.
+HELP
+            ;;
+        tailscale)
+            cat <<'HELP'
+Usage:
+  plak tailscale <enable|disable|status>
+
+Expose local sites to your Tailscale network.
+HELP
+            ;;
+        mappings)
+            echo "Usage: plak mappings <site> [add|remove|list] [domain]"
+            ;;
+        lan)
+            echo "Usage: plak lan <enable|disable|status|trust> [site]"
+            ;;
+        ports)
+            echo "Usage: plak ports [--http PORT] [--https PORT] [--skip-urls] [--dry-run]"
+            ;;
+        memory)
+            echo "Usage: plak memory [set <value>] [--yes]"
+            ;;
+        log)
+            echo "Usage: plak log [site] [-f|--follow]"
+            ;;
+        share)
+            echo "Usage: plak share [site]"
+            ;;
+        pull)
+            echo "Usage: plak pull [--proxy-uploads]"
+            ;;
+        push)
+            echo "Usage: plak push"
+            ;;
+        reload)
+            echo "Usage: plak reload"
+            ;;
+        trust)
+            echo "Usage: plak trust"
+            ;;
+        url)
+            echo "Usage: plak url <site>"
+            ;;
+        upgrade)
+            echo "Usage: plak upgrade [--yes]"
+            ;;
+        *)
+            plak_show_help
+            ;;
+    esac
+}

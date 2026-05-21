@@ -19,14 +19,14 @@ grep -v 'main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
 {
     echo ""
     echo "# --- Shared Helpers ---"
-    find "$LIB_DIR" -type f | sort | while IFS= read -r lib_file; do
+    find "$LIB_DIR" -type f ! -name '.*' | sort | while IFS= read -r lib_file; do
         echo "# Source: $lib_file"
         cat "$lib_file"
         echo ""
     done
 
     echo "# --- Command Functions ---"
-    find "$COMMANDS_DIR" -type f | sort | while IFS= read -r cmd_file; do
+    find "$COMMANDS_DIR" -type f ! -name '.*' | sort | while IFS= read -r cmd_file; do
         echo "# Source: $cmd_file"
         cat "$cmd_file"
         echo ""
