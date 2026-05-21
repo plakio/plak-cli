@@ -2290,12 +2290,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
 <body x-data="dashboard" x-init="init()">
     <div class="wrap">
         <nav class="nav">
-            <a class="logo" href="/">
-                <svg class="logo-mark" viewBox="0 0 375 375" aria-hidden="true" focusable="false">
-                  <path fill="#2f36fa" d="M332.4 228.2H198.2c-2.8 0-5.1-2.3-5.1-5.1s2.3-5.1 5.1-5.1h98c2.8 0 5.1-2.3 5.1-5.1s-2.3-5.1-5.1-5.1h-10.6c-1.9-13.4-9.9-25.5-24.5-28.4.4-2.4.6-4.9.6-7.4 0-25.8-21-46.7-46.7-46.7-22.4 0-41.2 15.8-45.6 36.9v-.1c-6.8-3.8-14.5-5.9-22.8-5.9-18.4 0-34.3 10.7-41.9 26.1h-62.1c-2.8 0-5.1 2.3-5.1 5.1s2.3 5.1 5.1 5.1h98c2.8 0 5.1-2.3 5.1-5.1s-2.3-5.1-5.1-5.1h-61.8c-2.8 0-5.1 2.3-5.1 5.1s2.3 5.1 5.1 5.1h22.2c4.6 21 23.3 36.7 45.6 36.7h115.6c7.3-1.3 12.9-5.5 17-11.3h53.3c2.8 0 5.1-2.3 5.1-5.1s-2.8-5.1-5.6-5.1z"/>
-                </svg>
-                <span>Plak</span>
-            </a>
+            <a class="logo" href="/">Plak</a>
             <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
                 <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
                 <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
