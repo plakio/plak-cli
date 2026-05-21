@@ -7868,10 +7868,10 @@ PLAK_VALET_NGINX_FILE="$HOME/.config/valet/Nginx/plak.localhost"
 PLAK_VALET_CERT_DIR="$HOME/.config/valet/Certificates"
 PLAK_VALET_CA_CERT="$HOME/.config/valet/CA/LaravelValetCASelfSigned.pem"
 PLAK_VALET_CA_KEY="$HOME/.config/valet/CA/LaravelValetCASelfSigned.key"
+PLAK_VALET_CA_SRL="$HOME/.config/valet/CA/LaravelValetCASelfSigned.srl"
 PLAK_VALET_CERT="$PLAK_VALET_CERT_DIR/plak.localhost.crt"
 PLAK_VALET_KEY="$PLAK_VALET_CERT_DIR/plak.localhost.key"
 PLAK_VALET_CSR="$PLAK_VALET_CERT_DIR/plak.localhost.csr"
-PLAK_VALET_SRL="$PLAK_VALET_CERT_DIR/plak.localhost.srl"
 PLAK_VALET_OPENSSL_CONF="$PLAK_VALET_CERT_DIR/plak.localhost.conf"
 
 plak_site_valet_reload() {
@@ -7924,19 +7924,20 @@ DNS.4 = *.localhost
 EOF
 
     # Remove old artifacts to ensure clean regeneration
-    rm -f "$PLAK_VALET_CERT" "$PLAK_VALET_KEY" "$PLAK_VALET_CSR" "$PLAK_VALET_SRL"
+    rm -f "$PLAK_VALET_CERT" "$PLAK_VALET_KEY" "$PLAK_VALET_CSR"
+    # Remove CA serial file so -CAcreateserial generates a fresh one
+    rm -f "$PLAK_VALET_CA_SRL"
 
     openssl genrsa -out "$PLAK_VALET_KEY" 2048 >/dev/null 2>&1
     openssl req -new -key "$PLAK_VALET_KEY" -out "$PLAK_VALET_CSR" \
         -subj "/C=/ST=/O=/localityName=/commonName=plak.localhost/organizationalUnitName=/emailAddress=plak.localhost@laravel.valet/" >/dev/null 2>&1
     openssl x509 -req -sha256 -days 396 \
-        -CA "$PLAK_VALET_CA_CERT" -CAkey "$PLAK_VALET_CA_KEY" \
-        -CAserial "$PLAK_VALET_SRL" \
+        -CA "$PLAK_VALET_CA_CERT" -CAkey "$PLAK_VALET_CA_KEY" -CAcreateserial \
         -in "$PLAK_VALET_CSR" -out "$PLAK_VALET_CERT" \
         -extensions v3_req -extfile "$PLAK_VALET_OPENSSL_CONF" >/dev/null 2>&1
 
-    # Verify the cert was actually created
-    if [ ! -f "$PLAK_VALET_CERT" ]; then
+    # Verify the cert was actually created with real content
+    if [ ! -s "$PLAK_VALET_CERT" ]; then
         gum style --foreground red "❌ Certificate generation failed. Check openssl output."
         return 1
     fi
@@ -8035,7 +8036,7 @@ plak_site_valet_disable() {
     fi
 
     # Clean up certificate artifacts too
-    rm -f "$PLAK_VALET_CERT" "$PLAK_VALET_KEY" "$PLAK_VALET_CSR" "$PLAK_VALET_SRL"
+    rm -f "$PLAK_VALET_CERT" "$PLAK_VALET_KEY" "$PLAK_VALET_CSR" "$PLAK_VALET_CA_SRL"
 
     if $removed; then
         gum style --foreground green "✅ Removed Valet Plak route and certificates."
