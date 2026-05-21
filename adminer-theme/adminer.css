@@ -100,7 +100,7 @@ html {
         --accent-bright: #89d8e5;
         --accent: oklch(70% 0.15 255);
         --accent-soft: oklch(70% 0.15 255 / 0.15);
-        --accent-ink: oklch(82% 0.1 190);
+        --accent-ink: oklch(35% 0.12 255);
         --accent-bright: oklch(82% 0.13 190);
 
         --ok: oklch(70% 0.13 155);
@@ -146,7 +146,7 @@ html[data-theme="dark"] {
     --accent-bright: #89d8e5;
     --accent: oklch(70% 0.15 255);
     --accent-soft: oklch(70% 0.15 255 / 0.15);
-    --accent-ink: oklch(82% 0.1 190);
+    --accent-ink: oklch(35% 0.12 255);
     --accent-bright: oklch(82% 0.13 190);
 
     --ok: oklch(70% 0.13 155);
