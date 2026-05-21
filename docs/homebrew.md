@@ -34,6 +34,25 @@ README.md
 
 ## Release Flow
 
+Preferred local release command:
+
+```bash
+./scripts/release.sh 0.4.0
+```
+
+The script updates `PLAK_VERSION`, compiles and tests `plak.sh`, commits the
+release bump, pushes `main`, creates and pushes `v0.4.0`, then generates and
+pushes the Homebrew tap formula. It updates the tap only after the CLI tag has
+been published.
+
+To also test the generated formula locally:
+
+```bash
+./scripts/release.sh 0.4.0 --brew-test
+```
+
+Manual flow:
+
 1. Ensure `PLAK_VERSION` in `main` is a stable version, for example `0.3.0`.
 2. Compile and test:
 
