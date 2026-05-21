@@ -25,6 +25,14 @@ Usage:
 Expose local sites to your Tailscale network.
 HELP
             ;;
+        valet)
+            cat <<'HELP'
+Usage:
+  plak valet <enable|disable|status>
+
+Route Plak .localhost sites through Laravel Valet when Valet owns ports 80/443.
+HELP
+            ;;
         mappings)
             echo "Usage: plak mappings <site> [add|remove|list] [domain]"
             ;;

@@ -91,6 +91,7 @@ Commands:
   share       Create a temporary public tunnel for a site
   lan         Manage LAN access for local sites
   tailscale   Expose sites to a Tailscale network
+  valet       Route .localhost through Laravel Valet
   status      Check local dependencies and paths
   install     Install required dependencies
   skill       Install the Plak agent skill
@@ -217,7 +218,7 @@ main() {
     fi
 
     case "$command" in
-        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|valet|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
             set +e
             ;;
     esac
@@ -326,6 +327,10 @@ main() {
         tailscale)
             check_dependencies
             plak_site_tailscale "$@"
+            ;;
+        valet)
+            check_dependencies
+            plak_site_valet "$@"
             ;;
         mappings)
             check_dependencies
@@ -1249,7 +1254,16 @@ update_etc_hosts() {
 # Probe Caddy's admin API to see if the server is running.
 # Uses bash's built-in /dev/tcp so we don't depend on nc/curl being installed.
 is_caddy_running() {
-    (echo > /dev/tcp/127.0.0.1/2019) &>/dev/null
+    (echo > /dev/tcp/127.0.0.1/2019) &>/dev/null && return 0
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:2019 -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'
+        return $?
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlnH "sport = :2019" 2>/dev/null | grep -q .
+        return $?
+    fi
+    return 1
 }
 
 # Write the Plak-themed Adminer entry point (index.php with the head() hook
@@ -4145,6 +4159,13 @@ EOM
             "Dashboard: $(url_for plak.localhost)" \
             "Adminer:   $(url_for db.plak.localhost)" \
             "Mailpit:   $(url_for mail.plak.localhost)"
+
+        if [ "$HTTPS_PORT" != "443" ]; then
+            echo ""
+            gum style --foreground yellow \
+                "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
+                "Use $(url_for plak.localhost), not https://plak.localhost/."
+        fi
         
         # Show WSL-specific info
         if [ "$IS_WSL" = true ]; then
@@ -4166,6 +4187,7 @@ EOM
         gum style --foreground red "❌ Caddy server failed to start. Check $LOGS_DIR/caddy-process.log for errors."
     fi
 }
+
 # Source: commands/site/help
 plak_site_display_command_help() {
     local cmd="$1"
@@ -4192,6 +4214,14 @@ Usage:
   plak tailscale <enable|disable|status>
 
 Expose local sites to your Tailscale network.
+HELP
+            ;;
+        valet)
+            cat <<'HELP'
+Usage:
+  plak valet <enable|disable|status>
+
+Route Plak .localhost sites through Laravel Valet when Valet owns ports 80/443.
 HELP
             ;;
         mappings)
@@ -7172,20 +7202,29 @@ plak_site_status() {
             "Dashboard: $(url_for plak.localhost)" \
             "Adminer:   $(url_for db.plak.localhost)" \
             "Mailpit:   $(url_for mail.plak.localhost)"
-        
-        # Show WSL-specific info
-        if [ "$IS_WSL" = true ]; then
-            local wsl_ip
-            wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-            echo ""
-            echo "  WSL IP: $wsl_ip"
-        fi
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "⚠️  Some services are stopped." \
-            "Run 'plak enable' to start them."
+            "Run 'plak enable' to start them." \
+            "Dashboard: $(url_for plak.localhost)"
+    fi
+
+    if [ "$HTTPS_PORT" != "443" ]; then
+        echo ""
+        gum style --foreground yellow \
+            "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
+            "Use $(url_for plak.localhost), not https://plak.localhost/."
+    fi
+
+    # Show WSL-specific info
+    if [ "$IS_WSL" = true ]; then
+        local wsl_ip
+        wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+        echo ""
+        echo "  WSL IP: $wsl_ip"
     fi
 }
+
 # Source: commands/site/tailscale
 # --- Tailscale Configuration ---
 TAILSCALE_CONFIG="$APP_DIR/tailscale"
@@ -7824,6 +7863,222 @@ plak_site_url() {
     # -------------------------------------------------------------
     url_for "${site_name}.localhost"
 }
+# Source: commands/site/valet
+PLAK_VALET_NGINX_FILE="$HOME/.config/valet/Nginx/plak.localhost"
+PLAK_VALET_CERT_DIR="$HOME/.config/valet/Certificates"
+PLAK_VALET_CA_CERT="$HOME/.config/valet/CA/LaravelValetCASelfSigned.pem"
+PLAK_VALET_CA_KEY="$HOME/.config/valet/CA/LaravelValetCASelfSigned.key"
+PLAK_VALET_CERT="$PLAK_VALET_CERT_DIR/plak.localhost.crt"
+PLAK_VALET_KEY="$PLAK_VALET_CERT_DIR/plak.localhost.key"
+PLAK_VALET_CSR="$PLAK_VALET_CERT_DIR/plak.localhost.csr"
+PLAK_VALET_SRL="$PLAK_VALET_CERT_DIR/plak.localhost.srl"
+PLAK_VALET_OPENSSL_CONF="$PLAK_VALET_CERT_DIR/plak.localhost.conf"
+
+plak_site_valet_reload() {
+    if command -v valet >/dev/null 2>&1; then
+        if valet restart; then
+            return 0
+        fi
+
+        gum style --foreground yellow "⚠️  Valet route was written, but Valet/nginx could not be restarted automatically."
+        gum style --faint "   Run: valet restart"
+        return 1
+    fi
+
+    gum style --foreground yellow "⚠️  Valet command not found. Reload Valet/nginx manually."
+    return 0
+}
+
+plak_site_valet_write_cert() {
+    mkdir -p "$PLAK_VALET_CERT_DIR"
+
+    cat > "$PLAK_VALET_OPENSSL_CONF" <<'EOF'
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+
+[req_distinguished_name]
+countryName = Country Name (2 letter code)
+countryName_default = US
+stateOrProvinceName = State or Province Name (full name)
+stateOrProvinceName_default = MN
+localityName = Locality Name (eg, city)
+localityName_default = Minneapolis
+organizationalUnitName = Organizational Unit Name (eg, section)
+organizationalUnitName_default = Domain Control Validated
+commonName = Internet Widgits Ltd
+commonName_max = 64
+
+[v3_req]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,nonRepudiation, digitalSignature, keyEncipherment
+subjectAltName = @alt_names
+authorityKeyIdentifier = keyid
+subjectKeyIdentifier = hash
+
+[alt_names]
+DNS.1 = plak.localhost
+DNS.2 = db.plak.localhost
+DNS.3 = mail.plak.localhost
+DNS.4 = *.localhost
+EOF
+
+    # Remove old artifacts to ensure clean regeneration
+    rm -f "$PLAK_VALET_CERT" "$PLAK_VALET_KEY" "$PLAK_VALET_CSR" "$PLAK_VALET_SRL"
+
+    openssl genrsa -out "$PLAK_VALET_KEY" 2048 >/dev/null 2>&1
+    openssl req -new -key "$PLAK_VALET_KEY" -out "$PLAK_VALET_CSR" \
+        -subj "/C=/ST=/O=/localityName=/commonName=plak.localhost/organizationalUnitName=/emailAddress=plak.localhost@laravel.valet/" >/dev/null 2>&1
+    openssl x509 -req -sha256 -days 396 \
+        -CA "$PLAK_VALET_CA_CERT" -CAkey "$PLAK_VALET_CA_KEY" \
+        -CAserial "$PLAK_VALET_SRL" \
+        -in "$PLAK_VALET_CSR" -out "$PLAK_VALET_CERT" \
+        -extensions v3_req -extfile "$PLAK_VALET_OPENSSL_CONF" >/dev/null 2>&1
+
+    # Verify the cert was actually created
+    if [ ! -f "$PLAK_VALET_CERT" ]; then
+        gum style --foreground red "❌ Certificate generation failed. Check openssl output."
+        return 1
+    fi
+}
+
+plak_site_valet_write_nginx() {
+    mkdir -p "$(dirname "$PLAK_VALET_NGINX_FILE")"
+
+    cat > "$PLAK_VALET_NGINX_FILE" <<EOF
+# Generated by Plak. Remove with: plak valet disable
+server {
+    listen 127.0.0.1:80;
+    server_name plak.localhost db.plak.localhost mail.plak.localhost *.localhost;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 127.0.0.1:443 ssl;
+    server_name plak.localhost db.plak.localhost mail.plak.localhost *.localhost;
+
+    client_max_body_size 512M;
+    http2 on;
+
+    ssl_certificate "$PLAK_VALET_CERT";
+    ssl_certificate_key "$PLAK_VALET_KEY";
+
+    location / {
+        proxy_pass https://127.0.0.1:${HTTPS_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_ssl_server_name on;
+        proxy_ssl_name \$host;
+        proxy_ssl_verify off;
+    }
+
+    access_log off;
+    error_log "$HOME/.config/valet/Log/nginx-error.log";
+}
+EOF
+}
+
+plak_site_valet_enable() {
+    if [ "$PLAK_OS" != "macos" ]; then
+        gum style --foreground red "❌ Valet integration is only supported on macOS."
+        exit 1
+    fi
+
+    if ! command -v valet >/dev/null 2>&1; then
+        gum style --foreground red "❌ Laravel Valet was not found in PATH."
+        exit 1
+    fi
+
+    if [ ! -f "$PLAK_VALET_CA_CERT" ] || [ ! -f "$PLAK_VALET_CA_KEY" ]; then
+        gum style --foreground red "❌ Valet CA files were not found. Run 'valet install' first."
+        exit 1
+    fi
+
+    if [ "$HTTPS_PORT" = "443" ]; then
+        gum style --foreground yellow "ℹ️  Plak is already configured on HTTPS port 443; Valet proxying is not needed."
+        exit 0
+    fi
+
+    gum style --foreground "212" "Creating Valet route for *.localhost → Plak HTTPS ${HTTPS_PORT}..."
+    if ! plak_site_valet_write_cert; then
+        gum style --foreground red "❌ Failed to generate certificates."
+        exit 1
+    fi
+    plak_site_valet_write_nginx
+
+    echo ""
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "Valet route created:" \
+        "  *.localhost → https://127.0.0.1:${HTTPS_PORT}" \
+        "  .test sites remain handled by Valet."
+
+    echo ""
+    if ! plak_site_valet_reload; then
+        exit 1
+    fi
+
+    echo ""
+    gum style --foreground green "✅ Try: https://plak.localhost"
+}
+
+plak_site_valet_disable() {
+    local removed=false
+    if [ -f "$PLAK_VALET_NGINX_FILE" ]; then
+        rm "$PLAK_VALET_NGINX_FILE"
+        removed=true
+    fi
+
+    # Clean up certificate artifacts too
+    rm -f "$PLAK_VALET_CERT" "$PLAK_VALET_KEY" "$PLAK_VALET_CSR" "$PLAK_VALET_SRL"
+
+    if $removed; then
+        gum style --foreground green "✅ Removed Valet Plak route and certificates."
+    else
+        gum style --foreground yellow "ℹ️  No Valet Plak route found."
+    fi
+
+    plak_site_valet_reload
+}
+
+plak_site_valet_status() {
+    if [ -f "$PLAK_VALET_NGINX_FILE" ]; then
+        gum style --foreground green "✅ Valet route is installed."
+        echo "   File: $PLAK_VALET_NGINX_FILE"
+        echo "   Target: https://127.0.0.1:${HTTPS_PORT}"
+        echo "   URL: https://plak.localhost"
+    else
+        gum style --foreground yellow "ℹ️  Valet route is not installed."
+        echo "   Enable it with: plak valet enable"
+    fi
+}
+
+plak_site_valet() {
+    local action="${1:-status}"
+    [ "$#" -gt 0 ] && shift
+
+    case "$action" in
+        enable)
+            plak_site_valet_enable "$@"
+            ;;
+        disable)
+            plak_site_valet_disable "$@"
+            ;;
+        status)
+            plak_site_valet_status "$@"
+            ;;
+        *)
+            plak_site_display_command_help valet
+            exit 0
+            ;;
+    esac
+}
+
 # Source: commands/site/wsl-hosts
 plak_site_wsl_hosts() {
     if [ "$IS_WSL" != true ]; then

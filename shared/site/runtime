@@ -863,7 +863,16 @@ update_etc_hosts() {
 # Probe Caddy's admin API to see if the server is running.
 # Uses bash's built-in /dev/tcp so we don't depend on nc/curl being installed.
 is_caddy_running() {
-    (echo > /dev/tcp/127.0.0.1/2019) &>/dev/null
+    (echo > /dev/tcp/127.0.0.1/2019) &>/dev/null && return 0
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:2019 -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'
+        return $?
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlnH "sport = :2019" 2>/dev/null | grep -q .
+        return $?
+    fi
+    return 1
 }
 
 # Write the Plak-themed Adminer entry point (index.php with the head() hook

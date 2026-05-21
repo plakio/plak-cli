@@ -141,6 +141,13 @@ EOM
             "Dashboard: $(url_for plak.localhost)" \
             "Adminer:   $(url_for db.plak.localhost)" \
             "Mailpit:   $(url_for mail.plak.localhost)"
+
+        if [ "$HTTPS_PORT" != "443" ]; then
+            echo ""
+            gum style --foreground yellow \
+                "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
+                "Use $(url_for plak.localhost), not https://plak.localhost/."
+        fi
         
         # Show WSL-specific info
         if [ "$IS_WSL" = true ]; then
