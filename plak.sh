@@ -1021,7 +1021,7 @@ $display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strl
      browsers without oklch() support (Firefox <113, Chrome <111, Safari <16.4)
      so the hex value wins — otherwise the whole declaration would be invalid
      and --accent would fall back to its initial value (unset). */
-  --accent: #3a97a9;       --accent-ink: #1c4c58;
+  --accent: #2f36fa;       --accent-ink: #1c4c58;
   --accent: oklch(62% 0.11 190); --accent-ink: oklch(35% 0.08 190);
 }
 @media (prefers-color-scheme: dark) {
@@ -1029,7 +1029,7 @@ $display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strl
     --bg: #0f1210; --bg-elev: #161a17; --bg-sunk: #0b0e0c;
     --border: #252925; --text: #edeee9; --text-soft: #c6c9c1;
     --muted: #8a8e85; --dim: #5d615a;
-    --accent: #4db0c2;       --accent-ink: #83d2e0;
+    --accent: #2f36fa;       --accent-ink: #83d2e0;
     --accent: oklch(72% 0.12 190); --accent-ink: oklch(82% 0.10 190);
   }
 }
@@ -1092,7 +1092,7 @@ footer a:hover { color: var(--text); }
     <defs><clipPath id="c"><circle cx="32" cy="32" r="28"/></clipPath></defs>
     <g clip-path="url(#c)">
       <rect width="64" height="64" fill="#f6f1e8"/>
-      <rect y="32" width="64" height="32" fill="#3a97a9"/>
+      <rect y="32" width="64" height="32" fill="#2f36fa"/>
       <path d="M 4 32 C 4 22, 12 12, 22 12 C 30 12, 34 18, 42 16 C 50 14, 58 18, 60 24 L 60 32 Z" fill="#8bb382"/>
       <line x1="2" y1="32" x2="62" y2="32" stroke="#1c4c58" stroke-width="2.5" fill="none"/>
       <g stroke="#1c4c58" stroke-width="2.6" fill="none">
@@ -2015,7 +2015,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
                unset — which reads as "transparent" for backgrounds and
                "black" for SVG fills (hence the invisible add button and the
                solid-black logo disc on older browsers). */
-            --accent: #3a97a9;
+            --accent: #2f36fa;
             --accent: oklch(62% 0.11 190);
             --accent-fg: #0a1a1c;
             --radius-lg: 20px;
@@ -2034,7 +2034,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
             --text-faint: #5d615a;
             /* Dark-mode teal is brighter so it reads cleanly against the
                warmer panel — matches the landing page palette. */
-            --accent: #4db0c2;
+            --accent: #2f36fa;
             --accent: oklch(72% 0.12 190);
             --pill-bg: #1e2320;
             --pill-wp-bg: rgba(77, 176, 194, 0.18);
@@ -2103,7 +2103,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
            solid-black disc + missing layers on Firefox <113). */
         .logo-mark { width: 34px; height: 34px; display: block; flex-shrink: 0; }
         .logo-mark .disc    { fill: var(--mark-disc, #f6f1e8); fill: var(--mark-disc, oklch(96% 0.015 85)); }
-        .logo-mark .water   { fill: var(--mark-water, #3a97a9); fill: var(--mark-water, oklch(62% 0.11 190)); }
+        .logo-mark .water   { fill: var(--mark-water, #2f36fa); fill: var(--mark-water, oklch(62% 0.11 190)); }
         .logo-mark .land    { fill: var(--mark-land, #8bb382); fill: var(--mark-land, oklch(72% 0.10 150)); }
         .logo-mark .horizon { stroke: var(--mark-horizon, #1c4c58); stroke: var(--mark-horizon, oklch(35% 0.08 190)); fill: none; }
         .logo-mark .wave    { stroke: var(--mark-wave, #1c4c58); stroke: var(--mark-wave, oklch(35% 0.08 190)); fill: none; }
