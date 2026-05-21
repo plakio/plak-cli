@@ -157,10 +157,13 @@ plak proxy <add|list|delete>
 plak share [site]
 plak lan <enable|disable|status|trust> [site]
 plak tailscale <enable|disable|status>
+plak valet <enable|disable|status>
 plak wsl-hosts
 plak trust
 plak upgrade
 ```
+
+**Laravel Valet** — If Valet owns ports 80/443 and Plak runs on alternative ports (e.g. 8090/8453), `plak valet enable` creates an nginx reverse proxy so `*.localhost` routes through Valet to Plak. Use `plak valet status` to check and `plak valet disable` to remove.
 
 ### SSH Servers
 
