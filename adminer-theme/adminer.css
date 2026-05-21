@@ -26,8 +26,8 @@ html {
     --accent-soft: rgba(58, 151, 169, 0.1);
     --accent-ink: #1c4c58;
     --accent-bright: #2f36fa;
-    --accent: oklch(62% 0.11 190);
-    --accent-soft: oklch(62% 0.11 190 / 0.1);
+    --accent: oklch(55% 0.18 255);
+    --accent-soft: oklch(55% 0.18 255 / 0.1);
     --accent-ink: oklch(35% 0.08 190);
     --accent-bright: oklch(72% 0.13 190);
 
@@ -98,8 +98,8 @@ html {
         --accent-soft: rgba(77, 176, 194, 0.15);
         --accent-ink: #83d2e0;
         --accent-bright: #89d8e5;
-        --accent: oklch(72% 0.12 190);
-        --accent-soft: oklch(72% 0.12 190 / 0.15);
+        --accent: oklch(70% 0.15 255);
+        --accent-soft: oklch(70% 0.15 255 / 0.15);
         --accent-ink: oklch(82% 0.1 190);
         --accent-bright: oklch(82% 0.13 190);
 
@@ -144,8 +144,8 @@ html[data-theme="dark"] {
     --accent-soft: rgba(77, 176, 194, 0.15);
     --accent-ink: #83d2e0;
     --accent-bright: #89d8e5;
-    --accent: oklch(72% 0.12 190);
-    --accent-soft: oklch(72% 0.12 190 / 0.15);
+    --accent: oklch(70% 0.15 255);
+    --accent-soft: oklch(70% 0.15 255 / 0.15);
     --accent-ink: oklch(82% 0.1 190);
     --accent-bright: oklch(82% 0.13 190);
 

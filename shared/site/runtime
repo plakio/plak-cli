@@ -631,7 +631,7 @@ $display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strl
      so the hex value wins — otherwise the whole declaration would be invalid
      and --accent would fall back to its initial value (unset). */
   --accent: #2f36fa;       --accent-ink: #1c4c58;
-  --accent: oklch(62% 0.11 190); --accent-ink: oklch(35% 0.08 190);
+  --accent: oklch(55% 0.18 255); --accent-ink: oklch(35% 0.08 190);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -639,7 +639,7 @@ $display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strl
     --border: #252925; --text: #edeee9; --text-soft: #c6c9c1;
     --muted: #8a8e85; --dim: #5d615a;
     --accent: #2f36fa;       --accent-ink: #83d2e0;
-    --accent: oklch(72% 0.12 190); --accent-ink: oklch(82% 0.10 190);
+    --accent: oklch(70% 0.15 255); --accent-ink: oklch(82% 0.10 190);
   }
 }
 html { background: var(--bg); }
@@ -1625,7 +1625,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
                "black" for SVG fills (hence the invisible add button and the
                solid-black logo disc on older browsers). */
             --accent: #2f36fa;
-            --accent: oklch(62% 0.11 190);
+            --accent: oklch(55% 0.18 255);
             --accent-fg: #0a1a1c;
             --radius-lg: 20px;
             --radius-md: 10px;
@@ -1644,7 +1644,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
             /* Dark-mode teal is brighter so it reads cleanly against the
                warmer panel — matches the landing page palette. */
             --accent: #2f36fa;
-            --accent: oklch(72% 0.12 190);
+            --accent: oklch(70% 0.15 255);
             --pill-bg: #1e2320;
             --pill-wp-bg: rgba(77, 176, 194, 0.18);
             --pill-wp-bg: color-mix(in oklch, var(--accent) 18%, transparent);
@@ -1712,7 +1712,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
            solid-black disc + missing layers on Firefox <113). */
         .logo-mark { width: 34px; height: 34px; display: block; flex-shrink: 0; }
         .logo-mark .disc    { fill: var(--mark-disc, #f6f1e8); fill: var(--mark-disc, oklch(96% 0.015 85)); }
-        .logo-mark .water   { fill: var(--mark-water, #2f36fa); fill: var(--mark-water, oklch(62% 0.11 190)); }
+        .logo-mark .water   { fill: var(--mark-water, #2f36fa); fill: var(--mark-water, oklch(55% 0.18 255)); }
         .logo-mark .land    { fill: var(--mark-land, #8bb382); fill: var(--mark-land, oklch(72% 0.10 150)); }
         .logo-mark .horizon { stroke: var(--mark-horizon, #1c4c58); stroke: var(--mark-horizon, oklch(35% 0.08 190)); fill: none; }
         .logo-mark .wave    { stroke: var(--mark-wave, #1c4c58); stroke: var(--mark-wave, oklch(35% 0.08 190)); fill: none; }
