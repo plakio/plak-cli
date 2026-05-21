@@ -618,7 +618,7 @@ $display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strl
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>Plak CLI</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23f6f1e8'/><rect x='10' y='50' width='80' height='40' fill='%232f36fa'/></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%23ffffff'/><path fill='%232f36fa' d='M65 25H45c-3 0-5 2-5 5v10c0 3-4 5-7 5s-7 2-7 5v15c0 3 2 5 5 5h2c0 5 3 12 12 12s12-7 12-12v-5c0-3 4-5 7-5s7-2 7-5v-15c0-3-2-5-5-5h-2c0-8-7-15-15-15zm-15 10v8c0 3-2 5-5 5h-2c-3 0-5-2-5-5v-8c0-3 2-5 5-5h2c3 0 5 2 5 5zm20 5v8c0 3-2 5-5 5h-2c-3 0-5-2-5-5v-8c0-3 2-5 5-5h2c3 0 5 2 5 5z' transform='translate(15,15) scale(0.7)'/></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..600&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1587,7 +1587,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
     <meta name="color-scheme" content="dark light">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plak CLI — sites</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23f6f1e8'/><rect x='10' y='50' width='80' height='40' fill='%232f36fa'/></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%23ffffff'/><path fill='%232f36fa' d='M65 25H45c-3 0-5 2-5 5v10c0 3-4 5-7 5s-7 2-7 5v15c0 3 2 5 5 5h2c0 5 3 12 12 12s12-7 12-12v-5c0-3 4-5 7-5s7-2 7-5v-15c0-3-2-5-5-5h-2c0-8-7-15-15-15zm-15 10v8c0 3-2 5-5 5h-2c-3 0-5-2-5-5v-8c0-3 2-5 5-5h2c3 0 5 2 5 5zm20 5v8c0 3-2 5-5 5h-2c-3 0-5-2-5-5v-8c0-3 2-5 5-5h2c3 0 5 2 5 5z' transform='translate(15,15) scale(0.7)'/></svg>">
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
         // theme's background is used from the very first frame (no FOUC).
