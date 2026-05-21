@@ -1,7 +1,7 @@
 upgrade_frankenphp() {
     local frankenphp_path
     frankenphp_path=$(command -v frankenphp)
-    
+
     # Check if installed via package manager (typically at /usr/bin/frankenphp)
     if [ "$frankenphp_path" = "/usr/bin/frankenphp" ]; then
         # Package manager installation - use apt/dnf to upgrade
@@ -35,14 +35,14 @@ upgrade_frankenphp() {
             target_bin_dir="$BIN_DIR"
             echo "   - FrankenPHP not found. Using default: $target_bin_dir"
         fi
-        
+
         echo "   - Downloading latest FrankenPHP static binary..."
-        
+
         # Determine the correct binary for this platform
         local arch=$(uname -m)
         local os=$(uname -s)
         local binary_name=""
-        
+
         if [ "$os" = "Linux" ]; then
             case $arch in
                 x86_64) binary_name="frankenphp-linux-x86_64" ;;
@@ -58,12 +58,12 @@ upgrade_frankenphp() {
                 x86_64) binary_name="frankenphp-mac-x86_64" ;;
             esac
         fi
-        
+
         if [ -z "$binary_name" ]; then
             gum style --foreground red "❌ No precompiled FrankenPHP binary available for $os/$arch"
             return 1
         fi
-        
+
         local temp_binary="/tmp/frankenphp_new"
         if curl -L --progress-bar "https://github.com/php/frankenphp/releases/latest/download/${binary_name}" -o "$temp_binary"; then
             chmod +x "$temp_binary"
@@ -83,7 +83,7 @@ upgrade_frankenphp() {
             return 1
         fi
     fi
-    
+
     # Verify mysqli is available after upgrade
     echo "   - Verifying PHP mysqli extension..."
     if ! frankenphp php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
@@ -92,7 +92,7 @@ upgrade_frankenphp() {
         return 1
     fi
     echo "   - ✅ mysqli extension verified."
-    
+
     return 0
 }
 
@@ -109,7 +109,7 @@ plak_site_upgrade() {
 
     echo "🔎 Checking for the latest version of Plak..."
 
-    local download_url="https://github.com/plakio/plak-cli/releases/latest/download/plak.sh"
+    local download_url="https://plak.run/plak.sh"
     local temp_script="/tmp/plak.sh.latest"
     local install_path
 
@@ -220,41 +220,41 @@ plak_site_upgrade() {
     else
         echo "✅ FrankenPHP is already up to date."
     fi
-    
+
     # --- Adminer Upgrade Check ---
     echo ""
     echo "🔎 Checking for Adminer updates..."
-    
+
     local adminer_file="$ADMINER_DIR/adminer-core.php"
     if [ ! -f "$adminer_file" ]; then
         echo "   - ⚠️ Adminer not found. Skipping update check."
         return 0
     fi
-    
+
     # Get current Adminer version from the file (portable — BSD grep has no -P/\K)
     local current_adminer_version
     current_adminer_version=$(LC_ALL=C sed -nE 's/.*VERSION="([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$adminer_file" 2>/dev/null | head -1)
     if [ -z "$current_adminer_version" ]; then
         current_adminer_version=$(LC_ALL=C sed -nE 's/.*@version[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$adminer_file" 2>/dev/null | head -1)
     fi
-    
+
     if [ -z "$current_adminer_version" ]; then
         echo "   - ⚠️ Could not determine current Adminer version."
         current_adminer_version="unknown"
     fi
-    
+
     # Get latest version from GitHub
     local latest_adminer_version
     latest_adminer_version=$(curl -sL -o /dev/null -w '%{url_effective}' https://github.com/vrana/adminer/releases/latest | sed 's/.*\/v//')
-    
+
     if [ -z "$latest_adminer_version" ]; then
         echo "   - ❌ Could not determine the latest Adminer version from GitHub."
         return 0
     fi
-    
+
     echo "   - Current Adminer version:  $current_adminer_version"
     echo "   - Latest available version: $latest_adminer_version"
-    
+
     # Compare versions (skip if current is unknown)
     if [ "$current_adminer_version" != "unknown" ]; then
         local adminer_needs_upgrade
@@ -265,7 +265,7 @@ plak_site_upgrade() {
                 echo "false";
             }
         ')
-        
+
         if [ "$adminer_needs_upgrade" == "true" ]; then
             echo "🚀 Upgrading Adminer to version $latest_adminer_version..."
             if curl -sL "https://github.com/vrana/adminer/releases/download/v${latest_adminer_version}/adminer-${latest_adminer_version}.php" -o "$adminer_file"; then
