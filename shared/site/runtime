@@ -617,7 +617,7 @@ $display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strl
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title><?= htmlspecialchars($host) ?></title>
+<title>Plak CLI</title>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..600&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -890,7 +890,7 @@ deploy_adminer_theme() {
 function adminer_object() {
     // Adminer 5.x uses the Adminer namespace
     class AdminerPlakLogin extends Adminer\Adminer {
-        function name() { return 'Plak DB Manager'; }
+        function name() { return 'Plak CLI DB Manager'; }
         function permanentLogin($i = false) { return "plak-local-development-key"; }
         function credentials() {
             $configFile = getenv('HOME') . '/Plak/config';
@@ -1585,7 +1585,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
     <meta charset="UTF-8">
     <meta name="color-scheme" content="dark light">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plak — sites</title>
+    <title>Plak CLI — sites</title>
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
         // theme's background is used from the very first frame (no FOUC).
@@ -1897,7 +1897,7 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
 <body x-data="dashboard" x-init="init()">
     <div class="wrap">
         <nav class="nav">
-            <a class="logo" href="/">Plak</a>
+            <a class="logo" href="/">Plak CLI</a>
             <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
                 <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
                 <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
