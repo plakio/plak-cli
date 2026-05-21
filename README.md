@@ -9,6 +9,22 @@ Plak CLI is a Bash + [gum](https://github.com/charmbracelet/gum) tool for everyd
 
 It follows a modular structure: source files are compiled into a single distributable `plak.sh` script.
 
+## Quickstart
+
+```bash
+# Install Plak CLI
+curl -fsSL https://plak.run/install.sh | bash
+
+# Install local dependencies
+plak install
+
+# Create a WordPress site
+plak add my-site
+
+# Access the dashboard
+open https://plak.localhost
+```
+
 ## Requirements
 
 - Bash

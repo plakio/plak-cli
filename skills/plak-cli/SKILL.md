@@ -22,6 +22,18 @@ Use Plak for local developer workflows around:
 - Plak site state lives under `~/Plak`; sites live under `~/Plak/Sites`.
 - The compiled distributable is `plak.sh`; source files are `main`, `shared/`, and `commands/`.
 
+## Installation
+
+If Plak CLI is not installed, use:
+
+```bash
+# Via curl (macOS/Linux)
+curl -fsSL https://plak.run/install.sh | bash
+
+# Via Homebrew (macOS)
+brew tap plakio/plak-cli && brew install plak-cli
+```
+
 ## Common Commands
 
 ```bash
@@ -103,3 +115,4 @@ bash -n main shared/* shared/site/* commands/* commands/site/* compile.sh instal
 - If the dashboard does not respond, run `plak status`, then `plak enable` or `plak reload`.
 - If HTTPS warnings appear, run `plak trust`.
 - If ports 80/443 conflict with another local dev tool, use `plak ports`.
+- If you need to install Plak CLI first, see **Installation** above.
