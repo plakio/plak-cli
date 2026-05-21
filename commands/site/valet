@@ -158,6 +158,14 @@ plak_site_valet_enable() {
         exit 1
     fi
 
+    # Update WordPress site URLs to remove the explicit port
+    # (sites still have :$HTTPS_PORT in their URLs, but now proxy handles 443→HTTPS_PORT)
+    if [ -d "$SITES_DIR" ] && [ -n "$(find "$SITES_DIR" -maxdepth 2 -name wp-config.php -print -quit 2>/dev/null)" ]; then
+        echo ""
+        echo "🔄 Updating WordPress site URLs..."
+        update_wp_site_urls_for_port_change "$HTTPS_PORT" "443"
+    fi
+
     echo ""
     gum style --foreground green "✅ Try: https://plak.localhost"
 }
