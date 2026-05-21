@@ -158,6 +158,10 @@ plak_site_valet_enable() {
         exit 1
     fi
 
+    # Update config so dashboard URLs don't include port suffix
+    # (valet proxies 443 → HTTPS_PORT internally, so external URLs drop the :port)
+    config_set HTTPS_PORT 443
+
     # Update WordPress site URLs to remove the explicit port
     # (sites still have :$HTTPS_PORT in their URLs, but now proxy handles 443→HTTPS_PORT)
     if [ -d "$SITES_DIR" ] && [ -n "$(find "$SITES_DIR" -maxdepth 2 -name wp-config.php -print -quit 2>/dev/null)" ]; then
