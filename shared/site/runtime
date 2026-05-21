@@ -34,14 +34,14 @@ setup_environment() {
         OS="macos"
         PKG_MANAGER="brew"
         SUDO_CMD=""
-        
+
         # Architecture detection for MacOS Homebrew paths
         if [ "$(uname -m)" = "arm64" ]; then
             BIN_DIR="/opt/homebrew/bin"
         else
             BIN_DIR="/usr/local/bin"
         fi
-        
+
         return 0 # Success, exit function
     fi
 
@@ -49,12 +49,12 @@ setup_environment() {
     if [ "$os_name" = "Linux" ]; then
         OS="linux"
         BIN_DIR="/usr/local/bin" # Standard for Linux
-        
+
         # Check if running in WSL
         if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then
             IS_WSL=true
         fi
-        
+
         if [ ! -f /etc/os-release ]; then
             echo "❌ ERROR: Cannot detect Linux distribution." >&2
             exit 1
@@ -70,13 +70,13 @@ setup_environment() {
             echo "Supported: Ubuntu, Debian, Fedora, CentOS, RHEL and derivatives." >&2
             exit 1
         fi
-        
+
         if [ "$(id -u)" -eq 0 ]; then
             SUDO_CMD=""
         fi
         return 0 # Success, exit function
     fi
-    
+
     # --- If neither of the above, it's an unsupported OS ---
     echo "❌ ERROR: Unsupported OS: $os_name" >&2
     exit 1
@@ -364,12 +364,12 @@ create_whoops_bootstrap() {
 spl_autoload_register(function ($class) {
     $prefix = 'Whoops\\';
     $base_dir = __DIR__ . '/whoops/src/Whoops/';
-    
+
     $len = strlen($prefix);
     if (strncmp($prefix, $class, $len) !== 0) {
         return;
     }
-    
+
     $relative_class = substr($class, $len);
     $file = $base_dir . str_replace('\\', '/', $relative_class) . '.php';
 
@@ -573,14 +573,14 @@ function plak_site_maybe_override_site_url( $value ) {
     if ( defined( 'WP_CLI' ) && WP_CLI ) {
         return $value;
     }
-    
+
     $host = isset( $_SERVER['HTTP_HOST'] ) ? $_SERVER['HTTP_HOST'] : '';
-    
+
     // Skip if no host or if it ends with .localhost (normal local access)
     if ( empty( $host ) || preg_match( '/\.localhost(:\d+)?$/', $host ) ) {
         return $value;
     }
-    
+
     // Override to current host for Tailscale, LAN, or public share access
     $scheme = ( ! empty( $_SERVER['HTTPS'] ) && $_SERVER['HTTPS'] !== 'off' ) ? 'https' : 'http';
     return $scheme . '://' . $host;
@@ -1105,10 +1105,10 @@ EOM
             if [ -d "$site_path" ]; then
                 local site_name
                 site_name=$(basename "$site_path")
-                
+
                 # Build the list of domains
                 local site_domains="$site_name"
-                
+
                 if [ -f "$site_path/mappings" ]; then
                     while IFS= read -r mapping || [ -n "$mapping" ]; do
                          if [ -n "$mapping" ]; then
@@ -1118,14 +1118,14 @@ EOM
                 fi
 
                 echo "$site_domains {" >> "$CADDYFILE_PATH"
-                
+
                 echo "    root * \"$site_path/public\"" >> "$CADDYFILE_PATH"
                 echo "    tls internal" >> "$CADDYFILE_PATH"
-                
+
                 echo "    log {" >> "$CADDYFILE_PATH"
                 echo "        output file \"$site_path/logs/caddy.log\"" >> "$CADDYFILE_PATH"
                 echo "    }" >> "$CADDYFILE_PATH"
-                
+
                 local custom_conf_file="$CUSTOM_CADDY_DIR/$site_name"
                 if [ -f "$custom_conf_file" ]; then
                     echo "" >> "$CADDYFILE_PATH"
@@ -1141,7 +1141,7 @@ EOM
 
                 echo "}" >> "$CADDYFILE_PATH"
                 echo "" >> "$CADDYFILE_PATH"
-                
+
                 # Check if LAN access is enabled for this site
                 local lan_config="$site_path/lan_config"
                 if [ -f "$lan_config" ]; then
@@ -1156,11 +1156,11 @@ EOM
                         echo "    bind 0.0.0.0" >> "$CADDYFILE_PATH"
                         echo "    root * \"$site_path/public\"" >> "$CADDYFILE_PATH"
                         echo "    tls internal" >> "$CADDYFILE_PATH"
-                        
+
                         echo "    log {" >> "$CADDYFILE_PATH"
                         echo "        output file \"$site_path/logs/caddy-lan.log\"" >> "$CADDYFILE_PATH"
                         echo "    }" >> "$CADDYFILE_PATH"
-                        
+
                         if [ -f "$custom_conf_file" ]; then
                             echo "" >> "$CADDYFILE_PATH"
                             sed 's/^/    /' "$custom_conf_file" >> "$CADDYFILE_PATH"
@@ -1186,12 +1186,12 @@ EOM
     if [ -d "$proxy_dir" ] && [ -n "$(ls -A "$proxy_dir" 2>/dev/null)" ]; then
         echo "# --- Custom Reverse Proxies ---" >> "$CADDYFILE_PATH"
         echo "" >> "$CADDYFILE_PATH"
-        
+
         for proxy_file in "$proxy_dir"/*; do
             if [ -f "$proxy_file" ]; then
                 local proxy_name
                 proxy_name=$(basename "$proxy_file")
-                
+
                 local proxy_domain=""
                 local proxy_target=""
                 local proxy_tls="internal"
@@ -1223,9 +1223,9 @@ EOM
     if [ -n "$tailscale_hostname" ]; then
         echo "# --- Tailscale Port-Based Access ---" >> "$CADDYFILE_PATH"
         echo "" >> "$CADDYFILE_PATH"
-        
+
         local ts_port=9001
-        
+
         # Add a server block for each site on a unique port
         if [ -d "$SITES_DIR" ]; then
             for site_path in "$SITES_DIR"/*; do
@@ -1234,7 +1234,7 @@ EOM
                     site_name=$(basename "$site_path")
                     local site_base_name
                     site_base_name=$(echo "$site_name" | sed 's/\.localhost$//')
-                    
+
                     # Check if this site has a simple reverse_proxy directive
                     local directive_file="$CUSTOM_CADDY_DIR/$site_name"
                     local direct_proxy_target=""
@@ -1242,11 +1242,11 @@ EOM
                         # Extract target if directive is just "reverse_proxy <target>"
                         direct_proxy_target=$(grep -E '^reverse_proxy [0-9a-zA-Z.:]+$' "$directive_file" 2>/dev/null | awk '{print $2}')
                     fi
-                    
+
                     echo "# Tailscale: ${site_base_name} -> port ${ts_port}" >> "$CADDYFILE_PATH"
                     echo "https://${tailscale_hostname}:${ts_port} {" >> "$CADDYFILE_PATH"
                     echo "    tls internal" >> "$CADDYFILE_PATH"
-                    
+
                     if [ -n "$direct_proxy_target" ]; then
                         # Proxy directly to the backend target
                         echo "    reverse_proxy ${direct_proxy_target}" >> "$CADDYFILE_PATH"
@@ -1257,31 +1257,31 @@ EOM
                         echo "    log {" >> "$CADDYFILE_PATH"
                         echo "        output file \"$site_path/logs/caddy-tailscale.log\"" >> "$CADDYFILE_PATH"
                         echo "    }" >> "$CADDYFILE_PATH"
-                        
+
                         # Include custom directives if present
                         if [ -f "$directive_file" ]; then
                             echo "" >> "$CADDYFILE_PATH"
                             sed 's/^/    /' "$directive_file" >> "$CADDYFILE_PATH"
                             echo "" >> "$CADDYFILE_PATH"
                         fi
-                        
+
                         echo "    php_server" >> "$CADDYFILE_PATH"
-                        
+
                         if [ ! -f "$site_path/public/wp-config.php" ]; then
                             echo "    file_server" >> "$CADDYFILE_PATH"
                         fi
                     fi
                     echo "}" >> "$CADDYFILE_PATH"
                     echo "" >> "$CADDYFILE_PATH"
-                    
+
                     # Store port mapping for this site
                     echo "${ts_port}" > "$site_path/tailscale_port"
-                    
+
                     ((ts_port++))
                 fi
             done
         fi
-        
+
         # Global services on fixed ports
         # Mail on port 9901
         echo "# Tailscale: mail -> port 9901" >> "$CADDYFILE_PATH"
@@ -1290,7 +1290,7 @@ EOM
         echo "    reverse_proxy 127.0.0.1:8025" >> "$CADDYFILE_PATH"
         echo "}" >> "$CADDYFILE_PATH"
         echo "" >> "$CADDYFILE_PATH"
-        
+
         # DB on port 9902 - serve directly
         echo "# Tailscale: db -> port 9902" >> "$CADDYFILE_PATH"
         echo "https://${tailscale_hostname}:9902 {" >> "$CADDYFILE_PATH"
@@ -1299,7 +1299,7 @@ EOM
         echo "    php_server" >> "$CADDYFILE_PATH"
         echo "}" >> "$CADDYFILE_PATH"
         echo "" >> "$CADDYFILE_PATH"
-        
+
         # Dashboard on port 9900 - serve directly
         echo "# Tailscale: plak dashboard -> port 9900" >> "$CADDYFILE_PATH"
         echo "https://${tailscale_hostname}:9900 {" >> "$CADDYFILE_PATH"
@@ -1342,7 +1342,7 @@ EOM
 create_gui_file() {
     echo "🎨 Creating Plak dashboard files..."
     mkdir -p "$GUI_DIR"
-    
+
     # Create the API file that handles the logic
     cat > "$GUI_DIR/api.php.tmp" << 'EOM'
 <?php
@@ -1900,21 +1900,8 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
     <div class="wrap">
         <nav class="nav">
             <a class="logo" href="/">
-                <svg class="logo-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false" stroke-linecap="round" stroke-linejoin="round">
-                    <defs>
-                        <clipPath id="plak-clip"><circle cx="32" cy="32" r="28"/></clipPath>
-                    </defs>
-                    <g clip-path="url(#plak-clip)">
-                        <rect x="0" y="0" width="64" height="64" class="disc"/>
-                        <rect x="0" y="32" width="64" height="32" class="water"/>
-                        <path class="land" d="M 4 32 C 4 22, 12 12, 22 12 C 30 12, 34 18, 42 16 C 50 14, 58 18, 60 24 L 60 32 Z"/>
-                        <line class="horizon" x1="2" y1="32" x2="62" y2="32" stroke-width="2.5"/>
-                        <g class="wave" stroke-width="2.6">
-                            <path d="M 10 42 Q 18 38, 26 42 T 42 42 T 56 42"/>
-                            <path d="M 14 50 Q 22 46, 30 50 T 46 50 T 56 50"/>
-                        </g>
-                    </g>
-                    <circle cx="32" cy="32" r="28" class="ring"/>
+                <svg class="logo-mark" viewBox="0 0 375 375" aria-hidden="true" focusable="false">
+                  <path fill="#2f36fa" d="M332.4 228.2H198.2c-2.8 0-5.1-2.3-5.1-5.1s2.3-5.1 5.1-5.1h98c2.8 0 5.1-2.3 5.1-5.1s-2.3-5.1-5.1-5.1h-10.6c-1.9-13.4-9.9-25.5-24.5-28.4.4-2.4.6-4.9.6-7.4 0-25.8-21-46.7-46.7-46.7-22.4 0-41.2 15.8-45.6 36.9v-.1c-6.8-3.8-14.5-5.9-22.8-5.9-18.4 0-34.3 10.7-41.9 26.1h-62.1c-2.8 0-5.1 2.3-5.1 5.1s2.3 5.1 5.1 5.1h98c2.8 0 5.1-2.3 5.1-5.1s-2.3-5.1-5.1-5.1h-61.8c-2.8 0-5.1 2.3-5.1 5.1s2.3 5.1 5.1 5.1h22.2c4.6 21 23.3 36.7 45.6 36.7h115.6c7.3-1.3 12.9-5.5 17-11.3h53.3c2.8 0 5.1-2.3 5.1-5.1s-2.8-5.1-5.6-5.1z"/>
                 </svg>
                 <span>Plak</span>
             </a>
@@ -2439,7 +2426,7 @@ EOM
     local script_dir
     script_dir=$(cd "$(dirname "$0")" && pwd)
     local absolute_script_path="$script_dir/$(basename "$0")"
-    
+
     # Escape the paths for use in sed
     local escaped_path
     escaped_path=$(printf '%s\n' "$absolute_script_path" | sed -e 's/[\/&]/\\&/g')
@@ -2447,7 +2434,7 @@ EOM
     escaped_sites_dir=$(printf '%s\n' "$SITES_DIR" | sed -e 's/[\/&]/\\&/g')
     local escaped_home
     escaped_home=$(printf '%s\n' "$HOME" | sed -e 's/[\/&]/\\&/g')
-    
+
     # Substitute placeholders in both api.php and index.php
     sed -e "s/PLAK_SITE_EXECUTABLE_PATH_PLACEHOLDER/${escaped_path}/g" \
         -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
@@ -2456,7 +2443,7 @@ EOM
 
     sed -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
         "$GUI_DIR/index.php.tmp" > "$GUI_DIR/index.php"
-        
+
     # Clean up temp files
     rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"
 }
