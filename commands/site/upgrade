@@ -109,7 +109,7 @@ plak_site_upgrade() {
 
     echo "🔎 Checking for the latest version of Plak..."
 
-    local download_url="https://plak.run/plak.sh"
+    local download_url="https://raw.githubusercontent.com/plakio/plak-cli/main/plak.sh"
     local temp_script="/tmp/plak.sh.latest"
     local install_path
 
