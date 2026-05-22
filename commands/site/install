@@ -45,7 +45,7 @@ install_dependency() {
         else
             pkg_name="$dnf_pkg"
         fi
-        
+
         # Only try native package manager if a name is provided
         if [ -n "$pkg_name" ]; then
             echo "   - Updating package cache..."
@@ -54,7 +54,7 @@ install_dependency() {
             else
                 $SUDO_CMD dnf makecache -q >/dev/null 2>&1 || true
             fi
-            
+
             echo "   - Installing $pkg_name via $PKG_MANAGER..."
             if [ "$PKG_MANAGER" == "apt" ]; then
                 if $SUDO_CMD apt-get install -y "$pkg_name" >/dev/null 2>&1; then
@@ -66,7 +66,7 @@ install_dependency() {
                 fi
             fi
         fi
-        
+
         # 3. If native package fails or isn't specified, and a binary URL is provided, try that.
         if [ "$installed_successfully" = false ] && [ -n "$binary_url" ]; then
             if ! command -v gum &>/dev/null; then
@@ -74,10 +74,10 @@ install_dependency() {
             else
                 gum style --foreground "yellow" "   - Native package not available. Falling back to binary download."
             fi
-            
+
             local temp_dir
             temp_dir=$(mktemp -d)
-            
+
             # Check if URL is a tarball or direct binary
             if [[ "$binary_url" == *.tar.gz ]] || [[ "$binary_url" == *.tgz ]]; then
                 echo "   - Downloading and extracting tarball..."
@@ -315,7 +315,7 @@ plak_site_install() {
             exit 0
         fi
     fi
-    
+
     # FrankenPHP uses its own universal installer.
     # The upstream installer tries to write to /usr/local/bin and silently
     # falls back to CWD when that fails — which happens on a fresh Apple
@@ -349,7 +349,7 @@ plak_site_install() {
     else
         echo "✅ FrankenPHP is already installed."
     fi
-    
+
     # On Linux with apt/dnf, FrankenPHP needs additional PHP extensions installed
     # The DEB/RPM packages don't include all extensions by default
     if [ "$OS" = "linux" ]; then
@@ -363,7 +363,7 @@ plak_site_install() {
             $SUDO_CMD dnf install -y php-zts-mysqli php-zts-curl php-zts-gd php-zts-xml php-zts-mbstring php-zts-zip php-zts-intl php-zts-bcmath 2>/dev/null || true
             echo "✅ FrankenPHP PHP extensions installed."
         fi
-        
+
         # Verify mysqli is available
         if ! frankenphp php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
             gum style --foreground yellow "⚠️ Warning: mysqli extension not found in FrankenPHP."
@@ -615,12 +615,15 @@ INI
         local mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
 
         echo "   - Attempting automatic setup..."
-        if { [ -S "$mariadb_socket" ] && echo "$sql_command" | $SUDO_CMD mysql --protocol=SOCKET --socket="$mariadb_socket" -u root &> /dev/null; } \
+        # Homebrew MariaDB: socket is owned by the current user (not root).
+        # unix_socket auth maps the OS user to a MariaDB user, so trying
+        # as the current user (no sudo) first works for Homebrew's default setup.
+        # On Linux with MariaDB running as root, we need sudo.
+        if { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
+            || { echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
+            || { echo "$sql_command" | mysql &> /dev/null; } \
             || { [ -S "$mariadb_socket" ] && echo "$sql_command" | $SUDO_CMD mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
-            || echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null \
-            || echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" -u root &> /dev/null \
-            || echo "$sql_command" | $SUDO_CMD mysql -u root &> /dev/null \
-            || echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
+            || { echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; }; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
         else
@@ -654,7 +657,7 @@ INI
             exit 1
         fi
     fi
-    
+
     # --- Finalize ---
     create_whoops_bootstrap
     create_gui_file
@@ -713,7 +716,7 @@ INI
         echo ""
         echo "  For browser-only trust, import the certificate in your browser settings."
     fi
-    
+
     if [ "$IS_WSL" = true ]; then
         echo ""
         gum style --foreground yellow "  WSL: Run 'plak wsl-hosts' for Windows hosts file setup instructions."
