@@ -99,7 +99,7 @@ server {
     ssl_certificate_key "$PLAK_VALET_KEY";
 
     location / {
-        proxy_pass https://127.0.0.1:${HTTPS_PORT};
+        proxy_pass http://127.0.0.1:8090;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
