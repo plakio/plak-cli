@@ -243,6 +243,30 @@ next_free_port() {
     return 1
 }
 
+db_port_has_conflict() {
+    local port="$1" app=""
+    port_is_free "$port" && return 1
+
+    app=$(port_listening_app "$port")
+    if [ "$port" = "${DB_PORT:-3306}" ] && [ -n "$app" ]; then
+        [[ "$app" == *mariadbd* || "$app" == *mysqld* || "$app" == *mariadb* ]] && return 1
+    fi
+
+    return 0
+}
+
+next_free_db_port() {
+    local candidate="${1:-3307}"
+    while [ "$candidate" -le 65535 ]; do
+        if ! db_port_has_conflict "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+        candidate=$((candidate + 1))
+    done
+    return 1
+}
+
 # Interactive prompt that asks for HTTP and HTTPS ports, validates each, and
 # re-prompts until both are free. Sets HTTP_PORT / HTTPS_PORT globals on
 # success. Called by the install and plak ports flows.
@@ -292,9 +316,9 @@ prompt_custom_db_port() {
             gum style --foreground red "   ❌ Invalid port number."
             continue
         fi
-        if port_has_conflict "$candidate"; then
+        if db_port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
-            suggest_port=$(next_free_port "$((candidate + 1))" || echo "$suggest_port")
+            suggest_port=$(next_free_db_port "$((candidate + 1))" || echo "$suggest_port")
             continue
         fi
         DB_PORT="$candidate"

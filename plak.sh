@@ -634,6 +634,30 @@ next_free_port() {
     return 1
 }
 
+db_port_has_conflict() {
+    local port="$1" app=""
+    port_is_free "$port" && return 1
+
+    app=$(port_listening_app "$port")
+    if [ "$port" = "${DB_PORT:-3306}" ] && [ -n "$app" ]; then
+        [[ "$app" == *mariadbd* || "$app" == *mysqld* || "$app" == *mariadb* ]] && return 1
+    fi
+
+    return 0
+}
+
+next_free_db_port() {
+    local candidate="${1:-3307}"
+    while [ "$candidate" -le 65535 ]; do
+        if ! db_port_has_conflict "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+        candidate=$((candidate + 1))
+    done
+    return 1
+}
+
 # Interactive prompt that asks for HTTP and HTTPS ports, validates each, and
 # re-prompts until both are free. Sets HTTP_PORT / HTTPS_PORT globals on
 # success. Called by the install and plak ports flows.
@@ -683,9 +707,9 @@ prompt_custom_db_port() {
             gum style --foreground red "   ❌ Invalid port number."
             continue
         fi
-        if port_has_conflict "$candidate"; then
+        if db_port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
-            suggest_port=$(next_free_port "$((candidate + 1))" || echo "$suggest_port")
+            suggest_port=$(next_free_db_port "$((candidate + 1))" || echo "$suggest_port")
             continue
         fi
         DB_PORT="$candidate"
@@ -4756,7 +4780,7 @@ plak_site_install() {
     local original_db_port="$DB_PORT"
     local db_port_choice_made=false
     local db_busy=false
-    port_has_conflict "$DB_PORT" && db_busy=true
+    db_port_has_conflict "$DB_PORT" && db_busy=true
 
     if $db_busy; then
         echo ""
@@ -4783,18 +4807,18 @@ plak_site_install() {
         case "$db_choice" in
             "Use alternative port"*)
                 DB_PORT=3307
-                if ! port_is_free "$DB_PORT"; then
+                if db_port_has_conflict "$DB_PORT"; then
                     if $auto_yes; then
                         gum style --foreground red "❌ Ports 3306 and 3307 are both in use. Re-run without --yes to pick a custom MariaDB port."
                         exit 1
                     fi
                     gum style --foreground yellow \
                         "⚠️  3307 is also in use — please pick a custom port."
-                    prompt_custom_db_port "$(next_free_port 3307)"
+                    prompt_custom_db_port "$(next_free_db_port 3307)"
                 fi
                 ;;
             "Pick custom port")
-                prompt_custom_db_port "$(next_free_port 3307)"
+                prompt_custom_db_port "$(next_free_db_port 3307)"
                 ;;
             "Proceed with"*)
                 gum style --foreground yellow \
@@ -4824,14 +4848,14 @@ plak_site_install() {
                 ;;
             "Switch to default"*)
                 DB_PORT=3306
-                if ! port_is_free "$DB_PORT"; then
+                if db_port_has_conflict "$DB_PORT"; then
                     gum style --foreground yellow \
                         "⚠️  3306 is in use — please pick a custom MariaDB port."
-                    prompt_custom_db_port "$(next_free_port 3307)"
+                    prompt_custom_db_port "$(next_free_db_port 3307)"
                 fi
                 ;;
             "Pick different"*)
-                prompt_custom_db_port "$(next_free_port 3307)"
+                prompt_custom_db_port "$(next_free_db_port 3307)"
                 ;;
         esac
         db_port_choice_made=true
