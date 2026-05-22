@@ -69,15 +69,15 @@ plak_site_rename() {
         trap 'rm -f "$temp_sql_dump"' EXIT
 
         echo "   - Backing up old database '$old_db_name'..."
-        if ! mysqldump -u "$DB_USER" -p"$DB_PASSWORD" "$old_db_name" > "$temp_sql_dump"; then
+        if ! mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$old_db_name" > "$temp_sql_dump"; then
             gum style --foreground red "❌ Error: Failed to dump the old database. Aborting."
             mv "$new_site_dir" "$old_site_dir" # Revert directory rename
             exit 1
         fi
 
         echo "   - Creating and importing to new database '$new_db_name'..."
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$new_db_name\`;"
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" "$new_db_name" < "$temp_sql_dump"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$new_db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$new_db_name" < "$temp_sql_dump"
 
         echo "   - Updating wp-config.php..."
         (cd "$new_site_dir/public" && $wp_cmd config set DB_NAME "$new_db_name" --quiet)
@@ -86,7 +86,7 @@ plak_site_rename() {
         (cd "$new_site_dir/public" && $wp_cmd search-replace "$(url_for "$old_name.localhost")" "$(url_for "$new_name.localhost")" --all-tables --skip-plugins --skip-themes --quiet)
 
         echo "   - Dropping old database '$old_db_name'..."
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$old_db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$old_db_name\`;"
     fi
 
     # --- Rename Custom Caddy Directives File ---

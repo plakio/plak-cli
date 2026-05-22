@@ -43,10 +43,16 @@ plak_site_db_backup() {
                     return 1 # This exits the subshell, not the main script
                 fi
 
-                local db_name db_user db_pass
+                local db_name db_user db_pass db_host db_port
                 db_name=$($wp_cmd config get DB_NAME --skip-plugins --skip-themes)
                 db_user=$($wp_cmd config get DB_USER --skip-plugins --skip-themes)
                 db_pass=$($wp_cmd config get DB_PASSWORD --skip-plugins --skip-themes)
+                db_host=$($wp_cmd config get DB_HOST --skip-plugins --skip-themes 2>/dev/null || echo "127.0.0.1")
+                db_port="3306"
+                if [[ "$db_host" == *:* ]]; then
+                    db_port="${db_host##*:}"
+                    db_host="${db_host%:*}"
+                fi
 
                 if [ -z "$db_name" ] || [ -z "$db_user" ]; then
                     echo "   ❌ Error: Could not retrieve database credentials from wp-config.php. Skipping."
@@ -59,7 +65,7 @@ plak_site_db_backup() {
                 echo "   Saving backup to: $(basename "$site_path")/private/$(basename "$backup_file")"
 
                 # Execute the dump command
-                if ! "${dump_command}" -u"${db_user}" -p"${db_pass}" --max_allowed_packet=512M --default-character-set=utf8mb4 --add-drop-table --single-transaction --quick --lock-tables=false "${db_name}" > "${backup_file}"; then
+                if ! "${dump_command}" -h"${db_host}" -P"${db_port}" -u"${db_user}" -p"${db_pass}" --max_allowed_packet=512M --default-character-set=utf8mb4 --add-drop-table --single-transaction --quick --lock-tables=false "${db_name}" > "${backup_file}"; then
                     echo "   ❌ Error: Database dump failed for '${db_name}'."
                     rm -f "${backup_file}" # Clean up failed backup file
                     return 1
@@ -111,7 +117,7 @@ plak_site_db_list() {
     local frank
     frank=$(command -v frankenphp)
     local php_output
-    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" SITES_DIR="$SITES_DIR" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
+    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
             if ($bytes === 0) return "0 B";
             $units = ["B", "KB", "MB", "GB", "TB"];
@@ -122,6 +128,8 @@ plak_site_db_list() {
         $sites_dir = getenv("SITES_DIR");
         $db_user = getenv("DB_USER");
         $db_pass = getenv("DB_PASSWORD");
+        $db_host = getenv("DB_HOST") ?: "127.0.0.1";
+        $db_port = getenv("DB_PORT") ?: "3306";
         $wp_root_flag = getenv("WP_ROOT_FLAG");
         $wp_path = getenv("WP_PATH");
         $frank_bin = getenv("FRANK_BIN");
@@ -130,7 +138,7 @@ plak_site_db_list() {
         if (!is_dir($sites_dir)) { exit; }
 
         try {
-            $pdo = new PDO("mysql:host=localhost", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
+            $pdo = new PDO("mysql:host={$db_host};port={$db_port}", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         } catch (PDOException $e) { exit; }
 

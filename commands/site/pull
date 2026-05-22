@@ -1,4 +1,6 @@
 plak_site_pull() {
+    source_config
+
     # --- UI/Logging Functions ---
     log_step() { 
         echo ""
@@ -99,7 +101,7 @@ plak_site_pull() {
         
         log_step "Preparing to overwrite existing site: ${site_name}.localhost"
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
     fi
 
     dest_path="$SITES_DIR/$site_name.localhost/public"
@@ -130,7 +132,6 @@ plak_site_pull() {
 
     # --- 5. Post-Migration Configuration ---
     log_step "Configuring local site..."
-    source_config
     inject_mu_plugin "$dest_path"
 
     # --- 6. Add Proxy Directive if Flag is Set ---

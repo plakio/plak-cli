@@ -78,19 +78,24 @@ plak_skill_install_target() {
 }
 
 plak_skill_prompt_targets() {
-    local choices selected input
-    choices=$(cat <<'CHOICES'
-codex
-claude-code
-opencode
-pi
-CHOICES
-)
+    local selected input
 
     if plak_command_exists gum && plak_has_tty; then
-        selected=$(printf '%s\n' "$choices" | gum choose --no-limit --header "Which agents do you use?")
+        selected=$(gum choose \
+            --no-limit \
+            --height 7 \
+            --header "Which agents do you use? Select one or more." \
+            codex \
+            claude-code \
+            opencode \
+            pi \
+            all)
         [ -n "$selected" ] || return 1
-        printf '%s\n' "$selected"
+        if printf '%s\n' "$selected" | grep -qx 'all'; then
+            printf '%s\n' codex claude-code opencode pi
+        else
+            printf '%s\n' "$selected"
+        fi
         return 0
     fi
 
@@ -99,9 +104,11 @@ CHOICES
     echo "  2) claude-code"
     echo "  3) opencode"
     echo "  4) pi"
+    echo "  5) all"
     printf "> "
     read -r input
 
+    case ",$input," in *",5,"*) printf '%s\n' codex claude-code opencode pi; return 0 ;; esac
     case ",$input," in *",1,"*) echo "codex" ;; esac
     case ",$input," in *",2,"*) echo "claude-code" ;; esac
     case ",$input," in *",3,"*) echo "opencode" ;; esac

@@ -400,6 +400,98 @@ plak_site_install() {
     # MariaDB - Database server
     install_dependency "mariadb" "mariadb" "mariadb-server" "mariadb-server" ""
 
+    # --- MariaDB Port Selection ---
+    local original_db_port="$DB_PORT"
+    local db_port_choice_made=false
+    local db_busy=false
+    port_has_conflict "$DB_PORT" && db_busy=true
+
+    if $db_busy; then
+        echo ""
+        echo "⚠️  MariaDB Port Conflict Detected"
+        echo ""
+        local app
+        app=$(port_listening_app "$DB_PORT")
+        echo "   Port ${DB_PORT} is in use by: ${app:-another process}"
+        echo ""
+        echo "Plak needs a MariaDB port. How would you like to proceed?"
+        echo ""
+
+        local db_choice
+        if $auto_yes; then
+            db_choice="Use alternative port"
+        else
+            db_choice=$(gum choose \
+                "Use alternative port (3307) — run alongside Valet or another MySQL" \
+                "Pick custom port" \
+                "Proceed with ${DB_PORT} anyway" \
+                "Cancel installation")
+        fi
+
+        case "$db_choice" in
+            "Use alternative port"*)
+                DB_PORT=3307
+                if ! port_is_free "$DB_PORT"; then
+                    if $auto_yes; then
+                        gum style --foreground red "❌ Ports 3306 and 3307 are both in use. Re-run without --yes to pick a custom MariaDB port."
+                        exit 1
+                    fi
+                    gum style --foreground yellow \
+                        "⚠️  3307 is also in use — please pick a custom port."
+                    prompt_custom_db_port 3307
+                fi
+                ;;
+            "Pick custom port")
+                prompt_custom_db_port 3307
+                ;;
+            "Proceed with"*)
+                gum style --foreground yellow \
+                    "⚠️  MariaDB may fail to bind on ${DB_PORT}."
+                ;;
+            "Cancel installation")
+                echo "🚫 Installation cancelled."
+                exit 1
+                ;;
+        esac
+        db_port_choice_made=true
+    elif [ "$DB_PORT" != "3306" ] && ! $auto_yes; then
+        echo ""
+        gum style --foreground "212" \
+            "Plak is currently configured for MariaDB port: ${DB_PORT}"
+        echo ""
+
+        local db_choice
+        db_choice=$(gum choose \
+            "Keep current MariaDB port (${DB_PORT})" \
+            "Switch to default port (3306)" \
+            "Pick different MariaDB port")
+
+        case "$db_choice" in
+            "Keep current"*)
+                : # no change
+                ;;
+            "Switch to default"*)
+                DB_PORT=3306
+                if ! port_is_free "$DB_PORT"; then
+                    gum style --foreground yellow \
+                        "⚠️  3306 is in use — please pick a custom MariaDB port."
+                    prompt_custom_db_port 3307
+                fi
+                ;;
+            "Pick different"*)
+                prompt_custom_db_port 3307
+                ;;
+        esac
+        db_port_choice_made=true
+    fi
+
+    if $db_port_choice_made || [ "$original_db_port" != "$DB_PORT" ]; then
+        gum style --foreground green \
+            "✅ Using MariaDB port ${DB_PORT}"
+    fi
+
+    plak_site_configure_mariadb_port
+
     # No standalone PHP install — wp-cli is invoked through frankenphp php-cli
     # (see get_wp_cmd in main), so FrankenPHP's bundled PHP is the single PHP
     # runtime for both web and CLI. On Linux the php-zts-* extensions installed
@@ -506,7 +598,7 @@ INI
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Configuring MariaDB"
         echo "   - Waiting for MariaDB service..."
         i=0
-        while ! mysqladmin ping --silent; do
+        while ! mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping --silent; do
             sleep 1;
             i=$((i+1))
             if [ $i -ge 20 ]; then
@@ -522,7 +614,8 @@ INI
         local user_created_successfully=false
 
         echo "   - Attempting automatic setup..."
-        if echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
+        if echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null \
+            || echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
         else
@@ -532,7 +625,7 @@ INI
             local root_pass
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
-            if echo "$sql_command" | mysql -u "$root_user" -p"$root_pass"; then
+            if echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass"; then
                 echo "   - ✅ Manual database user creation successful."
                 user_created_successfully=true
             fi
@@ -542,6 +635,8 @@ INI
             echo "   - 📝 Saving new configuration..."
             config_set DB_USER "$db_user"
             config_set DB_PASSWORD "$db_pass"
+            config_set DB_HOST "$DB_HOST"
+            config_set DB_PORT "$DB_PORT"
         else
             gum style --foreground red "❌ Database user creation failed. Please check credentials and MariaDB logs."
             exit 1

@@ -48,7 +48,7 @@ plak_site_delete() {
         local db_name
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
         echo "🗄️ Deleting database: $db_name"
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
     fi
 
     # Don't trust the bare rm — a pre-1.10 dashboard-created site would be

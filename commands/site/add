@@ -65,7 +65,7 @@ plak_site_add() {
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
         
         echo "🗄️ Creating database: $db_name"
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
         echo "Installing WordPress..."
         admin_pass=$(plak_site_random_password 12)
         
@@ -91,7 +91,7 @@ plak_site_add() {
             fi
 
             # 2. Create the config file
-            $wp_cmd config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --extra-php <<PHP
+            $wp_cmd config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<PHP
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
@@ -110,7 +110,7 @@ PHP
             gum style --foreground red "❌ WordPress installation failed. Please review the errors above."
             # Clean up the failed site directory and database
             echo "   - Cleaning up failed installation..."
-            mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
+            mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
             rm -rf "$site_dir"
             exit 1
         fi

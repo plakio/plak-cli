@@ -503,15 +503,21 @@ CADDY_CMD="frankenphp"
 export PHPRC="$PHP_INI_FILE"
 
 # --- Port Configuration ---
-# Defaults; overridden by HTTP_PORT/HTTPS_PORT entries in $CONFIG_FILE if present.
+# Defaults; overridden by HTTP_PORT/HTTPS_PORT/DB_PORT entries in $CONFIG_FILE if present.
 HTTP_PORT=80
 HTTPS_PORT=443
+DB_HOST=127.0.0.1
+DB_PORT=3306
 if [ -f "$CONFIG_FILE" ]; then
     _plak_site_saved_http=$(grep '^HTTP_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
     _plak_site_saved_https=$(grep '^HTTPS_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
+    _plak_site_saved_db_host=$(grep '^DB_HOST=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
+    _plak_site_saved_db_port=$(grep '^DB_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
     [ -n "$_plak_site_saved_http" ] && HTTP_PORT="$_plak_site_saved_http"
     [ -n "$_plak_site_saved_https" ] && HTTPS_PORT="$_plak_site_saved_https"
-    unset _plak_site_saved_http _plak_site_saved_https
+    [ -n "$_plak_site_saved_db_host" ] && DB_HOST="$_plak_site_saved_db_host"
+    [ -n "$_plak_site_saved_db_port" ] && DB_PORT="$_plak_site_saved_db_port"
+    unset _plak_site_saved_http _plak_site_saved_https _plak_site_saved_db_host _plak_site_saved_db_port
 fi
 
 # Returns ":8453" when HTTPS_PORT is non-default, otherwise empty.
@@ -652,6 +658,72 @@ prompt_custom_ports() {
         HTTPS_PORT="$candidate"
         break
     done
+}
+
+prompt_custom_db_port() {
+    local suggest_port="${1:-3307}"
+    local candidate
+    while true; do
+        candidate=$(gum input --value "$suggest_port" --prompt "MariaDB port: ")
+        if [[ ! "$candidate" =~ ^[0-9]+$ ]] || [ "$candidate" -lt 1 ] || [ "$candidate" -gt 65535 ]; then
+            gum style --foreground red "   ❌ Invalid port number."
+            continue
+        fi
+        if ! port_is_free "$candidate"; then
+            gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            continue
+        fi
+        DB_PORT="$candidate"
+        break
+    done
+}
+
+plak_site_configure_mariadb_port() {
+    DB_HOST="${DB_HOST:-127.0.0.1}"
+    DB_PORT="${DB_PORT:-3306}"
+    config_set DB_HOST "$DB_HOST"
+    config_set DB_PORT "$DB_PORT"
+
+    if [ "$OS" = "macos" ] && command -v brew >/dev/null 2>&1; then
+        local brew_prefix mariadb_conf_dir mariadb_conf_file mariadb_socket
+        brew_prefix=$(brew --prefix)
+        mariadb_conf_dir="$brew_prefix/etc/my.cnf.d"
+        mariadb_conf_file="$mariadb_conf_dir/plak.cnf"
+        mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
+        mkdir -p "$mariadb_conf_dir"
+        if [ ! -f "$brew_prefix/etc/my.cnf" ]; then
+            printf '!includedir %s\n' "$mariadb_conf_dir" > "$brew_prefix/etc/my.cnf"
+        elif ! grep -q "^!includedir $mariadb_conf_dir" "$brew_prefix/etc/my.cnf"; then
+            printf '\n!includedir %s\n' "$mariadb_conf_dir" >> "$brew_prefix/etc/my.cnf"
+        fi
+        cat > "$mariadb_conf_file" <<EOF
+[client]
+host=$DB_HOST
+port=$DB_PORT
+socket=$mariadb_socket
+
+[mariadb]
+bind-address=$DB_HOST
+port=$DB_PORT
+socket=$mariadb_socket
+
+[mysqld]
+bind-address=$DB_HOST
+port=$DB_PORT
+socket=$mariadb_socket
+EOF
+        echo "   - MariaDB configured for $DB_HOST:$DB_PORT ($mariadb_conf_file)"
+    elif [ "$OS" = "linux" ]; then
+        local mariadb_conf_file="/etc/mysql/mariadb.conf.d/99-plak.cnf"
+        if [ ! -d "$(dirname "$mariadb_conf_file")" ]; then
+            mariadb_conf_file="/etc/my.cnf.d/plak.cnf"
+        fi
+        $SUDO_CMD mkdir -p "$(dirname "$mariadb_conf_file")"
+        printf '[client]\nhost=%s\nport=%s\n\n[mariadb]\nbind-address=%s\nport=%s\n\n[mysqld]\nbind-address=%s\nport=%s\n' \
+            "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" \
+            | $SUDO_CMD tee "$mariadb_conf_file" >/dev/null
+        echo "   - MariaDB configured for $DB_HOST:$DB_PORT ($mariadb_conf_file)"
+    fi
 }
 
 # Build the https:// URL for a hostname given an HTTPS port. Omits the port
@@ -1125,6 +1197,8 @@ source_config() {
     if [ -f "$CONFIG_FILE" ]; then
         # shellcheck source=/dev/null
         source "$CONFIG_FILE"
+        DB_HOST="${DB_HOST:-127.0.0.1}"
+        DB_PORT="${DB_PORT:-3306}"
     else
         echo "❌ Error: Plak config file not found. Please run 'plak install'."
         exit 1
@@ -1290,9 +1364,11 @@ function adminer_object() {
                 $config = parse_ini_file($configFile);
                 $db_user = $config['DB_USER'] ?? null;
                 $db_pass = $config['DB_PASSWORD'] ?? null;
-                return ['localhost', $db_user, $db_pass];
+                $db_host = $config['DB_HOST'] ?? '127.0.0.1';
+                $db_port = $config['DB_PORT'] ?? '3306';
+                return [$db_host . ':' . $db_port, $db_user, $db_pass];
             }
-            return ['localhost', null, null];
+            return ['127.0.0.1:3306', null, null];
         }
         function login($login, $password) { return true; }
         function head($title = null) {
@@ -3444,7 +3520,7 @@ plak_site_add() {
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
         
         echo "🗄️ Creating database: $db_name"
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
         echo "Installing WordPress..."
         admin_pass=$(plak_site_random_password 12)
         
@@ -3470,7 +3546,7 @@ plak_site_add() {
             fi
 
             # 2. Create the config file
-            $wp_cmd config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --extra-php <<PHP
+            $wp_cmd config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<PHP
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
@@ -3489,7 +3565,7 @@ PHP
             gum style --foreground red "❌ WordPress installation failed. Please review the errors above."
             # Clean up the failed site directory and database
             echo "   - Cleaning up failed installation..."
-            mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
+            mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
             rm -rf "$site_dir"
             exit 1
         fi
@@ -3571,10 +3647,16 @@ plak_site_db_backup() {
                     return 1 # This exits the subshell, not the main script
                 fi
 
-                local db_name db_user db_pass
+                local db_name db_user db_pass db_host db_port
                 db_name=$($wp_cmd config get DB_NAME --skip-plugins --skip-themes)
                 db_user=$($wp_cmd config get DB_USER --skip-plugins --skip-themes)
                 db_pass=$($wp_cmd config get DB_PASSWORD --skip-plugins --skip-themes)
+                db_host=$($wp_cmd config get DB_HOST --skip-plugins --skip-themes 2>/dev/null || echo "127.0.0.1")
+                db_port="3306"
+                if [[ "$db_host" == *:* ]]; then
+                    db_port="${db_host##*:}"
+                    db_host="${db_host%:*}"
+                fi
 
                 if [ -z "$db_name" ] || [ -z "$db_user" ]; then
                     echo "   ❌ Error: Could not retrieve database credentials from wp-config.php. Skipping."
@@ -3587,7 +3669,7 @@ plak_site_db_backup() {
                 echo "   Saving backup to: $(basename "$site_path")/private/$(basename "$backup_file")"
 
                 # Execute the dump command
-                if ! "${dump_command}" -u"${db_user}" -p"${db_pass}" --max_allowed_packet=512M --default-character-set=utf8mb4 --add-drop-table --single-transaction --quick --lock-tables=false "${db_name}" > "${backup_file}"; then
+                if ! "${dump_command}" -h"${db_host}" -P"${db_port}" -u"${db_user}" -p"${db_pass}" --max_allowed_packet=512M --default-character-set=utf8mb4 --add-drop-table --single-transaction --quick --lock-tables=false "${db_name}" > "${backup_file}"; then
                     echo "   ❌ Error: Database dump failed for '${db_name}'."
                     rm -f "${backup_file}" # Clean up failed backup file
                     return 1
@@ -3639,7 +3721,7 @@ plak_site_db_list() {
     local frank
     frank=$(command -v frankenphp)
     local php_output
-    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" SITES_DIR="$SITES_DIR" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
+    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
             if ($bytes === 0) return "0 B";
             $units = ["B", "KB", "MB", "GB", "TB"];
@@ -3650,6 +3732,8 @@ plak_site_db_list() {
         $sites_dir = getenv("SITES_DIR");
         $db_user = getenv("DB_USER");
         $db_pass = getenv("DB_PASSWORD");
+        $db_host = getenv("DB_HOST") ?: "127.0.0.1";
+        $db_port = getenv("DB_PORT") ?: "3306";
         $wp_root_flag = getenv("WP_ROOT_FLAG");
         $wp_path = getenv("WP_PATH");
         $frank_bin = getenv("FRANK_BIN");
@@ -3658,7 +3742,7 @@ plak_site_db_list() {
         if (!is_dir($sites_dir)) { exit; }
 
         try {
-            $pdo = new PDO("mysql:host=localhost", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
+            $pdo = new PDO("mysql:host={$db_host};port={$db_port}", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         } catch (PDOException $e) { exit; }
 
@@ -3726,6 +3810,7 @@ plak_site_db_list() {
         echo "$php_output" | gum style --border normal --margin "1" --padding "1 2" --border-foreground 212
     fi
 }
+
 # Source: commands/site/delete
 plak_site_delete() {
     source_config
@@ -3777,7 +3862,7 @@ plak_site_delete() {
         local db_name
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
         echo "🗄️ Deleting database: $db_name"
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
     fi
 
     # Don't trust the bare rm — a pre-1.10 dashboard-created site would be
@@ -3841,6 +3926,7 @@ plak_site_delete() {
 
     echo "✅ Site '$site_name.localhost' has been removed."
 }
+
 # Source: commands/site/directive
 plak_site_directive_add_or_update() {
     local site_name="$1"
@@ -4651,6 +4737,98 @@ plak_site_install() {
     # MariaDB - Database server
     install_dependency "mariadb" "mariadb" "mariadb-server" "mariadb-server" ""
 
+    # --- MariaDB Port Selection ---
+    local original_db_port="$DB_PORT"
+    local db_port_choice_made=false
+    local db_busy=false
+    port_has_conflict "$DB_PORT" && db_busy=true
+
+    if $db_busy; then
+        echo ""
+        echo "⚠️  MariaDB Port Conflict Detected"
+        echo ""
+        local app
+        app=$(port_listening_app "$DB_PORT")
+        echo "   Port ${DB_PORT} is in use by: ${app:-another process}"
+        echo ""
+        echo "Plak needs a MariaDB port. How would you like to proceed?"
+        echo ""
+
+        local db_choice
+        if $auto_yes; then
+            db_choice="Use alternative port"
+        else
+            db_choice=$(gum choose \
+                "Use alternative port (3307) — run alongside Valet or another MySQL" \
+                "Pick custom port" \
+                "Proceed with ${DB_PORT} anyway" \
+                "Cancel installation")
+        fi
+
+        case "$db_choice" in
+            "Use alternative port"*)
+                DB_PORT=3307
+                if ! port_is_free "$DB_PORT"; then
+                    if $auto_yes; then
+                        gum style --foreground red "❌ Ports 3306 and 3307 are both in use. Re-run without --yes to pick a custom MariaDB port."
+                        exit 1
+                    fi
+                    gum style --foreground yellow \
+                        "⚠️  3307 is also in use — please pick a custom port."
+                    prompt_custom_db_port 3307
+                fi
+                ;;
+            "Pick custom port")
+                prompt_custom_db_port 3307
+                ;;
+            "Proceed with"*)
+                gum style --foreground yellow \
+                    "⚠️  MariaDB may fail to bind on ${DB_PORT}."
+                ;;
+            "Cancel installation")
+                echo "🚫 Installation cancelled."
+                exit 1
+                ;;
+        esac
+        db_port_choice_made=true
+    elif [ "$DB_PORT" != "3306" ] && ! $auto_yes; then
+        echo ""
+        gum style --foreground "212" \
+            "Plak is currently configured for MariaDB port: ${DB_PORT}"
+        echo ""
+
+        local db_choice
+        db_choice=$(gum choose \
+            "Keep current MariaDB port (${DB_PORT})" \
+            "Switch to default port (3306)" \
+            "Pick different MariaDB port")
+
+        case "$db_choice" in
+            "Keep current"*)
+                : # no change
+                ;;
+            "Switch to default"*)
+                DB_PORT=3306
+                if ! port_is_free "$DB_PORT"; then
+                    gum style --foreground yellow \
+                        "⚠️  3306 is in use — please pick a custom MariaDB port."
+                    prompt_custom_db_port 3307
+                fi
+                ;;
+            "Pick different"*)
+                prompt_custom_db_port 3307
+                ;;
+        esac
+        db_port_choice_made=true
+    fi
+
+    if $db_port_choice_made || [ "$original_db_port" != "$DB_PORT" ]; then
+        gum style --foreground green \
+            "✅ Using MariaDB port ${DB_PORT}"
+    fi
+
+    plak_site_configure_mariadb_port
+
     # No standalone PHP install — wp-cli is invoked through frankenphp php-cli
     # (see get_wp_cmd in main), so FrankenPHP's bundled PHP is the single PHP
     # runtime for both web and CLI. On Linux the php-zts-* extensions installed
@@ -4757,7 +4935,7 @@ INI
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Configuring MariaDB"
         echo "   - Waiting for MariaDB service..."
         i=0
-        while ! mysqladmin ping --silent; do
+        while ! mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping --silent; do
             sleep 1;
             i=$((i+1))
             if [ $i -ge 20 ]; then
@@ -4773,7 +4951,8 @@ INI
         local user_created_successfully=false
 
         echo "   - Attempting automatic setup..."
-        if echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
+        if echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null \
+            || echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
         else
@@ -4783,7 +4962,7 @@ INI
             local root_pass
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
-            if echo "$sql_command" | mysql -u "$root_user" -p"$root_pass"; then
+            if echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass"; then
                 echo "   - ✅ Manual database user creation successful."
                 user_created_successfully=true
             fi
@@ -4793,6 +4972,8 @@ INI
             echo "   - 📝 Saving new configuration..."
             config_set DB_USER "$db_user"
             config_set DB_PASSWORD "$db_pass"
+            config_set DB_HOST "$DB_HOST"
+            config_set DB_PORT "$DB_PORT"
         else
             gum style --foreground red "❌ Database user creation failed. Please check credentials and MariaDB logs."
             exit 1
@@ -4863,6 +5044,7 @@ INI
         gum style --foreground yellow "  WSL: Run 'plak wsl-hosts' for Windows hosts file setup instructions."
     fi
 }
+
 # Source: commands/site/lan
 # --- LAN Access Commands ---
 # Enables local network access to Plak sites for mobile app sync
@@ -6340,6 +6522,8 @@ plak_site_proxy() {
 
 # Source: commands/site/pull
 plak_site_pull() {
+    source_config
+
     # --- UI/Logging Functions ---
     log_step() { 
         echo ""
@@ -6440,7 +6624,7 @@ plak_site_pull() {
         
         log_step "Preparing to overwrite existing site: ${site_name}.localhost"
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
     fi
 
     dest_path="$SITES_DIR/$site_name.localhost/public"
@@ -6471,7 +6655,6 @@ plak_site_pull() {
 
     # --- 5. Post-Migration Configuration ---
     log_step "Configuring local site..."
-    source_config
     inject_mu_plugin "$dest_path"
 
     # --- 6. Add Proxy Directive if Flag is Set ---
@@ -6515,6 +6698,7 @@ EOM
     
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site is ready." "URL: ${local_url}"
 }
+
 # Source: commands/site/push
 plak_site_push() {
     # --- UI/Logging Functions ---
@@ -6771,15 +6955,15 @@ plak_site_rename() {
         trap 'rm -f "$temp_sql_dump"' EXIT
 
         echo "   - Backing up old database '$old_db_name'..."
-        if ! mysqldump -u "$DB_USER" -p"$DB_PASSWORD" "$old_db_name" > "$temp_sql_dump"; then
+        if ! mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$old_db_name" > "$temp_sql_dump"; then
             gum style --foreground red "❌ Error: Failed to dump the old database. Aborting."
             mv "$new_site_dir" "$old_site_dir" # Revert directory rename
             exit 1
         fi
 
         echo "   - Creating and importing to new database '$new_db_name'..."
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$new_db_name\`;"
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" "$new_db_name" < "$temp_sql_dump"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$new_db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$new_db_name" < "$temp_sql_dump"
 
         echo "   - Updating wp-config.php..."
         (cd "$new_site_dir/public" && $wp_cmd config set DB_NAME "$new_db_name" --quiet)
@@ -6788,7 +6972,7 @@ plak_site_rename() {
         (cd "$new_site_dir/public" && $wp_cmd search-replace "$(url_for "$old_name.localhost")" "$(url_for "$new_name.localhost")" --all-tables --skip-plugins --skip-themes --quiet)
 
         echo "   - Dropping old database '$old_db_name'..."
-        mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$old_db_name\`;"
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$old_db_name\`;"
     fi
 
     # --- Rename Custom Caddy Directives File ---
@@ -6804,6 +6988,7 @@ plak_site_rename() {
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Site renamed successfully!" "New URL: $(url_for "$new_name.localhost")"
 }
+
 # Source: commands/site/share
 # --- Share Command ---
 # Creates a temporary public tunnel to share a local site via Cloudflare Quick Tunnels
@@ -8253,19 +8438,24 @@ plak_skill_install_target() {
 }
 
 plak_skill_prompt_targets() {
-    local choices selected input
-    choices=$(cat <<'CHOICES'
-codex
-claude-code
-opencode
-pi
-CHOICES
-)
+    local selected input
 
     if plak_command_exists gum && plak_has_tty; then
-        selected=$(printf '%s\n' "$choices" | gum choose --no-limit --header "Which agents do you use?")
+        selected=$(gum choose \
+            --no-limit \
+            --height 7 \
+            --header "Which agents do you use? Select one or more." \
+            codex \
+            claude-code \
+            opencode \
+            pi \
+            all)
         [ -n "$selected" ] || return 1
-        printf '%s\n' "$selected"
+        if printf '%s\n' "$selected" | grep -qx 'all'; then
+            printf '%s\n' codex claude-code opencode pi
+        else
+            printf '%s\n' "$selected"
+        fi
         return 0
     fi
 
@@ -8274,9 +8464,11 @@ CHOICES
     echo "  2) claude-code"
     echo "  3) opencode"
     echo "  4) pi"
+    echo "  5) all"
     printf "> "
     read -r input
 
+    case ",$input," in *",5,"*) printf '%s\n' codex claude-code opencode pi; return 0 ;; esac
     case ",$input," in *",1,"*) echo "codex" ;; esac
     case ",$input," in *",2,"*) echo "claude-code" ;; esac
     case ",$input," in *",3,"*) echo "opencode" ;; esac

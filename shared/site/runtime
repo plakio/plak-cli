@@ -112,15 +112,21 @@ CADDY_CMD="frankenphp"
 export PHPRC="$PHP_INI_FILE"
 
 # --- Port Configuration ---
-# Defaults; overridden by HTTP_PORT/HTTPS_PORT entries in $CONFIG_FILE if present.
+# Defaults; overridden by HTTP_PORT/HTTPS_PORT/DB_PORT entries in $CONFIG_FILE if present.
 HTTP_PORT=80
 HTTPS_PORT=443
+DB_HOST=127.0.0.1
+DB_PORT=3306
 if [ -f "$CONFIG_FILE" ]; then
     _plak_site_saved_http=$(grep '^HTTP_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
     _plak_site_saved_https=$(grep '^HTTPS_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
+    _plak_site_saved_db_host=$(grep '^DB_HOST=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
+    _plak_site_saved_db_port=$(grep '^DB_PORT=' "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"" || true)
     [ -n "$_plak_site_saved_http" ] && HTTP_PORT="$_plak_site_saved_http"
     [ -n "$_plak_site_saved_https" ] && HTTPS_PORT="$_plak_site_saved_https"
-    unset _plak_site_saved_http _plak_site_saved_https
+    [ -n "$_plak_site_saved_db_host" ] && DB_HOST="$_plak_site_saved_db_host"
+    [ -n "$_plak_site_saved_db_port" ] && DB_PORT="$_plak_site_saved_db_port"
+    unset _plak_site_saved_http _plak_site_saved_https _plak_site_saved_db_host _plak_site_saved_db_port
 fi
 
 # Returns ":8453" when HTTPS_PORT is non-default, otherwise empty.
@@ -261,6 +267,72 @@ prompt_custom_ports() {
         HTTPS_PORT="$candidate"
         break
     done
+}
+
+prompt_custom_db_port() {
+    local suggest_port="${1:-3307}"
+    local candidate
+    while true; do
+        candidate=$(gum input --value "$suggest_port" --prompt "MariaDB port: ")
+        if [[ ! "$candidate" =~ ^[0-9]+$ ]] || [ "$candidate" -lt 1 ] || [ "$candidate" -gt 65535 ]; then
+            gum style --foreground red "   ❌ Invalid port number."
+            continue
+        fi
+        if ! port_is_free "$candidate"; then
+            gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            continue
+        fi
+        DB_PORT="$candidate"
+        break
+    done
+}
+
+plak_site_configure_mariadb_port() {
+    DB_HOST="${DB_HOST:-127.0.0.1}"
+    DB_PORT="${DB_PORT:-3306}"
+    config_set DB_HOST "$DB_HOST"
+    config_set DB_PORT "$DB_PORT"
+
+    if [ "$OS" = "macos" ] && command -v brew >/dev/null 2>&1; then
+        local brew_prefix mariadb_conf_dir mariadb_conf_file mariadb_socket
+        brew_prefix=$(brew --prefix)
+        mariadb_conf_dir="$brew_prefix/etc/my.cnf.d"
+        mariadb_conf_file="$mariadb_conf_dir/plak.cnf"
+        mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
+        mkdir -p "$mariadb_conf_dir"
+        if [ ! -f "$brew_prefix/etc/my.cnf" ]; then
+            printf '!includedir %s\n' "$mariadb_conf_dir" > "$brew_prefix/etc/my.cnf"
+        elif ! grep -q "^!includedir $mariadb_conf_dir" "$brew_prefix/etc/my.cnf"; then
+            printf '\n!includedir %s\n' "$mariadb_conf_dir" >> "$brew_prefix/etc/my.cnf"
+        fi
+        cat > "$mariadb_conf_file" <<EOF
+[client]
+host=$DB_HOST
+port=$DB_PORT
+socket=$mariadb_socket
+
+[mariadb]
+bind-address=$DB_HOST
+port=$DB_PORT
+socket=$mariadb_socket
+
+[mysqld]
+bind-address=$DB_HOST
+port=$DB_PORT
+socket=$mariadb_socket
+EOF
+        echo "   - MariaDB configured for $DB_HOST:$DB_PORT ($mariadb_conf_file)"
+    elif [ "$OS" = "linux" ]; then
+        local mariadb_conf_file="/etc/mysql/mariadb.conf.d/99-plak.cnf"
+        if [ ! -d "$(dirname "$mariadb_conf_file")" ]; then
+            mariadb_conf_file="/etc/my.cnf.d/plak.cnf"
+        fi
+        $SUDO_CMD mkdir -p "$(dirname "$mariadb_conf_file")"
+        printf '[client]\nhost=%s\nport=%s\n\n[mariadb]\nbind-address=%s\nport=%s\n\n[mysqld]\nbind-address=%s\nport=%s\n' \
+            "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" \
+            | $SUDO_CMD tee "$mariadb_conf_file" >/dev/null
+        echo "   - MariaDB configured for $DB_HOST:$DB_PORT ($mariadb_conf_file)"
+    fi
 }
 
 # Build the https:// URL for a hostname given an HTTPS port. Omits the port
@@ -734,6 +806,8 @@ source_config() {
     if [ -f "$CONFIG_FILE" ]; then
         # shellcheck source=/dev/null
         source "$CONFIG_FILE"
+        DB_HOST="${DB_HOST:-127.0.0.1}"
+        DB_PORT="${DB_PORT:-3306}"
     else
         echo "❌ Error: Plak config file not found. Please run 'plak install'."
         exit 1
@@ -899,9 +973,11 @@ function adminer_object() {
                 $config = parse_ini_file($configFile);
                 $db_user = $config['DB_USER'] ?? null;
                 $db_pass = $config['DB_PASSWORD'] ?? null;
-                return ['localhost', $db_user, $db_pass];
+                $db_host = $config['DB_HOST'] ?? '127.0.0.1';
+                $db_port = $config['DB_PORT'] ?? '3306';
+                return [$db_host . ':' . $db_port, $db_user, $db_pass];
             }
-            return ['localhost', null, null];
+            return ['127.0.0.1:3306', null, null];
         }
         function login($login, $password) { return true; }
         function head($title = null) {
