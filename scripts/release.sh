@@ -75,6 +75,12 @@ TAP_DIR=""
 RUN_BREW_TEST=false
 ASSUME_YES=false
 
+# Parse options first
+TAP_DIR=""
+RUN_BREW_TEST=false
+ASSUME_YES=false
+VERSION=""
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --tap-dir)
@@ -98,10 +104,13 @@ while [ "$#" -gt 0 ]; do
             die "Unknown option: $1"
             ;;
         *)
-            # First non-option is the version
-            VERSION="$1"
-            shift
-            break
+            # Non-option arguments (version or extra args)
+            if [ -z "$VERSION" ]; then
+                VERSION="$1"
+                shift
+            else
+                die "Unexpected argument: $1"
+            fi
             ;;
     esac
 done
