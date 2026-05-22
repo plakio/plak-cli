@@ -65,8 +65,29 @@ if [[ "${VERSION:-}" == "--help" || "${VERSION:-}" == "-h" ]]; then
     usage
     exit 0
 fi
-[ -n "$VERSION" ] || { usage >&2; exit 1; }
-shift
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+cd "$REPO_ROOT"
+
+# Auto-increment version if not provided
+if [ -z "$VERSION" ]; then
+    if [ -f main ]; then
+        CURRENT_VERSION=$(grep 'PLAK_VERSION=' main | sed 's/PLAK_VERSION="\([^"]*\)"/\1/')
+        if [ -n "$CURRENT_VERSION" ]; then
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            patch=$((patch + 1))
+            VERSION="${major}.${minor}.${patch}"
+            echo "==> Auto-incrementing version: $CURRENT_VERSION -> $VERSION"
+        else
+            die "Could not determine current PLAK_VERSION from 'main'"
+        fi
+    else
+        die "'main' file not found. Provide version explicitly: ./scripts/release.sh <version>"
+    fi
+else
+    shift  # Consume the version argument
+fi
 
 VERSION="${VERSION#v}"
 TAP_DIR=""
