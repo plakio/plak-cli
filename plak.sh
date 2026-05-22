@@ -5644,7 +5644,7 @@ plak_site_log() {
 # Source: commands/site/login
 plak_site_login() {
     local site_name="$1"
-    local user_identifier="$2" # Optional second argument for the user
+    local user_identifier="${2:-}" # Optional second argument for the user
 
     # 1. Validate that a site name was provided.
     if [ -z "$site_name" ]; then
@@ -5655,7 +5655,7 @@ plak_site_login() {
 
     local site_dir="$SITES_DIR/$site_name.localhost"
     local public_dir="$site_dir/public"
-    
+
     # Get WP-CLI command (adds --allow-root if running as root)
     local wp_cmd
     wp_cmd=$(get_wp_cmd)
@@ -5681,7 +5681,7 @@ plak_site_login() {
             gum style --foreground red "❌ Error: User '$user_identifier' is not an administrator."
             exit 1
         fi
-        
+
         admin_to_login="$user_identifier"
         echo "✅ User '$admin_to_login' verified."
     else
@@ -5714,6 +5714,7 @@ plak_site_login() {
         exit 1
     fi
 }
+
 # Source: commands/site/mappings
 plak_site_mappings() {
     local site_name="$1"
