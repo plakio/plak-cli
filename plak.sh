@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PLAK_NAME="plak"
-PLAK_VERSION="0.4.20"
+PLAK_VERSION="0.4.21"
 PLAK_HOME="${PLAK_HOME:-$HOME/.plak}"
 PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
 PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
@@ -4994,12 +4994,10 @@ INI
         echo "   - Attempting automatic setup..."
         # Auto setup: connect only to the MariaDB we will actually use.
         # If DB_PORT is 3306 (shared with Valet or existing), use sudo to connect.
-        # Use sudo -n first (non-interactive, fails fast if password needed).
         # If DB_PORT is 3307 or other (Plak's dedicated MariaDB), connect directly.
         if [ "$DB_PORT" = "3306" ]; then
             # Shared MariaDB (likely Valet): use sudo to connect as root
-            # sudo -n fails immediately if password required, then try non-sudo
-            if { echo "$sql_command" | sudo -n mysql --skip-ssl &> /dev/null; } \
+            if { echo "$sql_command" | $SUDO_CMD mysql --skip-ssl &> /dev/null; } \
                 || { echo "$sql_command" | mysql --skip-ssl &> /dev/null; }; then
                 echo "   - ✅ Automatic database user creation successful."
                 user_created_successfully=true
@@ -5008,7 +5006,7 @@ INI
             # Plak's dedicated MariaDB on custom port: connect directly to it
             if { echo "$sql_command" | mysql --skip-ssl -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
                 || { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
-                || { echo "$sql_command" | sudo -n mysql --skip-ssl -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; }; then
+                || { echo "$sql_command" | $SUDO_CMD mysql --skip-ssl -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; }; then
                 echo "   - ✅ Automatic database user creation successful."
                 user_created_successfully=true
             fi
@@ -5023,16 +5021,15 @@ INI
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
             if [ "$DB_PORT" = "3306" ]; then
-                # Shared MariaDB: try sudo -n first (non-interactive), then non-sudo
+                # Shared MariaDB: try sudo first, then non-sudo
                 if [ -z "$root_pass" ]; then
-                    if { echo "$sql_command" | sudo -n mysql --skip-ssl -u "$root_user" &> /dev/null; } \
-                        || { echo "$sql_command" | sudo -n mysql --skip-ssl &> /dev/null; } \
+                    if { echo "$sql_command" | $SUDO_CMD mysql --skip-ssl &> /dev/null; } \
                         || { echo "$sql_command" | mysql --skip-ssl &> /dev/null; }; then
                         echo "   - ✅ Manual database user creation successful."
                         user_created_successfully=true
                     fi
                 else
-                    if { echo "$sql_command" | sudo -n mysql --skip-ssl -u "$root_user" -p"$root_pass" &> /dev/null; } \
+                    if { echo "$sql_command" | $SUDO_CMD mysql --skip-ssl -u "$root_user" -p"$root_pass" &> /dev/null; } \
                         || { echo "$sql_command" | mysql --skip-ssl -u "$root_user" -p"$root_pass" &> /dev/null; }; then
                         echo "   - ✅ Manual database user creation successful."
                         user_created_successfully=true
