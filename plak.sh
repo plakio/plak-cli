@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PLAK_NAME="plak"
-PLAK_VERSION="0.4.24"
+PLAK_VERSION="0.4.25"
 PLAK_HOME="${PLAK_HOME:-$HOME/.plak}"
 PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
 PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
@@ -4866,7 +4866,8 @@ plak_site_install() {
             "✅ Using MariaDB port ${DB_PORT}"
     fi
 
-    plak_site_configure_mariadb_port
+    # Note: Don't call plak_site_configure_mariadb_port here — it creates
+    # plak.cnf which conflicts with Homebrew's MariaDB default config.
 
     # No standalone PHP install — wp-cli is invoked through frankenphp php-cli
     # (see get_wp_cmd in main), so FrankenPHP's bundled PHP is the single PHP
