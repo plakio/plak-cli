@@ -70,26 +70,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 cd "$REPO_ROOT"
 
-# Auto-increment version if not provided
-if [ -z "$VERSION" ]; then
-    if [ -f main ]; then
-        CURRENT_VERSION=$(grep 'PLAK_VERSION=' main | sed 's/PLAK_VERSION="\([^"]*\)"/\1/')
-        if [ -n "$CURRENT_VERSION" ]; then
-            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
-            patch=$((patch + 1))
-            VERSION="${major}.${minor}.${patch}"
-            echo "==> Auto-incrementing version: $CURRENT_VERSION -> $VERSION"
-        else
-            die "Could not determine current PLAK_VERSION from 'main'"
-        fi
-    else
-        die "'main' file not found. Provide version explicitly: ./scripts/release.sh <version>"
-    fi
-else
-    shift  # Consume the version argument
-fi
-
-VERSION="${VERSION#v}"
+# Parse options first to find --tap-dir (needed for auto-increment fallback)
 TAP_DIR=""
 RUN_BREW_TEST=false
 ASSUME_YES=false
@@ -113,21 +94,39 @@ while [ "$#" -gt 0 ]; do
             usage
             exit 0
             ;;
-        *)
+        -*)
             die "Unknown option: $1"
+            ;;
+        *)
+            # First non-option is the version
+            VERSION="$1"
+            shift
+            break
             ;;
     esac
 done
 
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-    die "Version must look like 0.4.0 or v0.4.0."
+# Auto-increment version if not provided
+if [ -z "$VERSION" ]; then
+    if [ -f main ]; then
+        CURRENT_VERSION=$(grep 'PLAK_VERSION=' main | sed 's/PLAK_VERSION="\([^"]*\)"/\1/')
+        if [ -n "$CURRENT_VERSION" ]; then
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            patch=$((patch + 1))
+            VERSION="${major}.${minor}.${patch}"
+            echo "==> Auto-incrementing version: $CURRENT_VERSION -> $VERSION"
+        else
+            die "Could not determine current PLAK_VERSION from 'main'"
+        fi
+    else
+        die "'main' file not found. Provide version explicitly: ./scripts/release.sh <version>"
+    fi
 fi
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
-cd "$REPO_ROOT"
+VERSION="${VERSION#v}"
 
 TAP_DIR="${TAP_DIR:-$REPO_ROOT/../homebrew-plak-cli}"
+
 TAG="v$VERSION"
 
 require_cmd git
