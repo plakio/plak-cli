@@ -616,20 +616,28 @@ INI
         local mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
 
         echo "   - Attempting automatic setup..."
-        # Auto setup: try various connection methods to create plak_site_user.
-        # On macOS with Valet (port 3306 in use), Valet's MariaDB allows sudo
-        # to connect via unix_socket (root user). We first try sudo to the
-        # default socket/port to leverage any existing MariaDB setup.
-        # Then try without sudo (for Homebrew where current user is allowed),
-        # and finally try our dedicated Plak socket.
-        if { echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; } \
-            || { [ -S "$mariadb_socket" ] && echo "$sql_command" | $SUDO_CMD mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
-            || { echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
-            || { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
-            || { echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
-            || { echo "$sql_command" | mysql &> /dev/null; }; then
+        # Auto setup: connect only to the MariaDB we will actually use.
+        # If DB_PORT is 3306 (shared with Valet or existing), use sudo to connect.
+        # If DB_PORT is 3307 or other (Plak's dedicated MariaDB), connect to that
+        # specific port without sudo. unix_socket auth maps OS user to MariaDB user.
+        if [ "$DB_PORT" = "3306" ]; then
+            # Shared MariaDB (likely Valet): use sudo to connect as root
+            if { echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; } \
+                || { echo "$sql_command" | mysql &> /dev/null; }; then
+                echo "   - ✅ Automatic database user creation successful."
+                user_created_successfully=true
+            fi
+        else
+            # Plak's dedicated MariaDB on custom port: connect directly to it
+            if { echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
+                || { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
+                || { echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; }; then
+                echo "   - ✅ Automatic database user creation successful."
+                user_created_successfully=true
+            fi
+        fi
+        if $user_created_successfully; then
             echo "   - ✅ Automatic database user creation successful."
-            user_created_successfully=true
         else
             echo "   - ⚠️ Automatic setup failed. Falling back to manual credential entry..."
             local root_user
@@ -637,26 +645,40 @@ INI
             local root_pass
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
-            if [ -z "$root_pass" ]; then
-                # Empty password: try unix_socket auth (ignores -u but we need
-                # to know the socket path), or TCP with no auth if socket fails.
-                if { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" -u "$root_user" 2>/dev/null; } \
-                    || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" 2>/dev/null; then
-                    echo "   - ✅ Manual database user creation successful."
-                    user_created_successfully=true
-                elif { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" 2>/dev/null; } \
-                    || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" 2>/dev/null; then
-                    # Connected without explicit user (unix_socket mapped us to a MariaDB user)
-                    echo "   - ✅ Manual database user creation successful."
-                    user_created_successfully=true
+            if [ "$DB_PORT" = "3306" ]; then
+                # Shared MariaDB: try sudo first, then non-sudo
+                if [ -z "$root_pass" ]; then
+                    if { echo "$sql_command" | $SUDO_CMD mysql -u "$root_user" &> /dev/null; } \
+                        || { echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; } \
+                        || { echo "$sql_command" | mysql &> /dev/null; }; then
+                        echo "   - ✅ Manual database user creation successful."
+                        user_created_successfully=true
+                    fi
+                else
+                    if { echo "$sql_command" | $SUDO_CMD mysql -u "$root_user" -p"$root_pass" &> /dev/null; } \
+                        || { echo "$sql_command" | mysql -u "$root_user" -p"$root_pass" &> /dev/null; }; then
+                        echo "   - ✅ Manual database user creation successful."
+                        user_created_successfully=true
+                    fi
                 fi
-            elif { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" -u "$root_user" -p"$root_pass"; } \
-                || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass"; then
-                echo "   - ✅ Manual database user creation successful."
-                user_created_successfully=true
+            else
+                # Plak's dedicated MariaDB on custom port
+                if [ -z "$root_pass" ]; then
+                    if { echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
+                        || { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
+                        || { echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; }; then
+                        echo "   - ✅ Manual database user creation successful."
+                        user_created_successfully=true
+                    fi
+                else
+                    if { echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass" &> /dev/null; } \
+                        || { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" -u "$root_user" -p"$root_pass" &> /dev/null; }; then
+                        echo "   - ✅ Manual database user creation successful."
+                        user_created_successfully=true
+                    fi
+                fi
             fi
         fi
-
         if $user_created_successfully; then
             echo "   - 📝 Saving new configuration..."
             config_set DB_USER "$db_user"
