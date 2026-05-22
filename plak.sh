@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PLAK_NAME="plak"
-PLAK_VERSION="0.4.17"
+PLAK_VERSION="0.4.18"
 PLAK_HOME="${PLAK_HOME:-$HOME/.plak}"
 PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
 PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
@@ -4928,7 +4928,8 @@ INI
     # httpd_exec_t file context. On Fedora/RHEL that triggers an exec-time
     # domain transition into httpd_t — a confined web-server domain that:
     #   - can't read files labeled user_home_t (fails to open ~/Plak/Caddyfile
-    #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
+
+    Pero #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
     #   - silently RSTs TLS connections under some configs (TCP accepts but
     #     the TLS ClientHello gets no response)
     # Neither failure logs an AVC — both are dontaudit'd. Retagging the binary
@@ -4991,15 +4992,18 @@ INI
         local mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
 
         echo "   - Attempting automatic setup..."
-        # Homebrew MariaDB: socket is owned by the current user (not root).
-        # unix_socket auth maps the OS user to a MariaDB user, so trying
-        # as the current user (no sudo) first works for Homebrew's default setup.
-        # On Linux with MariaDB running as root, we need sudo.
-        if { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
-            || { echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
-            || { echo "$sql_command" | mysql &> /dev/null; } \
+        # Auto setup: try various connection methods to create plak_site_user.
+        # On macOS with Valet (port 3306 in use), Valet's MariaDB allows sudo
+        # to connect via unix_socket (root user). We first try sudo to the
+        # default socket/port to leverage any existing MariaDB setup.
+        # Then try without sudo (for Homebrew where current user is allowed),
+        # and finally try our dedicated Plak socket.
+        if { echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; } \
             || { [ -S "$mariadb_socket" ] && echo "$sql_command" | $SUDO_CMD mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
-            || { echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; }; then
+            || { echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
+            || { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
+            || { echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null; } \
+            || { echo "$sql_command" | mysql &> /dev/null; }; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
         else
