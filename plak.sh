@@ -4964,9 +4964,12 @@ INI
         db_pass=$(plak_site_random_password 16)
         local sql_command="DROP USER IF EXISTS '$db_user'@'localhost'; DROP USER IF EXISTS '$db_user'@'127.0.0.1'; CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass'; CREATE USER '$db_user'@'127.0.0.1' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;"
         local user_created_successfully=false
+        local mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
 
         echo "   - Attempting automatic setup..."
-        if echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null \
+        if { [ -S "$mariadb_socket" ] && echo "$sql_command" | $SUDO_CMD mysql --protocol=SOCKET --socket="$mariadb_socket" -u root &> /dev/null; } \
+            || { [ -S "$mariadb_socket" ] && echo "$sql_command" | $SUDO_CMD mysql --protocol=SOCKET --socket="$mariadb_socket" &> /dev/null; } \
+            || echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null \
             || echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" -u root &> /dev/null \
             || echo "$sql_command" | $SUDO_CMD mysql -u root &> /dev/null \
             || echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
@@ -4980,11 +4983,13 @@ INI
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
             if [ -z "$root_pass" ]; then
-                if echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user"; then
+                if { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" -u "$root_user"; } \
+                    || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user"; then
                     echo "   - ✅ Manual database user creation successful."
                     user_created_successfully=true
                 fi
-            elif echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass"; then
+            elif { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" -u "$root_user" -p"$root_pass"; } \
+                || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass"; then
                 echo "   - ✅ Manual database user creation successful."
                 user_created_successfully=true
             fi
