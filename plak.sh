@@ -4962,11 +4962,13 @@ INI
         local db_user="plak_site_user"
         local db_pass
         db_pass=$(plak_site_random_password 16)
-        local sql_command="DROP USER IF EXISTS '$db_user'@'localhost'; CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+        local sql_command="DROP USER IF EXISTS '$db_user'@'localhost'; DROP USER IF EXISTS '$db_user'@'127.0.0.1'; CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass'; CREATE USER '$db_user'@'127.0.0.1' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;"
         local user_created_successfully=false
 
         echo "   - Attempting automatic setup..."
         if echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" &> /dev/null \
+            || echo "$sql_command" | $SUDO_CMD mysql -h "$DB_HOST" -P "$DB_PORT" -u root &> /dev/null \
+            || echo "$sql_command" | $SUDO_CMD mysql -u root &> /dev/null \
             || echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
@@ -4977,7 +4979,12 @@ INI
             local root_pass
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
-            if echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass"; then
+            if [ -z "$root_pass" ]; then
+                if echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user"; then
+                    echo "   - ✅ Manual database user creation successful."
+                    user_created_successfully=true
+                fi
+            elif echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" -p"$root_pass"; then
                 echo "   - ✅ Manual database user creation successful."
                 user_created_successfully=true
             fi
