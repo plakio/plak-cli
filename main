@@ -91,7 +91,6 @@ Commands:
   share       Create a temporary public tunnel for a site
   lan         Manage LAN access for local sites
   tailscale   Expose sites to a Tailscale network
-  valet       Route .localhost through Laravel Valet
   status      Check local dependencies and paths
   install     Install required dependencies
   skill       Install the Plak agent skill
@@ -218,7 +217,7 @@ main() {
     fi
 
     case "$command" in
-        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|valet|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
             set +e
             ;;
     esac
@@ -329,9 +328,9 @@ main() {
             check_dependencies
             plak_site_tailscale "$@"
             ;;
-        valet)
+        status)
             check_dependencies
-            plak_site_valet "$@"
+            plak_status "$@"
             ;;
         mappings)
             check_dependencies
