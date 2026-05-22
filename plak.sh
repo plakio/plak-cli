@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PLAK_NAME="plak"
-PLAK_VERSION="0.4.16"
+PLAK_VERSION="0.4.17"
 PLAK_HOME="${PLAK_HOME:-$HOME/.plak}"
 PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
 PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
@@ -5010,8 +5010,15 @@ INI
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
             if [ -z "$root_pass" ]; then
-                if { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" -u "$root_user"; } \
-                    || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user"; then
+                # Empty password: try unix_socket auth (ignores -u but we need
+                # to know the socket path), or TCP with no auth if socket fails.
+                if { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" -u "$root_user" 2>/dev/null; } \
+                    || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$root_user" 2>/dev/null; then
+                    echo "   - ✅ Manual database user creation successful."
+                    user_created_successfully=true
+                elif { [ -S "$mariadb_socket" ] && echo "$sql_command" | mysql --protocol=SOCKET --socket="$mariadb_socket" 2>/dev/null; } \
+                    || echo "$sql_command" | mysql -h "$DB_HOST" -P "$DB_PORT" 2>/dev/null; then
+                    # Connected without explicit user (unix_socket mapped us to a MariaDB user)
                     echo "   - ✅ Manual database user creation successful."
                     user_created_successfully=true
                 fi
