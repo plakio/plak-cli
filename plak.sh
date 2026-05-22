@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PLAK_NAME="plak"
-PLAK_VERSION="0.4.25"
+PLAK_VERSION="0.4.26"
 PLAK_HOME="${PLAK_HOME:-$HOME/.plak}"
 PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
 PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
@@ -4993,14 +4993,9 @@ INI
         local mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
 
         echo "   - Attempting automatic setup..."
-        # Auto setup: use sudo with default socket (unix_socket auth maps sudo user to root).
-        # Don't use -h/-P because unix_socket auth applies even over TCP.
         if echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
-        fi
-        if $user_created_successfully; then
-            echo "   - ✅ Automatic database user creation successful."
         else
             echo "   - ⚠️ Automatic setup failed. Falling back to manual credential entry..."
             local root_user
@@ -5008,12 +5003,7 @@ INI
             local root_pass
             root_pass=$(gum input --password --placeholder "Password for '$root_user'")
 
-            if [ -z "$root_pass" ]; then
-                if echo "$sql_command" | mysql -u "$root_user" 2>/dev/null; then
-                    echo "   - ✅ Manual database user creation successful."
-                    user_created_successfully=true
-                fi
-            elif echo "$sql_command" | mysql -u "$root_user" -p"$root_pass" 2>/dev/null; then
+            if echo "$sql_command" | mysql -u "$root_user" -p"$root_pass"; then
                 echo "   - ✅ Manual database user creation successful."
                 user_created_successfully=true
             fi
