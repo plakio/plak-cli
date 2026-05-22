@@ -622,6 +622,18 @@ port_has_conflict() {
     return 0
 }
 
+next_free_port() {
+    local candidate="${1:-1024}"
+    while [ "$candidate" -le 65535 ]; do
+        if ! port_has_conflict "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+        candidate=$((candidate + 1))
+    done
+    return 1
+}
+
 # Interactive prompt that asks for HTTP and HTTPS ports, validates each, and
 # re-prompts until both are free. Sets HTTP_PORT / HTTPS_PORT globals on
 # success. Called by the install and plak ports flows.
@@ -634,8 +646,9 @@ prompt_custom_ports() {
             gum style --foreground red "   ❌ Invalid port number."
             continue
         fi
-        if ! port_is_free "$candidate"; then
+        if port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            suggest_http=$(next_free_port "$((candidate + 1))" || echo "$suggest_http")
             continue
         fi
         HTTP_PORT="$candidate"
@@ -651,8 +664,9 @@ prompt_custom_ports() {
             gum style --foreground red "   ❌ HTTPS port must differ from HTTP port."
             continue
         fi
-        if ! port_is_free "$candidate"; then
+        if port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            suggest_https=$(next_free_port "$((candidate + 1))" || echo "$suggest_https")
             continue
         fi
         HTTPS_PORT="$candidate"
@@ -669,8 +683,9 @@ prompt_custom_db_port() {
             gum style --foreground red "   ❌ Invalid port number."
             continue
         fi
-        if ! port_is_free "$candidate"; then
+        if port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            suggest_port=$(next_free_port "$((candidate + 1))" || echo "$suggest_port")
             continue
         fi
         DB_PORT="$candidate"
@@ -4569,7 +4584,7 @@ plak_site_install() {
                 HTTPS_PORT=443
                 ;;
             "Pick different"*)
-                prompt_custom_ports 8090 8453
+                prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 ;;
         esac
         port_choice_made=true
@@ -4610,14 +4625,14 @@ plak_site_install() {
             "Use alternative ports"*)
                 HTTP_PORT=8090
                 HTTPS_PORT=8453
-                if ! port_is_free "$HTTP_PORT" || ! port_is_free "$HTTPS_PORT"; then
+                if port_has_conflict "$HTTP_PORT" || port_has_conflict "$HTTPS_PORT"; then
                     gum style --foreground yellow \
                         "⚠️  8090 or 8453 is also in use — please pick custom ports."
-                    prompt_custom_ports 8090 8453
+                    prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 fi
                 ;;
             "Pick custom ports")
-                prompt_custom_ports 8090 8453
+                prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 ;;
             "Proceed with"*)
                 gum style --foreground yellow \
@@ -4775,11 +4790,11 @@ plak_site_install() {
                     fi
                     gum style --foreground yellow \
                         "⚠️  3307 is also in use — please pick a custom port."
-                    prompt_custom_db_port 3307
+                    prompt_custom_db_port "$(next_free_port 3307)"
                 fi
                 ;;
             "Pick custom port")
-                prompt_custom_db_port 3307
+                prompt_custom_db_port "$(next_free_port 3307)"
                 ;;
             "Proceed with"*)
                 gum style --foreground yellow \
@@ -4812,11 +4827,11 @@ plak_site_install() {
                 if ! port_is_free "$DB_PORT"; then
                     gum style --foreground yellow \
                         "⚠️  3306 is in use — please pick a custom MariaDB port."
-                    prompt_custom_db_port 3307
+                    prompt_custom_db_port "$(next_free_port 3307)"
                 fi
                 ;;
             "Pick different"*)
-                prompt_custom_db_port 3307
+                prompt_custom_db_port "$(next_free_port 3307)"
                 ;;
         esac
         db_port_choice_made=true
@@ -6170,11 +6185,17 @@ plak_site_ports() {
                 HTTPS_PORT=443
                 ;;
             "Use alternative"*)
-                HTTP_PORT=8090
-                HTTPS_PORT=8453
+                if ! port_has_conflict 8090 && ! port_has_conflict 8453; then
+                    HTTP_PORT=8090
+                    HTTPS_PORT=8453
+                else
+                    gum style --foreground yellow \
+                        "⚠️  8090 or 8453 is in use — please pick custom ports."
+                    prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
+                fi
                 ;;
             "Pick custom ports")
-                prompt_custom_ports 8090 8453
+                prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 ;;
             "Cancel"|*)
                 echo "🚫 Cancelled."

@@ -232,7 +232,7 @@ plak_site_install() {
                 HTTPS_PORT=443
                 ;;
             "Pick different"*)
-                prompt_custom_ports 8090 8453
+                prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 ;;
         esac
         port_choice_made=true
@@ -273,14 +273,14 @@ plak_site_install() {
             "Use alternative ports"*)
                 HTTP_PORT=8090
                 HTTPS_PORT=8453
-                if ! port_is_free "$HTTP_PORT" || ! port_is_free "$HTTPS_PORT"; then
+                if port_has_conflict "$HTTP_PORT" || port_has_conflict "$HTTPS_PORT"; then
                     gum style --foreground yellow \
                         "⚠️  8090 or 8453 is also in use — please pick custom ports."
-                    prompt_custom_ports 8090 8453
+                    prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 fi
                 ;;
             "Pick custom ports")
-                prompt_custom_ports 8090 8453
+                prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 ;;
             "Proceed with"*)
                 gum style --foreground yellow \
@@ -438,11 +438,11 @@ plak_site_install() {
                     fi
                     gum style --foreground yellow \
                         "⚠️  3307 is also in use — please pick a custom port."
-                    prompt_custom_db_port 3307
+                    prompt_custom_db_port "$(next_free_port 3307)"
                 fi
                 ;;
             "Pick custom port")
-                prompt_custom_db_port 3307
+                prompt_custom_db_port "$(next_free_port 3307)"
                 ;;
             "Proceed with"*)
                 gum style --foreground yellow \
@@ -475,11 +475,11 @@ plak_site_install() {
                 if ! port_is_free "$DB_PORT"; then
                     gum style --foreground yellow \
                         "⚠️  3306 is in use — please pick a custom MariaDB port."
-                    prompt_custom_db_port 3307
+                    prompt_custom_db_port "$(next_free_port 3307)"
                 fi
                 ;;
             "Pick different"*)
-                prompt_custom_db_port 3307
+                prompt_custom_db_port "$(next_free_port 3307)"
                 ;;
         esac
         db_port_choice_made=true

@@ -231,6 +231,18 @@ port_has_conflict() {
     return 0
 }
 
+next_free_port() {
+    local candidate="${1:-1024}"
+    while [ "$candidate" -le 65535 ]; do
+        if ! port_has_conflict "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+        candidate=$((candidate + 1))
+    done
+    return 1
+}
+
 # Interactive prompt that asks for HTTP and HTTPS ports, validates each, and
 # re-prompts until both are free. Sets HTTP_PORT / HTTPS_PORT globals on
 # success. Called by the install and plak ports flows.
@@ -243,8 +255,9 @@ prompt_custom_ports() {
             gum style --foreground red "   ❌ Invalid port number."
             continue
         fi
-        if ! port_is_free "$candidate"; then
+        if port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            suggest_http=$(next_free_port "$((candidate + 1))" || echo "$suggest_http")
             continue
         fi
         HTTP_PORT="$candidate"
@@ -260,8 +273,9 @@ prompt_custom_ports() {
             gum style --foreground red "   ❌ HTTPS port must differ from HTTP port."
             continue
         fi
-        if ! port_is_free "$candidate"; then
+        if port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            suggest_https=$(next_free_port "$((candidate + 1))" || echo "$suggest_https")
             continue
         fi
         HTTPS_PORT="$candidate"
@@ -278,8 +292,9 @@ prompt_custom_db_port() {
             gum style --foreground red "   ❌ Invalid port number."
             continue
         fi
-        if ! port_is_free "$candidate"; then
+        if port_has_conflict "$candidate"; then
             gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
+            suggest_port=$(next_free_port "$((candidate + 1))" || echo "$suggest_port")
             continue
         fi
         DB_PORT="$candidate"

@@ -128,11 +128,17 @@ plak_site_ports() {
                 HTTPS_PORT=443
                 ;;
             "Use alternative"*)
-                HTTP_PORT=8090
-                HTTPS_PORT=8453
+                if ! port_has_conflict 8090 && ! port_has_conflict 8453; then
+                    HTTP_PORT=8090
+                    HTTPS_PORT=8453
+                else
+                    gum style --foreground yellow \
+                        "⚠️  8090 or 8453 is in use — please pick custom ports."
+                    prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
+                fi
                 ;;
             "Pick custom ports")
-                prompt_custom_ports 8090 8453
+                prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
                 ;;
             "Cancel"|*)
                 echo "🚫 Cancelled."
