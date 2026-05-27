@@ -609,7 +609,7 @@ INI
             fi
         done
         echo "   - ✅ MariaDB is ready."
-        local db_user="plak_site_user"
+        local db_user="plak_cli_user"
         local db_pass
         db_pass=$(plak_site_random_password 16)
         local sql_command="DROP USER IF EXISTS '$db_user'@'localhost'; DROP USER IF EXISTS '$db_user'@'127.0.0.1'; CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass'; CREATE USER '$db_user'@'127.0.0.1' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;"

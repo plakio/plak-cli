@@ -4976,7 +4976,7 @@ INI
             fi
         done
         echo "   - ✅ MariaDB is ready."
-        local db_user="plak_site_user"
+        local db_user="plak_cli_user"
         local db_pass
         db_pass=$(plak_site_random_password 16)
         local sql_command="DROP USER IF EXISTS '$db_user'@'localhost'; DROP USER IF EXISTS '$db_user'@'127.0.0.1'; CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass'; CREATE USER '$db_user'@'127.0.0.1' IDENTIFIED BY '$db_pass'; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'localhost' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO '$db_user'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;"
@@ -8181,7 +8181,7 @@ Installs the Plak CLI agent skill for supported coding agents.
 Targets:
   codex        ~/.codex/skills/plak-cli/SKILL.md
   claude-code  ~/.claude/skills/plak-cli/SKILL.md
-  opencode     ~/.config/opencode/skill/plak-cli/SKILL.md
+  opencode     ~/.config/opencode/skills/plak-cli/SKILL.md
   pi           ~/.pi/agent/skills/plak-cli/SKILL.md
   all          Install for every supported target
 HELP
@@ -8191,7 +8191,7 @@ plak_skill_target_path() {
     case "$1" in
         codex) echo "$HOME/.codex/skills/$PLAK_SKILL_NAME" ;;
         claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
-        opencode) echo "$HOME/.config/opencode/skill/$PLAK_SKILL_NAME" ;;
+        opencode) echo "$HOME/.config/opencode/skills/$PLAK_SKILL_NAME" ;;
         pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
         *) return 1 ;;
     esac

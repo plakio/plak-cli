@@ -12,7 +12,7 @@ Installs the Plak CLI agent skill for supported coding agents.
 Targets:
   codex        ~/.codex/skills/plak-cli/SKILL.md
   claude-code  ~/.claude/skills/plak-cli/SKILL.md
-  opencode     ~/.config/opencode/skill/plak-cli/SKILL.md
+  opencode     ~/.config/opencode/skills/plak-cli/SKILL.md
   pi           ~/.pi/agent/skills/plak-cli/SKILL.md
   all          Install for every supported target
 HELP
@@ -22,7 +22,7 @@ plak_skill_target_path() {
     case "$1" in
         codex) echo "$HOME/.codex/skills/$PLAK_SKILL_NAME" ;;
         claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
-        opencode) echo "$HOME/.config/opencode/skill/$PLAK_SKILL_NAME" ;;
+        opencode) echo "$HOME/.config/opencode/skills/$PLAK_SKILL_NAME" ;;
         pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
         *) return 1 ;;
     esac
