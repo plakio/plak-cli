@@ -4282,15 +4282,17 @@ EOM
 
     if [ $? -eq 0 ]; then
         echo ""
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Services are running"
-        echo "  Dashboard: $(display_url_for plak.localhost)"
-        echo "  Adminer:   $(display_url_for db.plak.localhost)"
-        echo "  Mailpit:   $(display_url_for mail.plak.localhost)"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+            "✅ Services are running" \
+            "Dashboard: $(url_for plak.localhost)" \
+            "Adminer:   $(url_for db.plak.localhost)" \
+            "Mailpit:   $(url_for mail.plak.localhost)"
 
         if [ "$HTTPS_PORT" != "443" ]; then
             echo ""
-            gum style --foreground yellow "Port note: Plak HTTPS is configured on ${HTTPS_PORT}."
-            echo "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
+            gum style --foreground yellow \
+                "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
+                "Use $(url_for plak.localhost), not https://plak.localhost/."
         fi
 
         # Show WSL-specific info
@@ -5062,8 +5064,8 @@ INI
     if [ "$HTTPS_PORT" != "443" ]; then
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes" \
-            "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}"
-        echo "  Dashboard: $(display_url_for plak.localhost)"
+            "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}" \
+            "Access the dashboard at: $(url_for plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes"
@@ -7422,21 +7424,23 @@ plak_site_status() {
     echo ""
 
     if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ All services are running"
-        echo "  Dashboard: $(display_url_for plak.localhost)"
-        echo "  Adminer:   $(display_url_for db.plak.localhost)"
-        echo "  Mailpit:   $(display_url_for mail.plak.localhost)"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+            "✅ All services are running" \
+            "Dashboard: $(url_for plak.localhost)" \
+            "Adminer:   $(url_for db.plak.localhost)" \
+            "Mailpit:   $(url_for mail.plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "⚠️  Some services are stopped." \
-            "Run 'plak enable' to start them."
-        echo "  Dashboard: $(display_url_for plak.localhost)"
+            "Run 'plak enable' to start them." \
+            "Dashboard: $(url_for plak.localhost)"
     fi
 
     if [ "$HTTPS_PORT" != "443" ]; then
         echo ""
-        gum style --foreground yellow "Port note: Plak HTTPS is configured on ${HTTPS_PORT}."
-        echo "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
+        gum style --foreground yellow \
+            "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
+            "Use $(url_for plak.localhost), not https://plak.localhost/."
     fi
 
     # Show WSL-specific info

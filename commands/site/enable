@@ -136,15 +136,17 @@ EOM
 
     if [ $? -eq 0 ]; then
         echo ""
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Services are running"
-        echo "  Dashboard: $(display_url_for plak.localhost)"
-        echo "  Adminer:   $(display_url_for db.plak.localhost)"
-        echo "  Mailpit:   $(display_url_for mail.plak.localhost)"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+            "✅ Services are running" \
+            "Dashboard: $(url_for plak.localhost)" \
+            "Adminer:   $(url_for db.plak.localhost)" \
+            "Mailpit:   $(url_for mail.plak.localhost)"
 
         if [ "$HTTPS_PORT" != "443" ]; then
             echo ""
-            gum style --foreground yellow "Port note: Plak HTTPS is configured on ${HTTPS_PORT}."
-            echo "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
+            gum style --foreground yellow \
+                "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
+                "Use $(url_for plak.localhost), not https://plak.localhost/."
         fi
 
         # Show WSL-specific info
