@@ -233,6 +233,6 @@ plak_site_ports() {
     echo ""
     gum style --foreground green "✅ Plak is now on ports ${HTTP_PORT} / ${HTTPS_PORT}"
     if [ "$HTTPS_PORT" != "443" ]; then
-        gum style --faint "   Dashboard: $(url_for plak.localhost)"
+        gum style --faint "   Dashboard: $(display_url_for plak.localhost)"
     fi
 }

@@ -676,7 +676,7 @@ INI
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes" \
             "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}" \
-            "Access the dashboard at: $(url_for plak.localhost)"
+            "Access the dashboard at: $(display_url_for plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes"

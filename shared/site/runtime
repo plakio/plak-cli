@@ -143,6 +143,25 @@ url_for() {
     echo "https://${1}$(https_port_suffix)"
 }
 
+# Wraps a displayed URL with an OSC 8 hyperlink when stdout is an interactive
+# terminal. Unsupported terminals still show the plain URL text.
+plak_terminal_link() {
+    local url="$1" label="${2:-$1}"
+    if [ -t 1 ] && [ "${PLAK_TERMINAL_LINKS:-1}" != "0" ]; then
+        printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$label"
+    else
+        printf '%s' "$label"
+    fi
+}
+
+# Display-only URL helper. Keep url_for plain because scripts use it for curl,
+# wp-cli, config files, and other non-terminal contexts.
+display_url_for() {
+    local url
+    url=$(url_for "$1")
+    plak_terminal_link "$url"
+}
+
 # Idempotent config writer: replaces any existing KEY= line before appending.
 config_set() {
     local key="$1" val="$2"

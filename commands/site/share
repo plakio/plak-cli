@@ -125,7 +125,7 @@ plak_site_share() {
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
         "Starting public tunnel for ${site_name}" \
         "" \
-        "Local: $(url_for "${local_hostname}")" \
+        "Local: $(display_url_for "${local_hostname}")" \
         "" \
         "Press Ctrl+C to stop sharing."
     echo ""
@@ -165,7 +165,7 @@ plak_site_share() {
     # Extract just the hostname from the URL
     local public_host="${public_url#https://}"
     
-    gum style --foreground 212 --bold "Public URL: $public_url"
+    gum style --foreground 212 --bold "Public URL: $(plak_terminal_link "$public_url")"
     echo ""
     echo "Share this URL with anyone to give them access to your site."
     echo ""

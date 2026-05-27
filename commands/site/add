@@ -142,6 +142,8 @@ PHP
     echo "✅ Site '$full_hostname' created successfully!"
     
     if [ "$site_type" == "wordpress" ]; then
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(url_for "$full_hostname")/wp-admin" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $one_time_login_url"
+        local admin_url
+        admin_url="$(url_for "$full_hostname")/wp-admin"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(plak_terminal_link "$admin_url")" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $(plak_terminal_link "$one_time_login_url")"
     fi
 }

@@ -157,8 +157,8 @@ plak_site_lan_enable() {
         "LAN Access Enabled for ${site_name}" \
         "" \
         "Port: ${port}" \
-        "Local URL: $(url_for "${site_name}.localhost")" \
-        "LAN URL: https://${lan_ip}:${port}" \
+        "Local URL: $(display_url_for "${site_name}.localhost")" \
+        "LAN URL: $(plak_terminal_link "https://${lan_ip}:${port}")" \
         "" \
         "Bonjour: _beckon._tcp (displakrable by iOS apps)" \
         "" \
@@ -232,7 +232,7 @@ plak_site_lan_status() {
                     port=$(grep "^port=" "$lan_config" | cut -d'=' -f2)
                     echo "  ${site_name}"
                     echo "    Port: ${port}"
-                    echo "    LAN URL: https://${lan_ip}:${port}"
+                    echo "    LAN URL: $(plak_terminal_link "https://${lan_ip}:${port}")"
                     echo "    Bonjour: _beckon._tcp (${site_name})"
                     echo ""
                 fi

@@ -533,6 +533,25 @@ url_for() {
     echo "https://${1}$(https_port_suffix)"
 }
 
+# Wraps a displayed URL with an OSC 8 hyperlink when stdout is an interactive
+# terminal. Unsupported terminals still show the plain URL text.
+plak_terminal_link() {
+    local url="$1" label="${2:-$1}"
+    if [ -t 1 ] && [ "${PLAK_TERMINAL_LINKS:-1}" != "0" ]; then
+        printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$label"
+    else
+        printf '%s' "$label"
+    fi
+}
+
+# Display-only URL helper. Keep url_for plain because scripts use it for curl,
+# wp-cli, config files, and other non-terminal contexts.
+display_url_for() {
+    local url
+    url=$(url_for "$1")
+    plak_terminal_link "$url"
+}
+
 # Idempotent config writer: replaces any existing KEY= line before appending.
 config_set() {
     local key="$1" val="$2"
@@ -3635,7 +3654,9 @@ PHP
     echo "✅ Site '$full_hostname' created successfully!"
     
     if [ "$site_type" == "wordpress" ]; then
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(url_for "$full_hostname")/wp-admin" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $one_time_login_url"
+        local admin_url
+        admin_url="$(url_for "$full_hostname")/wp-admin"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(plak_terminal_link "$admin_url")" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $(plak_terminal_link "$one_time_login_url")"
     fi
 }
 
@@ -4262,15 +4283,15 @@ EOM
         echo ""
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
             "✅ Services are running" \
-            "Dashboard: $(url_for plak.localhost)" \
-            "Adminer:   $(url_for db.plak.localhost)" \
-            "Mailpit:   $(url_for mail.plak.localhost)"
+            "Dashboard: $(display_url_for plak.localhost)" \
+            "Adminer:   $(display_url_for db.plak.localhost)" \
+            "Mailpit:   $(display_url_for mail.plak.localhost)"
 
         if [ "$HTTPS_PORT" != "443" ]; then
             echo ""
             gum style --foreground yellow \
                 "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
-                "Use $(url_for plak.localhost), not https://plak.localhost/."
+                "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
         fi
         
         # Show WSL-specific info
@@ -5043,7 +5064,7 @@ INI
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes" \
             "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}" \
-            "Access the dashboard at: $(url_for plak.localhost)"
+            "Access the dashboard at: $(display_url_for plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes"
@@ -5236,8 +5257,8 @@ plak_site_lan_enable() {
         "LAN Access Enabled for ${site_name}" \
         "" \
         "Port: ${port}" \
-        "Local URL: $(url_for "${site_name}.localhost")" \
-        "LAN URL: https://${lan_ip}:${port}" \
+        "Local URL: $(display_url_for "${site_name}.localhost")" \
+        "LAN URL: $(plak_terminal_link "https://${lan_ip}:${port}")" \
         "" \
         "Bonjour: _beckon._tcp (displakrable by iOS apps)" \
         "" \
@@ -5311,7 +5332,7 @@ plak_site_lan_status() {
                     port=$(grep "^port=" "$lan_config" | cut -d'=' -f2)
                     echo "  ${site_name}"
                     echo "    Port: ${port}"
-                    echo "    LAN URL: https://${lan_ip}:${port}"
+                    echo "    LAN URL: $(plak_terminal_link "https://${lan_ip}:${port}")"
                     echo "    Bonjour: _beckon._tcp (${site_name})"
                     echo ""
                 fi
@@ -6307,7 +6328,7 @@ plak_site_ports() {
     echo ""
     gum style --foreground green "✅ Plak is now on ports ${HTTP_PORT} / ${HTTPS_PORT}"
     if [ "$HTTPS_PORT" != "443" ]; then
-        gum style --faint "   Dashboard: $(url_for plak.localhost)"
+        gum style --faint "   Dashboard: $(display_url_for plak.localhost)"
     fi
 }
 
@@ -7024,7 +7045,7 @@ plak_site_rename() {
     # --- Reload Server Configuration ---
     regenerate_caddyfile
 
-    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Site renamed successfully!" "New URL: $(url_for "$new_name.localhost")"
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Site renamed successfully!" "New URL: $(display_url_for "$new_name.localhost")"
 }
 
 # Source: commands/site/share
@@ -7155,7 +7176,7 @@ plak_site_share() {
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
         "Starting public tunnel for ${site_name}" \
         "" \
-        "Local: $(url_for "${local_hostname}")" \
+        "Local: $(display_url_for "${local_hostname}")" \
         "" \
         "Press Ctrl+C to stop sharing."
     echo ""
@@ -7195,7 +7216,7 @@ plak_site_share() {
     # Extract just the hostname from the URL
     local public_host="${public_url#https://}"
     
-    gum style --foreground 212 --bold "Public URL: $public_url"
+    gum style --foreground 212 --bold "Public URL: $(plak_terminal_link "$public_url")"
     echo ""
     echo "Share this URL with anyone to give them access to your site."
     echo ""
@@ -7404,21 +7425,21 @@ plak_site_status() {
     if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
             "✅ All services are running" \
-            "Dashboard: $(url_for plak.localhost)" \
-            "Adminer:   $(url_for db.plak.localhost)" \
-            "Mailpit:   $(url_for mail.plak.localhost)"
+            "Dashboard: $(display_url_for plak.localhost)" \
+            "Adminer:   $(display_url_for db.plak.localhost)" \
+            "Mailpit:   $(display_url_for mail.plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "⚠️  Some services are stopped." \
             "Run 'plak enable' to start them." \
-            "Dashboard: $(url_for plak.localhost)"
+            "Dashboard: $(display_url_for plak.localhost)"
     fi
 
     if [ "$HTTPS_PORT" != "443" ]; then
         echo ""
         gum style --foreground yellow \
             "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
-            "Use $(url_for plak.localhost), not https://plak.localhost/."
+            "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
     fi
 
     # Show WSL-specific info
@@ -7524,7 +7545,7 @@ plak_site_tailscale_status() {
                         port=$(cat "$site_path/tailscale_port")
                     fi
                     if [ -n "$port" ]; then
-                        echo "   - https://${hostname}:${port}  (${site_name})"
+                        echo "   - $(plak_terminal_link "https://${hostname}:${port}")  (${site_name})"
                     fi
                 fi
             done
@@ -7532,9 +7553,9 @@ plak_site_tailscale_status() {
         
         echo ""
         echo "   Global services:"
-        echo "   - https://${hostname}:9900  (Dashboard)"
-        echo "   - https://${hostname}:9901  (Mailpit)"
-        echo "   - https://${hostname}:9902  (Adminer)"
+        echo "   - $(plak_terminal_link "https://${hostname}:9900")  (Dashboard)"
+        echo "   - $(plak_terminal_link "https://${hostname}:9901")  (Mailpit)"
+        echo "   - $(plak_terminal_link "https://${hostname}:9902")  (Adminer)"
     else
         gum style --foreground yellow "❌ Disabled"
         echo ""
@@ -8247,18 +8268,18 @@ plak_skill_install_target() {
 }
 
 plak_skill_prompt_targets() {
-    local selected input
+    local selected input tty="/dev/tty"
 
-    if plak_command_exists gum && plak_has_tty; then
+    if plak_command_exists gum && [ -r "$tty" ] && [ -w "$tty" ]; then
         selected=$(gum choose \
             --no-limit \
-            --height 7 \
-            --header "Which agents do you use? Select one or more." \
+            --height 8 \
+            --header "Which agents do you use? Space to select, Enter to install." \
             codex \
             claude-code \
             opencode \
             pi \
-            all)
+            all < "$tty")
         [ -n "$selected" ] || return 1
         if printf '%s\n' "$selected" | grep -qx 'all'; then
             printf '%s\n' codex claude-code opencode pi
@@ -8268,14 +8289,29 @@ plak_skill_prompt_targets() {
         return 0
     fi
 
-    echo "Which agents do you use? Enter one or more numbers separated by commas:"
-    echo "  1) codex"
-    echo "  2) claude-code"
-    echo "  3) opencode"
-    echo "  4) pi"
-    echo "  5) all"
-    printf "> "
-    read -r input
+    {
+        echo "Which agents do you use? Enter one or more numbers separated by commas:"
+        echo "  1) codex"
+        echo "  2) claude-code"
+        echo "  3) opencode"
+        echo "  4) pi"
+        echo "  5) all"
+        printf "> "
+    } > "$tty" 2>/dev/null || {
+        echo "Which agents do you use? Enter one or more numbers separated by commas:" >&2
+        echo "  1) codex" >&2
+        echo "  2) claude-code" >&2
+        echo "  3) opencode" >&2
+        echo "  4) pi" >&2
+        echo "  5) all" >&2
+        printf "> " >&2
+    }
+
+    if [ -r "$tty" ]; then
+        read -r input < "$tty"
+    else
+        read -r input
+    fi
 
     case ",$input," in *",5,"*) printf '%s\n' codex claude-code opencode pi; return 0 ;; esac
     case ",$input," in *",1,"*) echo "codex" ;; esac

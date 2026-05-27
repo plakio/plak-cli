@@ -91,7 +91,7 @@ plak_site_tailscale_status() {
                         port=$(cat "$site_path/tailscale_port")
                     fi
                     if [ -n "$port" ]; then
-                        echo "   - https://${hostname}:${port}  (${site_name})"
+                        echo "   - $(plak_terminal_link "https://${hostname}:${port}")  (${site_name})"
                     fi
                 fi
             done
@@ -99,9 +99,9 @@ plak_site_tailscale_status() {
         
         echo ""
         echo "   Global services:"
-        echo "   - https://${hostname}:9900  (Dashboard)"
-        echo "   - https://${hostname}:9901  (Mailpit)"
-        echo "   - https://${hostname}:9902  (Adminer)"
+        echo "   - $(plak_terminal_link "https://${hostname}:9900")  (Dashboard)"
+        echo "   - $(plak_terminal_link "https://${hostname}:9901")  (Mailpit)"
+        echo "   - $(plak_terminal_link "https://${hostname}:9902")  (Adminer)"
     else
         gum style --foreground yellow "❌ Disabled"
         echo ""

@@ -45,21 +45,21 @@ plak_site_status() {
     if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
             "✅ All services are running" \
-            "Dashboard: $(url_for plak.localhost)" \
-            "Adminer:   $(url_for db.plak.localhost)" \
-            "Mailpit:   $(url_for mail.plak.localhost)"
+            "Dashboard: $(display_url_for plak.localhost)" \
+            "Adminer:   $(display_url_for db.plak.localhost)" \
+            "Mailpit:   $(display_url_for mail.plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "⚠️  Some services are stopped." \
             "Run 'plak enable' to start them." \
-            "Dashboard: $(url_for plak.localhost)"
+            "Dashboard: $(display_url_for plak.localhost)"
     fi
 
     if [ "$HTTPS_PORT" != "443" ]; then
         echo ""
         gum style --foreground yellow \
             "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
-            "Use $(url_for plak.localhost), not https://plak.localhost/."
+            "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
     fi
 
     # Show WSL-specific info
