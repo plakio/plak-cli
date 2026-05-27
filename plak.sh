@@ -533,11 +533,13 @@ url_for() {
     echo "https://${1}$(https_port_suffix)"
 }
 
-# Wraps a displayed URL with an OSC 8 hyperlink when stdout is an interactive
-# terminal. Unsupported terminals still show the plain URL text.
+# Wraps a displayed URL with an OSC 8 hyperlink when running in an interactive
+# terminal. This also works when the URL is built inside $(...) before being
+# passed to gum style, where stdout is temporarily captured and [ -t 1 ] is
+# false. Unsupported terminals still show the plain URL text.
 plak_terminal_link() {
     local url="$1" label="${2:-$1}"
-    if [ -t 1 ] && [ "${PLAK_TERMINAL_LINKS:-1}" != "0" ]; then
+    if [ "${PLAK_TERMINAL_LINKS:-1}" != "0" ] && { [ -t 1 ] || [ -t 0 ]; }; then
         printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$label"
     else
         printf '%s' "$label"
