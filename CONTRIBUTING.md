@@ -39,17 +39,29 @@ brew install shellcheck shfmt
    ./compile.sh
    ```
 
-## Homebrew Releases
+## Releases
 
-Plak's Homebrew formula is generated from `packaging/homebrew/plak-cli.rb.template`.
-
-After tagging a release, generate the formula for the tap with:
+Use `scripts/release.sh` from the repository root. Commit functional changes first, then run:
 
 ```bash
-./scripts/homebrew_formula.sh 0.3.0 > /tmp/plak-cli.rb
+./scripts/release.sh --yes
 ```
 
-Then copy it to `plakio/homebrew-plak-cli/Formula/plak-cli.rb` and test it with Homebrew. See `docs/homebrew.md` for the full release flow.
+This auto-increments the patch version from `PLAK_VERSION`, compiles `plak.sh`, runs smoke tests, commits the release bump, pushes `main`, creates and pushes the GitHub tag, generates the Homebrew formula from that tag, and pushes the tap update.
+
+For an explicit version:
+
+```bash
+./scripts/release.sh 0.4.31 --yes
+```
+
+For local Homebrew formula testing during release:
+
+```bash
+./scripts/release.sh 0.4.31 --brew-test --yes
+```
+
+Both `plak-cli` and `../homebrew-plak-cli` must be on `main` with clean working trees. Do not edit the Homebrew formula manually before the CLI release tag exists. See `docs/homebrew.md` for details and manual recovery steps.
 
 ## Safety
 
