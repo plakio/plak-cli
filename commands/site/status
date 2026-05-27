@@ -15,27 +15,27 @@ plak_site_status() {
 
     # Check MariaDB and Mailpit status on MacOS
     if [ "$OS" == "macos" ]; then
-        if brew services list 2>/dev/null | grep -q "mariadb.*started"; then 
+        if brew services list 2>/dev/null | grep -q "mariadb.*started"; then
             mariadb_status="✅ Running"
         fi
-        if launchctl list 2>/dev/null | grep -q "com.plak.mailpit"; then 
+        if launchctl list 2>/dev/null | grep -q "com.plak.mailpit"; then
             mailpit_status="✅ Running"
         fi
     fi
-    
+
     # Check MariaDB and Mailpit status on Linux
     if [ "$OS" == "linux" ]; then
         # Check all possible MariaDB service names
         local mariadb_service
         mariadb_service=$(get_mariadb_service_name)
-        if systemctl is-active --quiet "$mariadb_service" 2>/dev/null; then 
+        if systemctl is-active --quiet "$mariadb_service" 2>/dev/null; then
             mariadb_status="✅ Running"
         fi
-        if systemctl is-active --quiet mailpit 2>/dev/null; then 
+        if systemctl is-active --quiet mailpit 2>/dev/null; then
             mailpit_status="✅ Running"
         fi
     fi
-    
+
     echo ""
     echo "  Caddy Server: $caddy_status"
     echo "  MariaDB:      $mariadb_status"
@@ -43,23 +43,21 @@ plak_site_status() {
     echo ""
 
     if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
-            "✅ All services are running" \
-            "Dashboard: $(display_url_for plak.localhost)" \
-            "Adminer:   $(display_url_for db.plak.localhost)" \
-            "Mailpit:   $(display_url_for mail.plak.localhost)"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ All services are running"
+        echo "  Dashboard: $(display_url_for plak.localhost)"
+        echo "  Adminer:   $(display_url_for db.plak.localhost)"
+        echo "  Mailpit:   $(display_url_for mail.plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "⚠️  Some services are stopped." \
-            "Run 'plak enable' to start them." \
-            "Dashboard: $(display_url_for plak.localhost)"
+            "Run 'plak enable' to start them."
+        echo "  Dashboard: $(display_url_for plak.localhost)"
     fi
 
     if [ "$HTTPS_PORT" != "443" ]; then
         echo ""
-        gum style --foreground yellow \
-            "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
-            "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
+        gum style --foreground yellow "Port note: Plak HTTPS is configured on ${HTTPS_PORT}."
+        echo "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
     fi
 
     # Show WSL-specific info

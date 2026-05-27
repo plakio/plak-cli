@@ -533,13 +533,12 @@ url_for() {
     echo "https://${1}$(https_port_suffix)"
 }
 
-# Wraps a displayed URL with an OSC 8 hyperlink when running in an interactive
-# terminal. This also works when the URL is built inside $(...) before being
-# passed to gum style, where stdout is temporarily captured and [ -t 1 ] is
-# false. Unsupported terminals still show the plain URL text.
+# Wraps a displayed URL with an OSC 8 hyperlink. The visible text remains the
+# plain URL, so unsupported terminals still show a usable URL. Set
+# PLAK_TERMINAL_LINKS=0 to force plain text only.
 plak_terminal_link() {
     local url="$1" label="${2:-$1}"
-    if [ "${PLAK_TERMINAL_LINKS:-1}" != "0" ] && { [ -t 1 ] || [ -t 0 ]; }; then
+    if [ "${PLAK_TERMINAL_LINKS:-1}" != "0" ]; then
         printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$label"
     else
         printf '%s' "$label"
@@ -4147,7 +4146,7 @@ plak_site_disable() {
 # Source: commands/site/enable
 plak_site_enable() {
     echo "🚀 Enabling Plak services..."
-    
+
     # Ensure log directory exists
     mkdir -p "$LOGS_DIR"
 
@@ -4192,16 +4191,16 @@ EOM
         launchctl load "$plist_path"
         launchctl start com.plak.mailpit
     fi
-    
+
     if [ "$OS" == "linux" ]; then
         # Get the correct MariaDB service name for this distro
         local mariadb_service
         mariadb_service=$(get_mariadb_service_name)
-        
+
         echo "   - Starting MariaDB ($mariadb_service)..."
         $SUDO_CMD systemctl enable "$mariadb_service" &>/dev/null
         $SUDO_CMD systemctl restart "$mariadb_service"
-        
+
         local service_path="/etc/systemd/system/mailpit.service"
         local mailpit_bin
         mailpit_bin=$(command -v mailpit)
@@ -4283,19 +4282,17 @@ EOM
 
     if [ $? -eq 0 ]; then
         echo ""
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
-            "✅ Services are running" \
-            "Dashboard: $(display_url_for plak.localhost)" \
-            "Adminer:   $(display_url_for db.plak.localhost)" \
-            "Mailpit:   $(display_url_for mail.plak.localhost)"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Services are running"
+        echo "  Dashboard: $(display_url_for plak.localhost)"
+        echo "  Adminer:   $(display_url_for db.plak.localhost)"
+        echo "  Mailpit:   $(display_url_for mail.plak.localhost)"
 
         if [ "$HTTPS_PORT" != "443" ]; then
             echo ""
-            gum style --foreground yellow \
-                "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
-                "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
+            gum style --foreground yellow "Port note: Plak HTTPS is configured on ${HTTPS_PORT}."
+            echo "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
         fi
-        
+
         # Show WSL-specific info
         if [ "$IS_WSL" = true ]; then
             local wsl_ip
@@ -5065,8 +5062,8 @@ INI
     if [ "$HTTPS_PORT" != "443" ]; then
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes" \
-            "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}" \
-            "Access the dashboard at: $(display_url_for plak.localhost)"
+            "Plak is running on custom ports: HTTP ${HTTP_PORT} / HTTPS ${HTTPS_PORT}"
+        echo "  Dashboard: $(display_url_for plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "📋 First-Time Setup Notes"
@@ -7397,27 +7394,27 @@ plak_site_status() {
 
     # Check MariaDB and Mailpit status on MacOS
     if [ "$OS" == "macos" ]; then
-        if brew services list 2>/dev/null | grep -q "mariadb.*started"; then 
+        if brew services list 2>/dev/null | grep -q "mariadb.*started"; then
             mariadb_status="✅ Running"
         fi
-        if launchctl list 2>/dev/null | grep -q "com.plak.mailpit"; then 
+        if launchctl list 2>/dev/null | grep -q "com.plak.mailpit"; then
             mailpit_status="✅ Running"
         fi
     fi
-    
+
     # Check MariaDB and Mailpit status on Linux
     if [ "$OS" == "linux" ]; then
         # Check all possible MariaDB service names
         local mariadb_service
         mariadb_service=$(get_mariadb_service_name)
-        if systemctl is-active --quiet "$mariadb_service" 2>/dev/null; then 
+        if systemctl is-active --quiet "$mariadb_service" 2>/dev/null; then
             mariadb_status="✅ Running"
         fi
-        if systemctl is-active --quiet mailpit 2>/dev/null; then 
+        if systemctl is-active --quiet mailpit 2>/dev/null; then
             mailpit_status="✅ Running"
         fi
     fi
-    
+
     echo ""
     echo "  Caddy Server: $caddy_status"
     echo "  MariaDB:      $mariadb_status"
@@ -7425,23 +7422,21 @@ plak_site_status() {
     echo ""
 
     if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
-            "✅ All services are running" \
-            "Dashboard: $(display_url_for plak.localhost)" \
-            "Adminer:   $(display_url_for db.plak.localhost)" \
-            "Mailpit:   $(display_url_for mail.plak.localhost)"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ All services are running"
+        echo "  Dashboard: $(display_url_for plak.localhost)"
+        echo "  Adminer:   $(display_url_for db.plak.localhost)"
+        echo "  Mailpit:   $(display_url_for mail.plak.localhost)"
     else
         gum style --border normal --margin "1" --padding "1 2" --border-foreground "yellow" \
             "⚠️  Some services are stopped." \
-            "Run 'plak enable' to start them." \
-            "Dashboard: $(display_url_for plak.localhost)"
+            "Run 'plak enable' to start them."
+        echo "  Dashboard: $(display_url_for plak.localhost)"
     fi
 
     if [ "$HTTPS_PORT" != "443" ]; then
         echo ""
-        gum style --foreground yellow \
-            "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
-            "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
+        gum style --foreground yellow "Port note: Plak HTTPS is configured on ${HTTPS_PORT}."
+        echo "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
     fi
 
     # Show WSL-specific info

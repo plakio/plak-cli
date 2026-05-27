@@ -1,6 +1,6 @@
 plak_site_enable() {
     echo "🚀 Enabling Plak services..."
-    
+
     # Ensure log directory exists
     mkdir -p "$LOGS_DIR"
 
@@ -45,16 +45,16 @@ EOM
         launchctl load "$plist_path"
         launchctl start com.plak.mailpit
     fi
-    
+
     if [ "$OS" == "linux" ]; then
         # Get the correct MariaDB service name for this distro
         local mariadb_service
         mariadb_service=$(get_mariadb_service_name)
-        
+
         echo "   - Starting MariaDB ($mariadb_service)..."
         $SUDO_CMD systemctl enable "$mariadb_service" &>/dev/null
         $SUDO_CMD systemctl restart "$mariadb_service"
-        
+
         local service_path="/etc/systemd/system/mailpit.service"
         local mailpit_bin
         mailpit_bin=$(command -v mailpit)
@@ -136,19 +136,17 @@ EOM
 
     if [ $? -eq 0 ]; then
         echo ""
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
-            "✅ Services are running" \
-            "Dashboard: $(display_url_for plak.localhost)" \
-            "Adminer:   $(display_url_for db.plak.localhost)" \
-            "Mailpit:   $(display_url_for mail.plak.localhost)"
+        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ Services are running"
+        echo "  Dashboard: $(display_url_for plak.localhost)"
+        echo "  Adminer:   $(display_url_for db.plak.localhost)"
+        echo "  Mailpit:   $(display_url_for mail.plak.localhost)"
 
         if [ "$HTTPS_PORT" != "443" ]; then
             echo ""
-            gum style --foreground yellow \
-                "Port note: Plak HTTPS is configured on ${HTTPS_PORT}." \
-                "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
+            gum style --foreground yellow "Port note: Plak HTTPS is configured on ${HTTPS_PORT}."
+            echo "Use $(display_url_for plak.localhost), not $(plak_terminal_link https://plak.localhost/)."
         fi
-        
+
         # Show WSL-specific info
         if [ "$IS_WSL" = true ]; then
             local wsl_ip
