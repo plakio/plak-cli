@@ -848,9 +848,9 @@ footer a:hover { color: var(--text); }
   <div class="path"><?= htmlspecialchars($display_dir) ?></div>
   <div class="actions">
     <a class="pill primary" href="https://plak.localhost/">Plak dashboard</a>
-    <a class="pill" href="https://plak.run/" target="_blank" rel="noopener">plak.run ↗</a>
+    <a class="pill" href="https://plak.sh/" target="_blank" rel="noopener">plak.sh ↗</a>
   </div>
-  <footer>Served by <a href="https://plak.run" target="_blank" rel="noopener">Plak</a></footer>
+  <footer>Served by <a href="https://plak.sh" target="_blank" rel="noopener">Plak</a></footer>
 </main>
 </body>
 </html>

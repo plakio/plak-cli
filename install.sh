@@ -26,7 +26,7 @@ fi
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source_script="$script_dir/plak.sh"
 destination="$install_dir/plak"
-download_url="${PLAK_INSTALL_URL:-https://plak.run/plak.sh}"
+download_url="${PLAK_INSTALL_URL:-https://raw.githubusercontent.com/plakio/plak-cli/main/plak.sh}"
 
 if [ "$DEV_MODE" = true ]; then
     if [ ! -f "$source_script" ]; then
