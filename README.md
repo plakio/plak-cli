@@ -13,7 +13,7 @@ It follows a modular structure: source files are compiled into a single distribu
 
 ```bash
 # Install Plak CLI
-curl -fsSL https://plak.run/install.sh | bash
+curl -fsSL https://plak.sh/install.sh | bash
 
 # Install local dependencies
 plak install
