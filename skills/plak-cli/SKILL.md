@@ -28,7 +28,7 @@ If Plak CLI is not installed, use:
 
 ```bash
 # Via curl (macOS/Linux)
-curl -fsSL https://plak.sh/install.sh | bash
+curl -fsSL https://plak.sh/install | bash
 
 # Via Homebrew (macOS)
 brew tap plakio/plak-cli && brew install plak-cli

@@ -13,7 +13,7 @@ It follows a modular structure: source files are compiled into a single distribu
 
 ```bash
 # Install Plak CLI
-curl -fsSL https://plak.sh/install.sh | bash
+curl -fsSL https://plak.sh/install | bash
 
 # Install local dependencies
 plak install
@@ -51,7 +51,7 @@ brew install plakio/plak-cli/plak-cli
 You can also install Plak directly with the installer script:
 
 ```bash
-bash <(curl -sL https://plak.sh/install.sh)
+curl -fsSL https://plak.sh/install | bash
 ```
 
 Install the Plak agent skill for Codex, Claude Code, OpenCode, or Pi:
