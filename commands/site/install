@@ -422,7 +422,7 @@ plak_site_install() {
             db_choice="Use alternative port"
         else
             db_choice=$(gum choose \
-                "Use alternative port (3307) — run alongside Valet or another MySQL" \
+                "Use alternative port (3307) — run alongside another MySQL service" \
                 "Pick custom port" \
                 "Proceed with ${DB_PORT} anyway" \
                 "Cancel installation")
