@@ -1,6 +1,6 @@
 ---
 name: plak-cli
-description: Use when working with Plak CLI: managing local WordPress/plain sites, the https://plak.localhost dashboard, Plak install/status/service workflows, database backups, pull/push migrations, local domains, SSH server aliases, SSH keys, or Plak release/Homebrew maintenance.
+description: "Use when working with Plak CLI: managing local WordPress/plain sites, the https://plak.localhost dashboard, Plak install/status/service workflows, database backups, pull/push migrations, local domains, SSH server aliases, SSH keys, or Plak release/Homebrew maintenance."
 ---
 
 # Plak CLI
