@@ -54,7 +54,7 @@ You can also install Plak directly with the installer script:
 curl -fsSL https://plak.sh/install | bash
 ```
 
-Install the Plak agent skill for Codex, Claude Code, OpenCode, or Pi:
+Install the Plak agent skill for Codex, Claude Code, OpenCode, Pi, or the global agent skills directory:
 
 ```bash
 plak skill install
@@ -67,8 +67,11 @@ plak skill install codex
 plak skill install claude-code
 plak skill install opencode
 plak skill install pi
+plak skill install global
 plak skill install all
 ```
+
+`all` installs agent-specific targets only (`codex`, `claude-code`, `opencode`, and `pi`). Use `global` explicitly to install into `~/.agents/skills`.
 
 For local development, Plak can also install/check the local site stack:
 

@@ -151,7 +151,7 @@ HELP
             if declare -F plak_skill_help >/dev/null 2>&1; then
                 plak_skill_help
             else
-                echo "Usage: plak skill install [codex|claude-code|opencode|pi|all]"
+                echo "Usage: plak skill install [codex|claude-code|opencode|pi|global|all]"
             fi
             ;;
         install)
@@ -8195,7 +8195,7 @@ PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/pl
 plak_skill_help() {
     cat <<'HELP'
 Usage:
-  plak skill install [codex|claude-code|opencode|pi|all]
+  plak skill install [codex|claude-code|opencode|pi|global|all]
   plak skill help
 
 Installs the Plak CLI agent skill for supported coding agents.
@@ -8205,7 +8205,8 @@ Targets:
   claude-code  ~/.claude/skills/plak-cli/SKILL.md
   opencode     ~/.config/opencode/skills/plak-cli/SKILL.md
   pi           ~/.pi/agent/skills/plak-cli/SKILL.md
-  all          Install for every supported target
+  global       ~/.agents/skills/plak-cli/SKILL.md
+  all          Install for every agent-specific target (does not include global)
 HELP
 }
 
@@ -8215,6 +8216,7 @@ plak_skill_target_path() {
         claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
         opencode) echo "$HOME/.config/opencode/skills/$PLAK_SKILL_NAME" ;;
         pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
+        global) echo "$HOME/.agents/skills/$PLAK_SKILL_NAME" ;;
         *) return 1 ;;
     esac
 }
@@ -8225,6 +8227,7 @@ plak_skill_normalize_target() {
         claude|claude-code|claudecode) echo "claude-code" ;;
         opencode|open-code) echo "opencode" ;;
         pi) echo "pi" ;;
+        global|agents|agent) echo "global" ;;
         all) echo "all" ;;
         *) return 1 ;;
     esac
@@ -8280,10 +8283,12 @@ plak_skill_prompt_targets() {
             claude-code \
             opencode \
             pi \
+            global \
             all < "$tty")
         [ -n "$selected" ] || return 1
         if printf '%s\n' "$selected" | grep -qx 'all'; then
             printf '%s\n' codex claude-code opencode pi
+            printf '%s\n' "$selected" | grep -vx 'all'
         else
             printf '%s\n' "$selected"
         fi
@@ -8296,7 +8301,8 @@ plak_skill_prompt_targets() {
         echo "  2) claude-code"
         echo "  3) opencode"
         echo "  4) pi"
-        echo "  5) all"
+        echo "  5) global"
+        echo "  6) all"
         printf "> "
     } > "$tty" 2>/dev/null || {
         echo "Which agents do you use? Enter one or more numbers separated by commas:" >&2
@@ -8304,7 +8310,8 @@ plak_skill_prompt_targets() {
         echo "  2) claude-code" >&2
         echo "  3) opencode" >&2
         echo "  4) pi" >&2
-        echo "  5) all" >&2
+        echo "  5) global" >&2
+        echo "  6) all" >&2
         printf "> " >&2
     }
 
@@ -8314,11 +8321,12 @@ plak_skill_prompt_targets() {
         read -r input
     fi
 
-    case ",$input," in *",5,"*) printf '%s\n' codex claude-code opencode pi; return 0 ;; esac
+    case ",$input," in *",6,"*) printf '%s\n' codex claude-code opencode pi ;; esac
     case ",$input," in *",1,"*) echo "codex" ;; esac
     case ",$input," in *",2,"*) echo "claude-code" ;; esac
     case ",$input," in *",3,"*) echo "opencode" ;; esac
     case ",$input," in *",4,"*) echo "pi" ;; esac
+    case ",$input," in *",5,"*) echo "global" ;; esac
 }
 
 plak_skill_install() {
@@ -8342,7 +8350,7 @@ plak_skill_install() {
                         return 1
                     fi
                     if [ "$normalized" = "all" ]; then
-                        targets=(codex claude-code opencode pi)
+                        targets+=(codex claude-code opencode pi)
                     else
                         targets+=("$normalized")
                     fi
