@@ -38,14 +38,14 @@ open https://plak.localhost
 Install Plak with Homebrew:
 
 ```bash
-brew tap plakio/plak-cli
-brew install plak-cli
+brew install plakio/tap/plak-cli
 ```
 
-Or in one command:
+Or tap the repository first:
 
 ```bash
-brew install plakio/plak-cli/plak-cli
+brew tap plakio/tap
+brew install plak-cli
 ```
 
 You can also install Plak directly with the installer script:

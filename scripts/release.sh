@@ -11,7 +11,7 @@ Example:
   ./scripts/release.sh 0.4.0
 
 Options:
-  --tap-dir PATH    Path to homebrew-plak-cli (default: ../homebrew-plak-cli)
+  --tap-dir PATH    Path to homebrew-tap (default: ../homebrew-tap)
   --brew-test       Run brew install/test/uninstall against the generated formula
   --yes, -y         Skip confirmation prompt
   --help, -h        Show this help
@@ -134,7 +134,7 @@ fi
 
 VERSION="${VERSION#v}"
 
-TAP_DIR="${TAP_DIR:-$REPO_ROOT/../homebrew-plak-cli}"
+TAP_DIR="${TAP_DIR:-$REPO_ROOT/../homebrew-tap}"
 
 TAG="v$VERSION"
 
@@ -152,7 +152,7 @@ TAP_BRANCH=$(git -C "$TAP_DIR" branch --show-current)
 [ "$TAP_BRANCH" = "main" ] || die "Tap repo must be on main (current branch: $TAP_BRANCH)."
 
 require_clean_repo "$REPO_ROOT" "plak-cli"
-require_clean_repo "$TAP_DIR" "homebrew-plak-cli"
+require_clean_repo "$TAP_DIR" "homebrew-tap"
 
 git fetch origin --tags
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then

@@ -31,7 +31,7 @@ If Plak CLI is not installed, use:
 curl -fsSL https://plak.sh/install | bash
 
 # Via Homebrew (macOS)
-brew tap plakio/plak-cli && brew install plak-cli
+brew install plakio/tap/plak-cli
 ```
 
 ## Common Commands
@@ -107,7 +107,7 @@ bash -n main shared/* shared/site/* commands/* commands/site/* compile.sh instal
 ./tests/smoke.sh
 ```
 
-5. Do not modify `homebrew-plak-cli/` unless the user is doing a release and the CLI artifact already exists.
+5. Do not modify `homebrew-tap/` unless the user is doing a release and the CLI artifact already exists.
 
 ## Troubleshooting
 

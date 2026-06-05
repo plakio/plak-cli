@@ -4,25 +4,25 @@ Plak is distributed through a Homebrew tap.
 
 ## User Install
 
-After the first tap release is published, users can install Plak with:
+Users install Plak with:
 
 ```bash
-brew tap plakio/plak-cli
-brew install plak-cli
+brew install plakio/tap/plak-cli
 ```
 
-Or in one command:
+Or tap the repository first:
 
 ```bash
-brew install plakio/plak-cli/plak-cli
+brew tap plakio/tap
+brew install plak-cli
 ```
 
 ## Tap Repository
 
-Homebrew expects the tap repository to be named with a `homebrew-` prefix. For Plak, use:
+Homebrew expects the tap repository to be named with a `homebrew-` prefix. The shorthand `plakio/tap` resolves to:
 
 ```text
-plakio/homebrew-plak-cli
+plakio/homebrew-tap
 ```
 
 The tap should contain:
@@ -50,7 +50,7 @@ Use `scripts/release.sh` from the `plak-cli` repository root. The script is the 
 
    ```bash
    git status --short --branch
-   git -C ../homebrew-plak-cli status --short --branch
+   git -C ../homebrew-tap status --short --branch
    ```
 
 The release script intentionally refuses to run with dirty working trees.
@@ -77,10 +77,10 @@ To also test the generated Homebrew formula locally:
 ./scripts/release.sh 0.4.31 --brew-test --yes
 ```
 
-If the tap repository is not at `../homebrew-plak-cli`, pass it explicitly:
+If the tap repository is not at `../homebrew-tap`, pass it explicitly:
 
 ```bash
-./scripts/release.sh 0.4.31 --tap-dir /path/to/homebrew-plak-cli --yes
+./scripts/release.sh 0.4.31 --tap-dir /path/to/homebrew-tap --yes
 ```
 
 ### What the script does
@@ -95,7 +95,7 @@ If the tap repository is not at `../homebrew-plak-cli`, pass it explicitly:
 6. Pushes `main` to `plakio/plak-cli`.
 7. Creates and pushes tag `v<version>`.
 8. Generates the Homebrew formula from the published tag.
-9. Copies the formula into `homebrew-plak-cli/Formula/plak-cli.rb`.
+9. Copies the formula into `homebrew-tap/Formula/plak-cli.rb`.
 10. Commits and pushes the Homebrew tap update.
 
 Do not manually edit the Homebrew formula before the CLI release tag exists. The release tag is the source of truth for the tarball URL and SHA256.
@@ -130,7 +130,7 @@ Prefer `scripts/release.sh`. If you must recover or release manually:
 6. Copy `/tmp/plak-cli.rb` into the tap repository:
 
    ```text
-   plakio/homebrew-plak-cli/Formula/plak-cli.rb
+   plakio/homebrew-tap/Formula/plak-cli.rb
    ```
 
 7. In the tap repository, test locally:
@@ -157,4 +157,4 @@ The source template lives at:
 packaging/homebrew/plak-cli.rb.template
 ```
 
-It is intentionally checked in as a template because Homebrew requires a real release tarball SHA256. The generated `Formula/plak-cli.rb` belongs in `plakio/homebrew-plak-cli`, not this source repository.
+It is intentionally checked in as a template because Homebrew requires a real release tarball SHA256. The generated `Formula/plak-cli.rb` belongs in `plakio/homebrew-tap`, not this source repository.

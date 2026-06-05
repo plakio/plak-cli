@@ -61,7 +61,7 @@ For local Homebrew formula testing during release:
 ./scripts/release.sh 0.4.31 --brew-test --yes
 ```
 
-Both `plak-cli` and `../homebrew-plak-cli` must be on `main` with clean working trees. Do not edit the Homebrew formula manually before the CLI release tag exists. See `docs/homebrew.md` for details and manual recovery steps.
+Both `plak-cli` and `../homebrew-tap` must be on `main` with clean working trees. Do not edit the Homebrew formula manually before the CLI release tag exists. See `docs/homebrew.md` for details and manual recovery steps.
 
 ## Safety
 
