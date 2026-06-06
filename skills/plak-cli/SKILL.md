@@ -34,6 +34,14 @@ curl -fsSL https://plak.sh/install | bash
 brew install plakio/tap/plak-cli
 ```
 
+Install this skill for supported agents:
+
+```bash
+plak skill install [codex|claude-code|opencode|hermes|pi|global|all]
+```
+
+Hermes installs to `~/.hermes/skills/plak-cli/SKILL.md`.
+
 ## Common Commands
 
 ```bash

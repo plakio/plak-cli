@@ -4,7 +4,7 @@ PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/pl
 plak_skill_help() {
     cat <<'HELP'
 Usage:
-  plak skill install [codex|claude-code|opencode|pi|global|all]
+  plak skill install [codex|claude-code|opencode|hermes|pi|global|all]
   plak skill help
 
 Installs the Plak CLI agent skill for supported coding agents.
@@ -13,6 +13,7 @@ Targets:
   codex        ~/.codex/skills/plak-cli/SKILL.md
   claude-code  ~/.claude/skills/plak-cli/SKILL.md
   opencode     ~/.config/opencode/skills/plak-cli/SKILL.md
+  hermes       ~/.hermes/skills/plak-cli/SKILL.md
   pi           ~/.pi/agent/skills/plak-cli/SKILL.md
   global       ~/.agents/skills/plak-cli/SKILL.md
   all          Install for every agent-specific target (does not include global)
@@ -24,6 +25,7 @@ plak_skill_target_path() {
         codex) echo "$HOME/.codex/skills/$PLAK_SKILL_NAME" ;;
         claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
         opencode) echo "$HOME/.config/opencode/skills/$PLAK_SKILL_NAME" ;;
+        hermes) echo "$HOME/.hermes/skills/$PLAK_SKILL_NAME" ;;
         pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
         global) echo "$HOME/.agents/skills/$PLAK_SKILL_NAME" ;;
         *) return 1 ;;
@@ -35,6 +37,7 @@ plak_skill_normalize_target() {
         codex|openai|openai-codex) echo "codex" ;;
         claude|claude-code|claudecode) echo "claude-code" ;;
         opencode|open-code) echo "opencode" ;;
+        hermes) echo "hermes" ;;
         pi) echo "pi" ;;
         global|agents|agent) echo "global" ;;
         all) echo "all" ;;
@@ -91,12 +94,13 @@ plak_skill_prompt_targets() {
             codex \
             claude-code \
             opencode \
+            hermes \
             pi \
             global \
             all < "$tty")
         [ -n "$selected" ] || return 1
         if printf '%s\n' "$selected" | grep -qx 'all'; then
-            printf '%s\n' codex claude-code opencode pi
+            printf '%s\n' codex claude-code opencode hermes pi
             printf '%s\n' "$selected" | grep -vx 'all'
         else
             printf '%s\n' "$selected"
@@ -109,18 +113,20 @@ plak_skill_prompt_targets() {
         echo "  1) codex"
         echo "  2) claude-code"
         echo "  3) opencode"
-        echo "  4) pi"
-        echo "  5) global"
-        echo "  6) all"
+        echo "  4) hermes"
+        echo "  5) pi"
+        echo "  6) global"
+        echo "  7) all"
         printf "> "
     } > "$tty" 2>/dev/null || {
         echo "Which agents do you use? Enter one or more numbers separated by commas:" >&2
         echo "  1) codex" >&2
         echo "  2) claude-code" >&2
         echo "  3) opencode" >&2
-        echo "  4) pi" >&2
-        echo "  5) global" >&2
-        echo "  6) all" >&2
+        echo "  4) hermes" >&2
+        echo "  5) pi" >&2
+        echo "  6) global" >&2
+        echo "  7) all" >&2
         printf "> " >&2
     }
 
@@ -130,12 +136,13 @@ plak_skill_prompt_targets() {
         read -r input
     fi
 
-    case ",$input," in *",6,"*) printf '%s\n' codex claude-code opencode pi ;; esac
+    case ",$input," in *",7,"*) printf '%s\n' codex claude-code opencode hermes pi ;; esac
     case ",$input," in *",1,"*) echo "codex" ;; esac
     case ",$input," in *",2,"*) echo "claude-code" ;; esac
     case ",$input," in *",3,"*) echo "opencode" ;; esac
-    case ",$input," in *",4,"*) echo "pi" ;; esac
-    case ",$input," in *",5,"*) echo "global" ;; esac
+    case ",$input," in *",4,"*) echo "hermes" ;; esac
+    case ",$input," in *",5,"*) echo "pi" ;; esac
+    case ",$input," in *",6,"*) echo "global" ;; esac
 }
 
 plak_skill_install() {
@@ -159,7 +166,7 @@ plak_skill_install() {
                         return 1
                     fi
                     if [ "$normalized" = "all" ]; then
-                        targets+=(codex claude-code opencode pi)
+                        targets+=(codex claude-code opencode hermes pi)
                     else
                         targets+=("$normalized")
                     fi

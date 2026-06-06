@@ -151,7 +151,7 @@ HELP
             if declare -F plak_skill_help >/dev/null 2>&1; then
                 plak_skill_help
             else
-                echo "Usage: plak skill install [codex|claude-code|opencode|pi|global|all]"
+                echo "Usage: plak skill install [codex|claude-code|opencode|hermes|pi|global|all]"
             fi
             ;;
         install)
