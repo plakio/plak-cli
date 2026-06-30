@@ -1,0 +1,32 @@
+runner_private_dir() {
+    local current_dir
+    current_dir=$(pwd)
+
+    if [ -d "${current_dir}/_wpeprivate" ]; then
+        echo "${current_dir}/_wpeprivate"
+        return 0
+    fi
+
+    if [ -d "../private" ]; then
+        (cd ../private && pwd)
+        return 0
+    fi
+
+    if mkdir -p "../private" 2>/dev/null; then
+        (cd ../private && pwd)
+        return 0
+    fi
+
+    if [ -d "../tmp" ]; then
+        (cd ../tmp && pwd)
+        return 0
+    fi
+
+    if mkdir -p "$HOME/private" 2>/dev/null; then
+        echo "$HOME/private"
+        return 0
+    fi
+
+    runner_error "Could not find or create a writable private directory."
+    return 1
+}

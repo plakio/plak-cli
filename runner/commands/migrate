@@ -1,0 +1,4 @@
+runner_migrate() {
+    runner_error "The migrate command is not implemented yet."
+    return 2
+}

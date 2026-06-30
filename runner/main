@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+runner_usage() {
+    cat <<'EOF'
+Plak Runner
+
+Usage:
+  runner <command> [arguments] [--flags]
+
+Commands:
+  backup      Create a WordPress backup. Not implemented yet.
+  migrate     Restore a WordPress backup. Not implemented yet.
+  help        Show this help text.
+EOF
+}
+
+runner_main() {
+    local command="${1:-help}"
+    if [ "$#" -gt 0 ]; then
+        shift
+    fi
+
+    case "$command" in
+        backup)
+            runner_backup "$@"
+            ;;
+        migrate)
+            runner_migrate "$@"
+            ;;
+        help|--help|-h)
+            runner_usage
+            ;;
+        *)
+            runner_error "Unknown command: $command"
+            runner_usage >&2
+            exit 1
+            ;;
+    esac
+}
+
+runner_main "$@"

@@ -1,0 +1,7 @@
+runner_error() {
+    echo "Error: $*" >&2
+}
+
+runner_info() {
+    echo "$*"
+}

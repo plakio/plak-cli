@@ -1,0 +1,4 @@
+runner_backup() {
+    runner_error "The backup command is not implemented yet."
+    return 2
+}
