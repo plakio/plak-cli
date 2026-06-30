@@ -387,6 +387,27 @@ main() {
 
 
 # --- Shared Helpers ---
+# Source: shared/remote
+plak_remote_choose_ssh() {
+    local hosts selected manual_label="Enter manually"
+    hosts=$(plak_server_parse_hosts)
+
+    if [ -n "$hosts" ]; then
+        selected=$(printf "%s\n%s\n" "$hosts" "$manual_label" | gum filter --placeholder "Choose SSH connection")
+        [ -n "$selected" ] || return 1
+
+        if [ "$selected" != "$manual_label" ]; then
+            printf '%s\n' "$selected"
+            return 0
+        fi
+    fi
+
+    selected=$(gum input --width 0 --placeholder "user@host.com -p 2222" --prompt "SSH Connection: ")
+    [ -n "$selected" ] || return 1
+    selected="${selected##ssh }"
+    printf '%s\n' "$selected"
+}
+
 # Source: shared/site/runtime
 #!/bin/bash
 
@@ -6622,13 +6643,10 @@ plak_site_pull() {
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pulling a remote WordPress site into Plak."
     # --- 1. Gather Remote Info ---
-    log_step "Enter remote server details"
+    log_step "Choose remote server"
     local remote_ssh
-    remote_ssh=$(gum input --width 0 --placeholder "user@host.com -p 2222" --prompt "SSH Connection: ")
+    remote_ssh=$(plak_remote_choose_ssh)
     if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
-
-    # Trim the "ssh " prefix if the user includes it.
-    remote_ssh="${remote_ssh##ssh }"
 
     local remote_path
     remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
@@ -6807,13 +6825,10 @@ plak_site_push() {
     local local_path="$SITES_DIR/$site_name.localhost/public"
     
     # --- 2. Gather Remote Info ---
-    log_step "Enter remote server details"
+    log_step "Choose remote server"
     local remote_ssh
-    remote_ssh=$(gum input --width 0 --placeholder "user@host.com -p 2222" --prompt "SSH Connection: ")
+    remote_ssh=$(plak_remote_choose_ssh)
     if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
-
-    # Trim the "ssh " prefix if the user includes it.
-    remote_ssh="${remote_ssh##ssh }"
 
     local remote_path
     remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")

@@ -1,0 +1,19 @@
+plak_remote_choose_ssh() {
+    local hosts selected manual_label="Enter manually"
+    hosts=$(plak_server_parse_hosts)
+
+    if [ -n "$hosts" ]; then
+        selected=$(printf "%s\n%s\n" "$hosts" "$manual_label" | gum filter --placeholder "Choose SSH connection")
+        [ -n "$selected" ] || return 1
+
+        if [ "$selected" != "$manual_label" ]; then
+            printf '%s\n' "$selected"
+            return 0
+        fi
+    fi
+
+    selected=$(gum input --width 0 --placeholder "user@host.com -p 2222" --prompt "SSH Connection: ")
+    [ -n "$selected" ] || return 1
+    selected="${selected##ssh }"
+    printf '%s\n' "$selected"
+}

@@ -45,13 +45,10 @@ plak_site_push() {
     local local_path="$SITES_DIR/$site_name.localhost/public"
     
     # --- 2. Gather Remote Info ---
-    log_step "Enter remote server details"
+    log_step "Choose remote server"
     local remote_ssh
-    remote_ssh=$(gum input --width 0 --placeholder "user@host.com -p 2222" --prompt "SSH Connection: ")
+    remote_ssh=$(plak_remote_choose_ssh)
     if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
-
-    # Trim the "ssh " prefix if the user includes it.
-    remote_ssh="${remote_ssh##ssh }"
 
     local remote_path
     remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")
