@@ -39,7 +39,7 @@ plak_site_push() {
     fi
 
     local site_name
-    site_name=$(gum choose "${wp_sites[@]}")
+    site_name=$(printf "%s\n" "${wp_sites[@]}" | gum filter --placeholder "Choose local site to push")
     if [ -z "$site_name" ]; then log_error "No site selected."; fi
 
     local local_path="$SITES_DIR/$site_name.localhost/public"
