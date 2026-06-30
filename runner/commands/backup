@@ -79,7 +79,7 @@ runner_backup() {
         echo "Exporting database for '$name'..."
     fi
 
-    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null; then
+    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null 2> >(runner_filter_insecure_mysql_warning >&2); then
         runner_error "Database export failed."
         cd "$original_dir"
         return 1

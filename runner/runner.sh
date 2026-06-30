@@ -78,6 +78,10 @@ runner_info() {
     echo "$*"
 }
 
+runner_filter_insecure_mysql_warning() {
+    grep -v -F "WARNING: option --ssl-verify-server-cert is disabled, because of an insecure passwordless login." || true
+}
+
 # Source: shared/private-dir
 runner_private_dir() {
     if [ -n "${RUNNER_PRIVATE_DIR:-}" ]; then
@@ -273,7 +277,7 @@ runner_backup() {
         echo "Exporting database for '$name'..."
     fi
 
-    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null; then
+    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null 2> >(runner_filter_insecure_mysql_warning >&2); then
         runner_error "Database export failed."
         cd "$original_dir"
         return 1
@@ -530,8 +534,8 @@ runner_migrate() {
             "$wp_cmd" config set table_prefix "$table_prefix" --skip-plugins --skip-themes
         fi
 
-        "$wp_cmd" db reset --yes --skip-plugins --skip-themes
-        if ! "$wp_cmd" db import "$database"; then
+        "$wp_cmd" db reset --yes --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2)
+        if ! "$wp_cmd" db import "$database" 2> >(runner_filter_insecure_mysql_warning >&2); then
             runner_error "Database import failed."
             cd "$home_directory"
             return 1
@@ -559,10 +563,10 @@ runner_migrate() {
     done
 
     local alter_queries
-    alter_queries=$("$wp_cmd" db query "SELECT CONCAT('ALTER TABLE ', TABLE_SCHEMA,'.', TABLE_NAME, ' ENGINE=InnoDB;') FROM information_schema.TABLES WHERE ENGINE = 'MyISAM' AND TABLE_SCHEMA=DATABASE()" --skip-column-names --skip-plugins --skip-themes)
+    alter_queries=$("$wp_cmd" db query "SELECT CONCAT('ALTER TABLE ', TABLE_SCHEMA,'.', TABLE_NAME, ' ENGINE=InnoDB;') FROM information_schema.TABLES WHERE ENGINE = 'MyISAM' AND TABLE_SCHEMA=DATABASE()" --skip-column-names --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
     if [ -n "$alter_queries" ]; then
         echo "Converting MyISAM tables to InnoDB..."
-        echo "$alter_queries" | "$wp_cmd" db query --skip-plugins --skip-themes
+        echo "$alter_queries" | "$wp_cmd" db query --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2)
     fi
 
     "$wp_cmd" rewrite flush

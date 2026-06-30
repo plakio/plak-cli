@@ -5,3 +5,7 @@ runner_error() {
 runner_info() {
     echo "$*"
 }
+
+runner_filter_insecure_mysql_warning() {
+    grep -v -F "WARNING: option --ssl-verify-server-cert is disabled, because of an insecure passwordless login." || true
+}
