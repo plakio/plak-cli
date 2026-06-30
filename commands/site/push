@@ -76,12 +76,14 @@ plak_site_push() {
     log_step "Generating local backup for ${site_name}..."
     local backup_filename
     backup_filename=$( (cd "$local_path" && curl -sL https://plak.sh/runner | bash -s -- backup . --quiet --format=filename) )
+    backup_filename=$(printf '%s\n' "$backup_filename" | awk 'NF { last=$0 } END { print last }')
+    local local_backup_path="$local_path/$backup_filename"
     
-    if [[ ! -f "$backup_filename" || ! "$backup_filename" == *".zip" ]]; then
+    if [[ ! -f "$local_backup_path" || ! "$backup_filename" == *".zip" ]]; then
         log_error "Failed to generate local backup. The runner script might have failed."
     fi
     
-    size=$(ls -lh "$backup_filename" | awk '{print $5}')
+    size=$(ls -lh "$local_backup_path" | awk '{print $5}')
     log_success "Local backup created: ${backup_filename} ($size)"
 
     local backup_filename_q
@@ -91,9 +93,9 @@ plak_site_push() {
 
     # --- 6. Upload Backup ---
     log_step "Uploading backup to remote server..."
-    if ! cat "$backup_filename" | ssh $ssh_opts $remote_ssh "cat > $remote_backup_q"; then
+    if ! cat "$local_backup_path" | ssh $ssh_opts $remote_ssh "cat > $remote_backup_q"; then
         # Clean up local backup on failure
-        rm -f "$backup_filename"
+        rm -f "$local_backup_path"
         log_error "Failed to upload backup."
     fi
     log_success "Upload complete."
@@ -107,7 +109,7 @@ plak_site_push() {
 
     # --- 8. Cleanup ---
     log_step "Cleaning up backup files..."
-    rm -f "$backup_filename"
+    rm -f "$local_backup_path"
     ssh $ssh_opts $remote_ssh "rm -f $remote_backup_q"
     log_success "Cleanup complete."
 
