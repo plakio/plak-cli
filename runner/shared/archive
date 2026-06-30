@@ -5,3 +5,21 @@ runner_require_command() {
         return 1
     fi
 }
+
+runner_download_file() {
+    local url="$1"
+    local output="$2"
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -q --show-progress --no-check-certificate --progress=bar:force:noscroll -O "$output" "$url"
+        return $?
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --progress-bar -o "$output" "$url"
+        return $?
+    fi
+
+    runner_error "Either wget or curl is required to download backups."
+    return 1
+}

@@ -6699,7 +6699,7 @@ plak_site_pull() {
     fi
 
     local backup_url
-    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://captaincore.io/do | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
+    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://plak.sh/runner | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
 
     if [[ -z "$backup_url" || ! "$backup_url" == *.zip ]]; then
         log_error "Failed to generate backup or received an invalid backup URL."
@@ -6708,7 +6708,7 @@ plak_site_pull() {
 
     log_step "Restoring backup to ${site_name}.localhost..."
     # Execute the migration script directly instead of using a variable with a pipe
-    if ! (cd "$dest_path" && curl -sL https://captaincore.io/do | bash -s -- migrate --url="$backup_url" --update-urls); then
+    if ! (cd "$dest_path" && curl -sL https://plak.sh/runner | bash -s -- migrate --url="$backup_url" --update-urls); then
         log_error "The migration script failed to execute correctly."
     fi
     log_success "Restore complete."
@@ -6840,10 +6840,10 @@ plak_site_push() {
     # --- 5. Perform Local Backup ---
     log_step "Generating local backup for ${site_name}..."
     local backup_filename
-    backup_filename=$( (cd "$local_path" && curl -sL https://captaincore.io/do | bash -s -- backup . --quiet --format=filename) )
+    backup_filename=$( (cd "$local_path" && curl -sL https://plak.sh/runner | bash -s -- backup . --quiet --format=filename) )
     
     if [[ ! -f "$backup_filename" || ! "$backup_filename" == *".zip" ]]; then
-        log_error "Failed to generate local backup. The captaincore script might have failed."
+        log_error "Failed to generate local backup. The runner script might have failed."
     fi
     
     size=$(ls -lh "$backup_filename" | awk '{print $5}')
@@ -6865,7 +6865,7 @@ plak_site_push() {
 
     # --- 7. Remote Restore ---
     log_step "Restoring backup on remote server..."
-    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://captaincore.io/do | bash -s -- migrate --url=$backup_filename_q --update-urls"; then
+    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://plak.sh/runner | bash -s -- migrate --url=$backup_filename_q --update-urls"; then
         log_error "The remote migration script failed to execute correctly."
     fi
     log_success "Remote restore complete."
@@ -6879,6 +6879,7 @@ plak_site_push() {
     # --- 9. Finalize ---
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site has been pushed successfully." "Remote URL: ${remote_url}"
 }
+
 # Source: commands/site/reload
 plak_site_reload() {
     # Auto-heal any root-owned state left over from a pre-1.10 install.

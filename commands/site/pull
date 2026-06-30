@@ -116,7 +116,7 @@ plak_site_pull() {
     fi
 
     local backup_url
-    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://captaincore.io/do | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
+    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://plak.sh/runner | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
 
     if [[ -z "$backup_url" || ! "$backup_url" == *.zip ]]; then
         log_error "Failed to generate backup or received an invalid backup URL."
@@ -125,7 +125,7 @@ plak_site_pull() {
 
     log_step "Restoring backup to ${site_name}.localhost..."
     # Execute the migration script directly instead of using a variable with a pipe
-    if ! (cd "$dest_path" && curl -sL https://captaincore.io/do | bash -s -- migrate --url="$backup_url" --update-urls); then
+    if ! (cd "$dest_path" && curl -sL https://plak.sh/runner | bash -s -- migrate --url="$backup_url" --update-urls); then
         log_error "The migration script failed to execute correctly."
     fi
     log_success "Restore complete."

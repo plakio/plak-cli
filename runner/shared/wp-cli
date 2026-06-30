@@ -1,13 +1,20 @@
 runner_wp_cli() {
+    if [ -n "${RUNNER_WP_CLI_CMD:-}" ]; then
+        echo "$RUNNER_WP_CLI_CMD"
+        return 0
+    fi
+
     if command -v wp >/dev/null 2>&1; then
-        echo "wp"
+        RUNNER_WP_CLI_CMD="wp"
+        echo "$RUNNER_WP_CLI_CMD"
         return 0
     fi
 
     local candidate
     for candidate in "/usr/local/bin/wp" "$HOME/bin/wp" "/opt/wp-cli/wp"; do
         if [ -x "$candidate" ]; then
-            echo "$candidate"
+            RUNNER_WP_CLI_CMD="$candidate"
+            echo "$RUNNER_WP_CLI_CMD"
             return 0
         fi
     done

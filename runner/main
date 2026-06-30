@@ -10,8 +10,8 @@ Usage:
   runner <command> [arguments] [--flags]
 
 Commands:
-  backup      Create a WordPress backup. Not implemented yet.
-  migrate     Restore a WordPress backup. Not implemented yet.
+  backup      Create a WordPress backup.
+  migrate     Restore a WordPress backup.
   help        Show this help text.
 EOF
 }

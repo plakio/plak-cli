@@ -1,4 +1,145 @@
 runner_backup() {
-    runner_error "The backup command is not implemented yet."
-    return 2
+    local target_folder=""
+    local quiet_flag="false"
+    local format_flag=""
+    local exclude_patterns=()
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --quiet)
+                quiet_flag="true"
+                shift
+                ;;
+            --format=*)
+                format_flag="${1#*=}"
+                shift
+                ;;
+            --exclude=*)
+                exclude_patterns+=("${1#*=}")
+                shift
+                ;;
+            -*)
+                runner_error "Unknown backup flag: $1"
+                return 1
+                ;;
+            *)
+                if [ -z "$target_folder" ]; then
+                    target_folder="$1"
+                else
+                    runner_error "Unexpected backup argument: $1"
+                    return 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$target_folder" ]; then
+        runner_error "Please provide a folder path."
+        runner_error "Usage: runner backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
+        return 1
+    fi
+
+    if [ ! -d "$target_folder" ]; then
+        runner_error "Folder '$target_folder' not found."
+        return 1
+    fi
+
+    runner_require_command zip || return 1
+    runner_require_command openssl || return 1
+
+    local wp_cmd
+    wp_cmd=$(runner_wp_cli) || return 1
+
+    local full_target_path
+    full_target_path=$(cd "$target_folder" && pwd -P) || return 1
+    local parent_dir
+    parent_dir=$(dirname "$full_target_path")
+    local site_dir_name
+    site_dir_name=$(basename "$full_target_path")
+    local original_dir
+    original_dir=$(pwd)
+
+    local today
+    local random
+    local backup_filename
+    today=$(date +"%Y-%m-%d")
+    random=$(openssl rand -hex 4 | head -c 7)
+    backup_filename="${today}_${random}.zip"
+
+    cd "$parent_dir" || return 1
+
+    local home_url
+    local name
+    local database_file="db_export.sql"
+    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes)
+    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes)
+
+    if [ "$quiet_flag" != "true" ]; then
+        echo "Exporting database for '$name'..."
+    fi
+
+    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null; then
+        runner_error "Database export failed."
+        cd "$original_dir"
+        return 1
+    fi
+
+    if [ "$quiet_flag" != "true" ]; then
+        echo "Creating zip archive..."
+        if [ "${#exclude_patterns[@]}" -gt 0 ]; then
+            echo "Excluding the following patterns:"
+            local pattern
+            for pattern in "${exclude_patterns[@]}"; do
+                echo "  - $pattern"
+            done
+        fi
+    fi
+
+    local zip_exclude_args=()
+    zip_exclude_args+=(-x "$site_dir_name/wp-content/updraft/*")
+    local pattern
+    for pattern in "${exclude_patterns[@]}"; do
+        zip_exclude_args+=(-x "$site_dir_name/$pattern*")
+    done
+
+    if ! zip -r "$backup_filename" "$site_dir_name" "${zip_exclude_args[@]}" >/dev/null; then
+        runner_error "Failed to zip files."
+        rm -f "$site_dir_name/$database_file"
+        cd "$original_dir"
+        return 1
+    fi
+
+    if [ -f "$site_dir_name/wp-config.php" ]; then
+        zip "$backup_filename" "$site_dir_name/wp-config.php" >/dev/null
+    fi
+
+    local size
+    size=$(ls -lh "$backup_filename" | awk '{print $5}')
+    rm -f "$site_dir_name/$database_file"
+    mv "$backup_filename" "$site_dir_name/"
+    cd "$original_dir"
+
+    local final_backup_location="$full_target_path/$backup_filename"
+    local final_url="${home_url%/}/${backup_filename}"
+
+    if [ "$format_flag" = "filename" ]; then
+        echo "$backup_filename"
+        return 0
+    fi
+
+    if [ "$quiet_flag" = "true" ]; then
+        echo "$final_url"
+        return 0
+    fi
+
+    echo "-----------------------------------------------------"
+    echo "Full site backup complete."
+    echo "   Name: $name"
+    echo "   Location: $final_backup_location"
+    echo "   Size: $size"
+    echo "   URL: $final_url"
+    echo "-----------------------------------------------------"
+    echo "When done, remember to remove the backup file."
+    echo "rm -f \"$final_backup_location\""
 }
