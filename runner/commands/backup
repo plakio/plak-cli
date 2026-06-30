@@ -72,8 +72,8 @@ runner_backup() {
     local home_url
     local name
     local database_file="db_export.sql"
-    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes)
-    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes)
+    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
 
     if [ "$quiet_flag" != "true" ]; then
         echo "Exporting database for '$name'..."

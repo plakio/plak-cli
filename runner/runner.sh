@@ -270,8 +270,8 @@ runner_backup() {
     local home_url
     local name
     local database_file="db_export.sql"
-    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes)
-    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes)
+    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
 
     if [ "$quiet_flag" != "true" ]; then
         echo "Exporting database for '$name'..."
@@ -385,7 +385,7 @@ runner_migrate() {
     local home_directory
     home_directory=$(pwd)
     local wp_home
-    wp_home=$("$wp_cmd" option get home --skip-themes --skip-plugins)
+    wp_home=$("$wp_cmd" option get home --skip-themes --skip-plugins 2> >(runner_filter_insecure_mysql_warning >&2))
     if [[ "$wp_home" != http* ]]; then
         runner_error "WordPress not found in current directory. Migration cancelled."
         return 1
@@ -520,7 +520,7 @@ runner_migrate() {
     else
         echo "Importing database from $database..."
         local search_privacy
-        search_privacy=$("$wp_cmd" option get blog_public --skip-plugins --skip-themes)
+        search_privacy=$("$wp_cmd" option get blog_public --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
 
         local table_prefix=""
         local current_table_prefix
@@ -528,7 +528,7 @@ runner_migrate() {
             table_prefix=$(grep 'table_prefix' "${backup_root_dir}/wp-config.php" | perl -n -e '/\047(.+)\047/&& print $1' || true)
         fi
 
-        current_table_prefix=$("$wp_cmd" config get table_prefix --skip-plugins --skip-themes)
+        current_table_prefix=$("$wp_cmd" config get table_prefix --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
         if [ -n "$table_prefix" ] && [ "$table_prefix" != "$current_table_prefix" ]; then
             echo "Updating table prefix from $current_table_prefix to $table_prefix"
             "$wp_cmd" config set table_prefix "$table_prefix" --skip-plugins --skip-themes
@@ -545,7 +545,7 @@ runner_migrate() {
         "$wp_cmd" option update blog_public "$search_privacy" --skip-plugins --skip-themes
 
         local wp_home_imported
-        wp_home_imported=$("$wp_cmd" option get home --skip-plugins --skip-themes)
+        wp_home_imported=$("$wp_cmd" option get home --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
         if [ "$update_urls_flag" = "true" ] && [ "$wp_home_imported" != "$wp_home" ]; then
             echo "Updating URLs from $wp_home_imported to $wp_home..."
             "$wp_cmd" search-replace "$wp_home_imported" "$wp_home" --all-tables --report-changed-only --skip-plugins --skip-themes
