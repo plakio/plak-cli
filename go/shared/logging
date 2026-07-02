@@ -1,11 +1,11 @@
-runner_error() {
+go_error() {
     echo "Error: $*" >&2
 }
 
-runner_info() {
+go_info() {
     echo "$*"
 }
 
-runner_filter_insecure_mysql_warning() {
+go_filter_insecure_mysql_warning() {
     grep -v -F "WARNING: option --ssl-verify-server-cert is disabled, because of an insecure passwordless login." || true
 }

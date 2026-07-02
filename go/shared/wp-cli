@@ -1,4 +1,4 @@
-runner_wp_cli() {
+go_wp_cli() {
     if [ -n "${RUNNER_WP_CLI_CMD:-}" ]; then
         echo "$RUNNER_WP_CLI_CMD"
         return 0
@@ -19,6 +19,6 @@ runner_wp_cli() {
         fi
     done
 
-    runner_error "WP-CLI is required but was not found."
+    go_error "WP-CLI is required but was not found."
     return 1
 }

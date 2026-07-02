@@ -18,7 +18,7 @@ Options:
 
 What this does:
   1. Updates PLAK_VERSION in main
-  2. Compiles plak.sh and runner.sh, then runs smoke tests
+  2. Compiles plak.sh and go.sh, then runs smoke tests
   3. Commits "Release <version>"
   4. Pushes main, tags v<version>, and pushes the tag
   5. Generates the Homebrew formula from the published tag
@@ -166,12 +166,12 @@ echo "==> Preparing Plak $VERSION"
 RELEASE_VERSION="$VERSION" perl -0pi -e 's/PLAK_VERSION="[^"]+"/PLAK_VERSION="$ENV{RELEASE_VERSION}"/' main
 
 ./compile.sh
-(cd runner && ./compile.sh)
-bash -n main shared/* shared/site/* commands/* commands/site/* compile.sh install.sh plak.sh runner/main runner/shared/* runner/commands/* runner/compile.sh runner/runner.sh
+(cd go && ./compile.sh)
+bash -n main shared/* shared/site/* commands/* commands/site/* compile.sh install.sh plak.sh go/main go/shared/* go/commands/* go/compile.sh go/go.sh
 ./tests/smoke.sh
 
 if [ -n "$(git status --short)" ]; then
-    git add main plak.sh runner/runner.sh
+    git add main plak.sh go/go.sh
     git commit -m "Release $VERSION"
 else
     echo "==> No version changes to commit."

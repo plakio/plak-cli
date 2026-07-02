@@ -1,12 +1,12 @@
-runner_require_command() {
+go_require_command() {
     local command="$1"
     if ! command -v "$command" >/dev/null 2>&1; then
-        runner_error "Required command not found: $command"
+        go_error "Required command not found: $command"
         return 1
     fi
 }
 
-runner_download_file() {
+go_download_file() {
     local url="$1"
     local output="$2"
 
@@ -20,6 +20,6 @@ runner_download_file() {
         return $?
     fi
 
-    runner_error "Either wget or curl is required to download backups."
+    go_error "Either wget or curl is required to download backups."
     return 1
 }

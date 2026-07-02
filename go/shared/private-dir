@@ -1,11 +1,11 @@
-runner_private_dir() {
+go_private_dir() {
     if [ -n "${RUNNER_PRIVATE_DIR:-}" ]; then
         echo "$RUNNER_PRIVATE_DIR"
         return 0
     fi
 
     local wp_cmd
-    if wp_cmd=$(runner_wp_cli 2>/dev/null) && "$wp_cmd" core is-installed --quiet 2>/dev/null; then
+    if wp_cmd=$(go_wp_cli 2>/dev/null) && "$wp_cmd" core is-installed --quiet 2>/dev/null; then
         local wp_config_path
         wp_config_path=$("$wp_cmd" config path --quiet 2>/dev/null || true)
         if [ -n "$wp_config_path" ] && [ -f "$wp_config_path" ]; then
@@ -79,6 +79,6 @@ runner_private_dir() {
         return 0
     fi
 
-    runner_error "Could not find or create a writable private directory."
+    go_error "Could not find or create a writable private directory."
     return 1
 }

@@ -2,12 +2,12 @@
 
 set -euo pipefail
 
-runner_usage() {
+go_usage() {
     cat <<'EOF'
-Plak Runner
+Plak Go
 
 Usage:
-  runner <command> [arguments] [--flags]
+  go <command> [arguments] [--flags]
 
 Commands:
   backup      Create a WordPress backup.
@@ -16,7 +16,7 @@ Commands:
 EOF
 }
 
-runner_main() {
+go_main() {
     local command="${1:-help}"
     if [ "$#" -gt 0 ]; then
         shift
@@ -24,20 +24,20 @@ runner_main() {
 
     case "$command" in
         backup)
-            runner_backup "$@"
+            go_backup "$@"
             ;;
         migrate)
-            runner_migrate "$@"
+            go_migrate "$@"
             ;;
         help|--help|-h)
-            runner_usage
+            go_usage
             ;;
         *)
-            runner_error "Unknown command: $command"
-            runner_usage >&2
+            go_error "Unknown command: $command"
+            go_usage >&2
             exit 1
             ;;
     esac
 }
 
-runner_main "$@"
+go_main "$@"

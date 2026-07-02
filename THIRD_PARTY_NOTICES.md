@@ -2,7 +2,7 @@
 
 ## CaptainCore/do
 
-Portions of `runner/` are derived from CaptainCore/do.
+Portions of `go/` are derived from CaptainCore/do.
 
 Copyright (c) 2025-present, Austin Ginder.
 

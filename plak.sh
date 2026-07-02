@@ -6717,7 +6717,7 @@ plak_site_pull() {
     fi
 
     local backup_url
-    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://plak.sh/runner | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
+    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://plak.sh/go | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
 
     if [[ -z "$backup_url" || ! "$backup_url" == *.zip ]]; then
         log_error "Failed to generate backup or received an invalid backup URL."
@@ -6726,7 +6726,7 @@ plak_site_pull() {
 
     log_step "Restoring backup to ${site_name}.localhost..."
     # Execute the migration script directly instead of using a variable with a pipe
-    if ! (cd "$dest_path" && curl -sL https://plak.sh/runner | bash -s -- migrate --url="$backup_url" --update-urls); then
+    if ! (cd "$dest_path" && curl -sL https://plak.sh/go | bash -s -- migrate --url="$backup_url" --update-urls); then
         log_error "The migration script failed to execute correctly."
     fi
     log_success "Restore complete."
@@ -6855,12 +6855,12 @@ plak_site_push() {
     # --- 5. Perform Local Backup ---
     log_step "Generating local backup for ${site_name}..."
     local backup_filename
-    backup_filename=$( (cd "$local_path" && curl -sL https://plak.sh/runner | bash -s -- backup . --quiet --format=filename) )
+    backup_filename=$( (cd "$local_path" && curl -sL https://plak.sh/go | bash -s -- backup . --quiet --format=filename) )
     backup_filename=$(printf '%s\n' "$backup_filename" | awk 'NF { last=$0 } END { print last }')
     local local_backup_path="$local_path/$backup_filename"
     
     if [[ ! -f "$local_backup_path" || ! "$backup_filename" == *".zip" ]]; then
-        log_error "Failed to generate local backup. The runner script might have failed."
+        log_error "Failed to generate local backup. The go script might have failed."
     fi
     
     size=$(ls -lh "$local_backup_path" | awk '{print $5}')
@@ -6882,7 +6882,7 @@ plak_site_push() {
 
     # --- 7. Remote Restore ---
     log_step "Restoring backup on remote server..."
-    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://plak.sh/runner | bash -s -- migrate --url=$backup_filename_q --update-urls"; then
+    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://plak.sh/go | bash -s -- migrate --url=$backup_filename_q --update-urls"; then
         log_error "The remote migration script failed to execute correctly."
     fi
     log_success "Remote restore complete."

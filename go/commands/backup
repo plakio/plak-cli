@@ -1,4 +1,4 @@
-runner_backup() {
+go_backup() {
     local target_folder=""
     local quiet_flag="false"
     local format_flag=""
@@ -19,14 +19,14 @@ runner_backup() {
                 shift
                 ;;
             -*)
-                runner_error "Unknown backup flag: $1"
+                go_error "Unknown backup flag: $1"
                 return 1
                 ;;
             *)
                 if [ -z "$target_folder" ]; then
                     target_folder="$1"
                 else
-                    runner_error "Unexpected backup argument: $1"
+                    go_error "Unexpected backup argument: $1"
                     return 1
                 fi
                 shift
@@ -35,21 +35,21 @@ runner_backup() {
     done
 
     if [ -z "$target_folder" ]; then
-        runner_error "Please provide a folder path."
-        runner_error "Usage: runner backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
+        go_error "Please provide a folder path."
+        go_error "Usage: go backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
         return 1
     fi
 
     if [ ! -d "$target_folder" ]; then
-        runner_error "Folder '$target_folder' not found."
+        go_error "Folder '$target_folder' not found."
         return 1
     fi
 
-    runner_require_command zip || return 1
-    runner_require_command openssl || return 1
+    go_require_command zip || return 1
+    go_require_command openssl || return 1
 
     local wp_cmd
-    wp_cmd=$(runner_wp_cli) || return 1
+    wp_cmd=$(go_wp_cli) || return 1
 
     local full_target_path
     full_target_path=$(cd "$target_folder" && pwd -P) || return 1
@@ -72,15 +72,15 @@ runner_backup() {
     local home_url
     local name
     local database_file="db_export.sql"
-    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
-    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
+    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
 
     if [ "$quiet_flag" != "true" ]; then
         echo "Exporting database for '$name'..."
     fi
 
-    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null 2> >(runner_filter_insecure_mysql_warning >&2); then
-        runner_error "Database export failed."
+    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null 2> >(go_filter_insecure_mysql_warning >&2); then
+        go_error "Database export failed."
         cd "$original_dir"
         return 1
     fi
@@ -104,7 +104,7 @@ runner_backup() {
     done
 
     if ! zip -r "$backup_filename" "$site_dir_name" "${zip_exclude_args[@]}" >/dev/null; then
-        runner_error "Failed to zip files."
+        go_error "Failed to zip files."
         rm -f "$site_dir_name/$database_file"
         cd "$original_dir"
         return 1

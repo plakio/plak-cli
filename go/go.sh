@@ -2,12 +2,12 @@
 
 set -euo pipefail
 
-runner_usage() {
+go_usage() {
     cat <<'EOF'
-Plak Runner
+Plak Go
 
 Usage:
-  runner <command> [arguments] [--flags]
+  go <command> [arguments] [--flags]
 
 Commands:
   backup      Create a WordPress backup.
@@ -16,7 +16,7 @@ Commands:
 EOF
 }
 
-runner_main() {
+go_main() {
     local command="${1:-help}"
     if [ "$#" -gt 0 ]; then
         shift
@@ -24,17 +24,17 @@ runner_main() {
 
     case "$command" in
         backup)
-            runner_backup "$@"
+            go_backup "$@"
             ;;
         migrate)
-            runner_migrate "$@"
+            go_migrate "$@"
             ;;
         help|--help|-h)
-            runner_usage
+            go_usage
             ;;
         *)
-            runner_error "Unknown command: $command"
-            runner_usage >&2
+            go_error "Unknown command: $command"
+            go_usage >&2
             exit 1
             ;;
     esac
@@ -43,15 +43,15 @@ runner_main() {
 
 # --- Shared Helpers ---
 # Source: shared/archive
-runner_require_command() {
+go_require_command() {
     local command="$1"
     if ! command -v "$command" >/dev/null 2>&1; then
-        runner_error "Required command not found: $command"
+        go_error "Required command not found: $command"
         return 1
     fi
 }
 
-runner_download_file() {
+go_download_file() {
     local url="$1"
     local output="$2"
 
@@ -65,32 +65,32 @@ runner_download_file() {
         return $?
     fi
 
-    runner_error "Either wget or curl is required to download backups."
+    go_error "Either wget or curl is required to download backups."
     return 1
 }
 
 # Source: shared/logging
-runner_error() {
+go_error() {
     echo "Error: $*" >&2
 }
 
-runner_info() {
+go_info() {
     echo "$*"
 }
 
-runner_filter_insecure_mysql_warning() {
+go_filter_insecure_mysql_warning() {
     grep -v -F "WARNING: option --ssl-verify-server-cert is disabled, because of an insecure passwordless login." || true
 }
 
 # Source: shared/private-dir
-runner_private_dir() {
+go_private_dir() {
     if [ -n "${RUNNER_PRIVATE_DIR:-}" ]; then
         echo "$RUNNER_PRIVATE_DIR"
         return 0
     fi
 
     local wp_cmd
-    if wp_cmd=$(runner_wp_cli 2>/dev/null) && "$wp_cmd" core is-installed --quiet 2>/dev/null; then
+    if wp_cmd=$(go_wp_cli 2>/dev/null) && "$wp_cmd" core is-installed --quiet 2>/dev/null; then
         local wp_config_path
         wp_config_path=$("$wp_cmd" config path --quiet 2>/dev/null || true)
         if [ -n "$wp_config_path" ] && [ -f "$wp_config_path" ]; then
@@ -164,12 +164,12 @@ runner_private_dir() {
         return 0
     fi
 
-    runner_error "Could not find or create a writable private directory."
+    go_error "Could not find or create a writable private directory."
     return 1
 }
 
 # Source: shared/wp-cli
-runner_wp_cli() {
+go_wp_cli() {
     if [ -n "${RUNNER_WP_CLI_CMD:-}" ]; then
         echo "$RUNNER_WP_CLI_CMD"
         return 0
@@ -190,13 +190,13 @@ runner_wp_cli() {
         fi
     done
 
-    runner_error "WP-CLI is required but was not found."
+    go_error "WP-CLI is required but was not found."
     return 1
 }
 
 # --- Command Functions ---
 # Source: commands/backup
-runner_backup() {
+go_backup() {
     local target_folder=""
     local quiet_flag="false"
     local format_flag=""
@@ -217,14 +217,14 @@ runner_backup() {
                 shift
                 ;;
             -*)
-                runner_error "Unknown backup flag: $1"
+                go_error "Unknown backup flag: $1"
                 return 1
                 ;;
             *)
                 if [ -z "$target_folder" ]; then
                     target_folder="$1"
                 else
-                    runner_error "Unexpected backup argument: $1"
+                    go_error "Unexpected backup argument: $1"
                     return 1
                 fi
                 shift
@@ -233,21 +233,21 @@ runner_backup() {
     done
 
     if [ -z "$target_folder" ]; then
-        runner_error "Please provide a folder path."
-        runner_error "Usage: runner backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
+        go_error "Please provide a folder path."
+        go_error "Usage: go backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
         return 1
     fi
 
     if [ ! -d "$target_folder" ]; then
-        runner_error "Folder '$target_folder' not found."
+        go_error "Folder '$target_folder' not found."
         return 1
     fi
 
-    runner_require_command zip || return 1
-    runner_require_command openssl || return 1
+    go_require_command zip || return 1
+    go_require_command openssl || return 1
 
     local wp_cmd
-    wp_cmd=$(runner_wp_cli) || return 1
+    wp_cmd=$(go_wp_cli) || return 1
 
     local full_target_path
     full_target_path=$(cd "$target_folder" && pwd -P) || return 1
@@ -270,15 +270,15 @@ runner_backup() {
     local home_url
     local name
     local database_file="db_export.sql"
-    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
-    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+    home_url=$("$wp_cmd" option get home --path="$site_dir_name" --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
+    name=$("$wp_cmd" option get blogname --path="$site_dir_name" --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
 
     if [ "$quiet_flag" != "true" ]; then
         echo "Exporting database for '$name'..."
     fi
 
-    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null 2> >(runner_filter_insecure_mysql_warning >&2); then
-        runner_error "Database export failed."
+    if ! "$wp_cmd" db export "$site_dir_name/$database_file" --path="$site_dir_name" --add-drop-table --default-character-set=utf8mb4 >/dev/null 2> >(go_filter_insecure_mysql_warning >&2); then
+        go_error "Database export failed."
         cd "$original_dir"
         return 1
     fi
@@ -302,7 +302,7 @@ runner_backup() {
     done
 
     if ! zip -r "$backup_filename" "$site_dir_name" "${zip_exclude_args[@]}" >/dev/null; then
-        runner_error "Failed to zip files."
+        go_error "Failed to zip files."
         rm -f "$site_dir_name/$database_file"
         cd "$original_dir"
         return 1
@@ -343,7 +343,7 @@ runner_backup() {
 }
 
 # Source: commands/migrate
-runner_migrate() {
+go_migrate() {
     local backup_url=""
     local update_urls_flag="false"
 
@@ -358,41 +358,41 @@ runner_migrate() {
                 shift
                 ;;
             -*)
-                runner_error "Unknown migrate flag: $1"
+                go_error "Unknown migrate flag: $1"
                 return 1
                 ;;
             *)
-                runner_error "Unexpected migrate argument: $1"
+                go_error "Unexpected migrate argument: $1"
                 return 1
                 ;;
         esac
     done
 
     if [ -z "$backup_url" ]; then
-        runner_error "Please provide a backup URL or filename."
-        runner_error "Usage: runner migrate --url=<backup.zip> [--update-urls]"
+        go_error "Please provide a backup URL or filename."
+        go_error "Usage: go migrate --url=<backup.zip> [--update-urls]"
         return 1
     fi
 
     echo "Starting site migration..."
 
-    runner_require_command unzip || return 1
-    runner_require_command tar || return 1
+    go_require_command unzip || return 1
+    go_require_command tar || return 1
 
     local wp_cmd
-    wp_cmd=$(runner_wp_cli) || return 1
+    wp_cmd=$(go_wp_cli) || return 1
 
     local home_directory
     home_directory=$(pwd)
     local wp_home
-    wp_home=$("$wp_cmd" option get home --skip-themes --skip-plugins 2> >(runner_filter_insecure_mysql_warning >&2))
+    wp_home=$("$wp_cmd" option get home --skip-themes --skip-plugins 2> >(go_filter_insecure_mysql_warning >&2))
     if [[ "$wp_home" != http* ]]; then
-        runner_error "WordPress not found in current directory. Migration cancelled."
+        go_error "WordPress not found in current directory. Migration cancelled."
         return 1
     fi
 
     local private_dir
-    private_dir=$(runner_private_dir) || return 1
+    private_dir=$(go_private_dir) || return 1
 
     local timedate
     local restore_dir
@@ -418,8 +418,8 @@ runner_migrate() {
 
     if [ ! -f "${private_dir}/${local_file_name}" ]; then
         echo "Downloading from $backup_url..."
-        if ! runner_download_file "$backup_url" "backup_file"; then
-            runner_error "Download failed."
+        if ! go_download_file "$backup_url" "backup_file"; then
+            go_error "Download failed."
             cd "$home_directory"
             return 1
         fi
@@ -444,7 +444,7 @@ runner_migrate() {
     local wordpresspath
     wordpresspath=$(find . -type d -name 'wp-content' -print -quit)
     if [ -z "$wordpresspath" ]; then
-        runner_error "Cannot find wp-content/ in backup. Migration cancelled."
+        go_error "Cannot find wp-content/ in backup. Migration cancelled."
         cd "$home_directory"
         return 1
     fi
@@ -520,7 +520,7 @@ runner_migrate() {
     else
         echo "Importing database from $database..."
         local search_privacy
-        search_privacy=$("$wp_cmd" option get blog_public --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+        search_privacy=$("$wp_cmd" option get blog_public --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
 
         local table_prefix=""
         local current_table_prefix
@@ -528,15 +528,15 @@ runner_migrate() {
             table_prefix=$(grep 'table_prefix' "${backup_root_dir}/wp-config.php" | perl -n -e '/\047(.+)\047/&& print $1' || true)
         fi
 
-        current_table_prefix=$("$wp_cmd" config get table_prefix --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+        current_table_prefix=$("$wp_cmd" config get table_prefix --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
         if [ -n "$table_prefix" ] && [ "$table_prefix" != "$current_table_prefix" ]; then
             echo "Updating table prefix from $current_table_prefix to $table_prefix"
             "$wp_cmd" config set table_prefix "$table_prefix" --skip-plugins --skip-themes
         fi
 
-        "$wp_cmd" db reset --yes --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2)
-        if ! "$wp_cmd" db import "$database" 2> >(runner_filter_insecure_mysql_warning >&2); then
-            runner_error "Database import failed."
+        "$wp_cmd" db reset --yes --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
+        if ! "$wp_cmd" db import "$database" 2> >(go_filter_insecure_mysql_warning >&2); then
+            go_error "Database import failed."
             cd "$home_directory"
             return 1
         fi
@@ -545,7 +545,7 @@ runner_migrate() {
         "$wp_cmd" option update blog_public "$search_privacy" --skip-plugins --skip-themes
 
         local wp_home_imported
-        wp_home_imported=$("$wp_cmd" option get home --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+        wp_home_imported=$("$wp_cmd" option get home --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
         if [ "$update_urls_flag" = "true" ] && [ "$wp_home_imported" != "$wp_home" ]; then
             echo "Updating URLs from $wp_home_imported to $wp_home..."
             "$wp_cmd" search-replace "$wp_home_imported" "$wp_home" --all-tables --report-changed-only --skip-plugins --skip-themes
@@ -563,10 +563,10 @@ runner_migrate() {
     done
 
     local alter_queries
-    alter_queries=$("$wp_cmd" db query "SELECT CONCAT('ALTER TABLE ', TABLE_SCHEMA,'.', TABLE_NAME, ' ENGINE=InnoDB;') FROM information_schema.TABLES WHERE ENGINE = 'MyISAM' AND TABLE_SCHEMA=DATABASE()" --skip-column-names --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2))
+    alter_queries=$("$wp_cmd" db query "SELECT CONCAT('ALTER TABLE ', TABLE_SCHEMA,'.', TABLE_NAME, ' ENGINE=InnoDB;') FROM information_schema.TABLES WHERE ENGINE = 'MyISAM' AND TABLE_SCHEMA=DATABASE()" --skip-column-names --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
     if [ -n "$alter_queries" ]; then
         echo "Converting MyISAM tables to InnoDB..."
-        echo "$alter_queries" | "$wp_cmd" db query --skip-plugins --skip-themes 2> >(runner_filter_insecure_mysql_warning >&2)
+        echo "$alter_queries" | "$wp_cmd" db query --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
     fi
 
     "$wp_cmd" rewrite flush
@@ -582,4 +582,4 @@ runner_migrate() {
 }
 
 # Pass all script arguments to the main function.
-runner_main "$@"
+go_main "$@"

@@ -2,19 +2,19 @@
 
 set -euo pipefail
 
-OUTPUT_FILE="runner.sh"
+OUTPUT_FILE="go.sh"
 MAIN_SCRIPT="main"
 LIB_DIR="shared"
 COMMANDS_DIR="commands"
 
 if [ ! -f "$MAIN_SCRIPT" ] || [ ! -d "$COMMANDS_DIR" ] || [ ! -d "$LIB_DIR" ]; then
-    echo "Error: run compile.sh from the runner directory." >&2
+    echo "Error: run compile.sh from the go directory." >&2
     exit 1
 fi
 
 echo "Compiling $OUTPUT_FILE..."
 
-grep -v 'runner_main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
+grep -v 'go_main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
 
 {
     echo ""
@@ -33,7 +33,7 @@ grep -v 'runner_main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
     done
 
     echo '# Pass all script arguments to the main function.'
-    echo 'runner_main "$@"'
+    echo 'go_main "$@"'
 } >> "$OUTPUT_FILE"
 
 chmod +x "$OUTPUT_FILE"
