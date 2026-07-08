@@ -1,4 +1,34 @@
 plak_status() {
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak status [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = true ]; then
+        local deps_json=""
+        local sep=""
+        local dep status
+        for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
+            if plak_command_exists "$dep"; then
+                status="found"
+            else
+                status="missing"
+            fi
+            deps_json="${deps_json}${sep}\"${dep}\":\"${status}\""
+            sep=","
+        done
+
+        printf '{"os":"%s","plak_home":"%s","sites_home":"%s","ssh_config":"%s","hosts_file":"%s","dependencies":{%s}}\n' \
+            "$PLAK_OS" "$PLAK_HOME" "$PLAK_SITE_DIR" "$PLAK_SSH_CONFIG" "$PLAK_HOSTS_FILE" "$deps_json"
+        return 0
+    fi
+
     plak_ui_title "Plak status"
     echo ""
     echo "OS:          $PLAK_OS"
@@ -20,11 +50,19 @@ plak_status() {
     done
 
     if [ -f "$CONFIG_FILE" ] && plak_command_exists "$CADDY_CMD" && plak_command_exists gum; then
-        echo ""
-        plak_site_status
+        if [ "$json_mode" = true ]; then
+            plak_site_status --json
+        else
+            echo ""
+            plak_site_status
+        fi
     else
-        echo ""
-        echo "Site services: not installed yet"
-        echo "Dashboard:     $(url_for plak.localhost)"
+        if [ "$json_mode" = true ]; then
+            printf '{"site_services":"not_installed","dashboard":"%s"}\n' "$(url_for plak.localhost)"
+        else
+            echo ""
+            echo "Site services: not installed yet"
+            echo "Dashboard:     $(url_for plak.localhost)"
+        fi
     fi
 }

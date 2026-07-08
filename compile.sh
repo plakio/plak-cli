@@ -14,7 +14,11 @@ fi
 
 echo "Compiling $OUTPUT_FILE..."
 
-grep -v 'main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
+# Use -F (fixed string) + -x (whole line) so only the exact `main "$@"`
+# invocation at the bottom of `main` is stripped. A bare `grep -vF` would
+# also remove lines like `plak_hosts "$@"` because "main \"$@\"" is a
+# substring of "hosts \"$@\"".
+grep -vFx 'main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
 
 {
     echo ""

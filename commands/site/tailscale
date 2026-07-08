@@ -2,7 +2,7 @@
 TAILSCALE_CONFIG="$APP_DIR/tailscale"
 
 plak_site_tailscale_enable() {
-    local hostname="$1"
+    local hostname="${1:-}"
 
     # Try to auto-detect hostname if not provided
     if [ -z "$hostname" ]; then
@@ -15,6 +15,10 @@ plak_site_tailscale_enable() {
 
     # Interactive mode if still no hostname
     if [ -z "$hostname" ]; then
+        if [ ! -t 0 ] || ! plak_command_exists gum; then
+            gum style --foreground red "❌ Error: Could not auto-detect Tailscale hostname. Pass it explicitly: plak tailscale enable <hostname>"
+            exit 1
+        fi
         echo "📝 Enter your Tailscale machine hostname"
         echo "   (e.g., mycomputer.tail1234.ts.net)"
         hostname=$(gum input --width 0 --placeholder "your-machine.tailnet.ts.net")

@@ -182,24 +182,28 @@ plak trust
 plak upgrade
 ```
 
-### SSH Servers
+### SSH Remotes
 
 ```bash
-plak server list
-plak server add
-plak server connect
-plak server delete
+plak remote list
+plak remote add <name> --host <host> --user <user> [--port <port>] [--path <path>]
+plak remote connect [name]
+plak remote delete <name> --yes
+plak remote attach <remote> <site>
+plak remote detach <site>
 ```
 
-### Domains
+`remote add` records an SSH host in `~/.ssh/config` and stores the remote WordPress path as `# plak-remote-path: <path>` in the same block. Once `remote attach` binds a remote to a site, `plak push` and `plak pull` skip their interactive prompts.
+
+### Hosts
 
 ```bash
-plak domain list
-plak domain add
-plak domain delete
+plak hosts list
+plak hosts add <ip> <domain>
+plak hosts delete <domain> --yes
 ```
 
-`domain add/delete` creates a timestamped backup next to the hosts file before writing. On `/etc/hosts`, this usually requires `sudo`.
+`hosts add/delete` creates a timestamped backup next to the hosts file before writing. On `/etc/hosts`, this usually requires `sudo`.
 
 ### SSH Keys
 

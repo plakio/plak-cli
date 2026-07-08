@@ -5,8 +5,24 @@
 SHARE_PROXY_PORT=19876
 
 plak_site_share() {
-    local site_name="$1"
-    
+    local print_url_only=false
+    local no_install=false
+    local positional=()
+
+    for arg in "$@"; do
+        case "$arg" in
+            --print-url) print_url_only=true ;;
+            --no-install) no_install=true ;;
+            -h|--help)
+                echo "Usage: plak share [<site>] [--print-url] [--no-install]"
+                exit 0
+                ;;
+            *) positional+=("$arg") ;;
+        esac
+    done
+
+    local site_name="${positional[0]:-}"
+
     # --- 1. Validate Site ---
     if [ -z "$site_name" ]; then
         # Interactive mode: let user select a site
@@ -16,15 +32,20 @@ plak_site_share() {
                 all_sites+=("$(basename "$site_dir" .localhost)")
             fi
         done
-        
+
         if [ ${#all_sites[@]} -eq 0 ]; then
             gum style --foreground red "Error: No sites found. Create one with 'plak add <name>'."
             exit 1
         fi
-        
+
+        if [ "$print_url_only" = true ]; then
+            gum style --foreground red "Error: --print-url requires a site name (no interactive picker in non-TTY mode)."
+            exit 1
+        fi
+
         echo "Select a site to share:"
         site_name=$(gum choose "${all_sites[@]}")
-        
+
         if [ -z "$site_name" ]; then
             echo "Cancelled."
             exit 0
@@ -65,18 +86,32 @@ plak_site_share() {
         fi
         
         if [ -n "$install_cmd" ]; then
-            if gum confirm "Install cloudflared via ${install_name}?"; then
-                echo "Installing cloudflared..."
+            if [ "$no_install" = true ]; then
+                gum style --foreground red "Error: --no-install set but cloudflared is not installed."
+                exit 1
+            fi
+            if [ "$print_url_only" = false ] && [ -t 0 ] && plak_command_exists gum; then
+                if gum confirm "Install cloudflared via ${install_name}?"; then
+                    echo "Installing cloudflared..."
+                    eval "$install_cmd"
+                    if ! command -v cloudflared &> /dev/null; then
+                        gum style --foreground red "Error: Failed to install cloudflared."
+                        exit 1
+                    fi
+                    echo "cloudflared installed successfully."
+                    echo ""
+                else
+                    gum style --foreground red "Error: cloudflared is required."
+                    exit 1
+                fi
+            else
+                # Non-interactive: just install without prompting
+                echo "Installing cloudflared via ${install_name}..."
                 eval "$install_cmd"
                 if ! command -v cloudflared &> /dev/null; then
                     gum style --foreground red "Error: Failed to install cloudflared."
                     exit 1
                 fi
-                echo "cloudflared installed successfully."
-                echo ""
-            else
-                gum style --foreground red "Error: cloudflared is required."
-                exit 1
             fi
         else
             gum style --foreground red "Error: cloudflared not found."
@@ -164,7 +199,17 @@ plak_site_share() {
     
     # Extract just the hostname from the URL
     local public_host="${public_url#https://}"
-    
+
+    if [ "$print_url_only" = true ]; then
+        # Agent mode: print just the URL and exit
+        printf '%s\n' "$public_url"
+        kill $tunnel_pid 2>/dev/null
+        wait $tunnel_pid 2>/dev/null
+        kill $proxy_pid 2>/dev/null
+        wait $proxy_pid 2>/dev/null
+        exit 0
+    fi
+
     gum style --foreground 212 --bold "Public URL: $(plak_terminal_link "$public_url")"
     echo ""
     echo "Share this URL with anyone to give them access to your site."

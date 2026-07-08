@@ -1,0 +1,818 @@
+plak_remote_parse_hosts() {
+    local config_path="${1:-$PLAK_SSH_CONFIG}"
+
+    [ -f "$config_path" ] || return 0
+
+    awk '
+        BEGIN { IGNORECASE = 1 }
+        /^[ \t]*Host[ \t]+/ {
+            if (cur_name != "") printf "%s|%s|%s|%s|%s|%s\n", cur_name, cur_host, cur_user, cur_port, cur_idf, cur_path
+            cur_name = ""; cur_host = ""; cur_user = ""; cur_port = ""; cur_idf = ""; cur_path = ""
+            for (i = 2; i <= NF; i++) {
+                if ($i !~ /[*?]/) { cur_name = $i; break }
+            }
+            next
+        }
+        /^[ \t]+HostName[ \t]+/ { cur_host = $2; next }
+        /^[ \t]+User[ \t]+/ { cur_user = $2; next }
+        /^[ \t]+Port[ \t]+/ { cur_port = $2; next }
+        /^[ \t]+IdentityFile[ \t]+/ { cur_idf = $2; next }
+        /^[ \t]+# plak-remote-path[ \t]*:/ {
+            sub(/^[ \t]+# plak-remote-path[ \t]*:[ \t]*/, "")
+            cur_path = $0
+            next
+        }
+        END { if (cur_name != "") printf "%s|%s|%s|%s|%s|%s\n", cur_name, cur_host, cur_user, cur_port, cur_idf, cur_path }
+    ' "$config_path"
+}
+
+plak_remote_host_exists() {
+    local name="$1"
+    plak_remote_parse_hosts | awk -F'|' -v target="$name" '$1 == target { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+plak_remote_get_host() {
+    local name="$1"
+    plak_remote_parse_hosts | awk -F'|' -v target="$name" '$1 == target { print; exit }'
+}
+
+plak_remote_ensure_config() {
+    local config_dir
+    config_dir=$(dirname "$PLAK_SSH_CONFIG")
+
+    if [ ! -d "$config_dir" ]; then
+        mkdir -p "$config_dir"
+        chmod 700 "$config_dir"
+    fi
+
+    if [ ! -f "$PLAK_SSH_CONFIG" ]; then
+        : > "$PLAK_SSH_CONFIG"
+        chmod 600 "$PLAK_SSH_CONFIG"
+    fi
+}
+
+plak_remote_append_config() {
+    local name="$1" hostname="$2" user="$3" port="$4" identity_file="${5:-}" remote_path="${6:-}"
+
+    plak_remote_ensure_config
+
+    {
+        echo ""
+        echo "Host $name"
+        echo "    HostName $hostname"
+        echo "    User $user"
+        echo "    Port $port"
+        if [ -n "$identity_file" ]; then
+            echo "    IdentityFile $identity_file"
+        fi
+        if [ -n "$remote_path" ]; then
+            echo "    # plak-remote-path: $remote_path"
+        fi
+    } >> "$PLAK_SSH_CONFIG"
+}
+
+plak_remote_remove_config() {
+    local name="$1" tmp_file
+
+    [ -f "$PLAK_SSH_CONFIG" ] || return 1
+    tmp_file=$(mktemp)
+
+    awk -v target="$name" '
+        /^[ \t]*Host[ \t]+/ {
+            skip = 0
+            for (i = 2; i <= NF; i++) {
+                if ($i == target) { skip = 1; found = 1; break }
+            }
+        }
+        skip == 0 { print }
+        END { if (!found) exit 2 }
+    ' "$PLAK_SSH_CONFIG" > "$tmp_file" || {
+        local code=$?
+        rm -f "$tmp_file"
+        return "$code"
+    }
+
+    cat "$tmp_file" > "$PLAK_SSH_CONFIG"
+    rm -f "$tmp_file"
+}
+
+plak_remote_replace_config() {
+    local old_name="$1" new_name="$2" hostname="$3" user="$4" port="$5" identity_file="${6:-}" remote_path="${7:-}"
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    awk -v old="$old_name" -v new="$new_name" -v host="$hostname" -v usr="$user" -v prt="$port" -v idf="$identity_file" -v rp="$remote_path" '
+        function emit_new() {
+            print ""
+            print "Host " new
+            print "    HostName " host
+            print "    User " usr
+            print "    Port " prt
+            if (idf != "") print "    IdentityFile " idf
+            if (rp != "") print "    # plak-remote-path: " rp
+            pending = 0
+        }
+        BEGIN { skip = 0; found = 0; pending = 0 }
+        /^[ \t]*Host[ \t]+/ {
+            if (skip == 1 && pending == 1) emit_new()
+            skip = 0
+            for (i = 2; i <= NF; i++) {
+                if ($i == old) { skip = 1; found = 1; pending = 1; break }
+            }
+            if (skip == 0) print
+            next
+        }
+        skip == 0 { print }
+        END { if (pending == 1) emit_new() }
+    ' "$PLAK_SSH_CONFIG" > "$tmp_file" || {
+        local code=$?
+        rm -f "$tmp_file"
+        return "$code"
+    }
+
+    cat "$tmp_file" > "$PLAK_SSH_CONFIG"
+    rm -f "$tmp_file"
+}
+
+plak_remote_list() {
+    local entries managed_only=0 unmanaged_only=0 json=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --managed)   managed_only=1; shift 1 ;;
+            --unmanaged) unmanaged_only=1; shift 1 ;;
+            --json)      json=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown list flag '$1'"
+                exit 1
+                ;;
+            *) shift 1 ;;
+        esac
+    done
+
+    entries=$(plak_remote_parse_hosts)
+    if [ -z "$entries" ]; then
+        if [ "$json" -eq 1 ]; then
+            printf "[]\n"
+        else
+            plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+        fi
+        return 0
+    fi
+
+    local filtered
+    if [ "$managed_only" = 1 ]; then
+        filtered=$(printf "%s\n" "$entries" | awk -F'|' '$6 != ""')
+    elif [ "$unmanaged_only" = 1 ]; then
+        filtered=$(printf "%s\n" "$entries" | awk -F'|' '$6 == ""')
+    else
+        filtered="$entries"
+    fi
+
+    if [ -z "$filtered" ]; then
+        if [ "$json" -eq 1 ]; then
+            printf "[]\n"
+            return 0
+        fi
+        if [ "$managed_only" = 1 ]; then
+            plak_ui_warn "No managed remotes (with plak-remote-path) found."
+        else
+            plak_ui_warn "No unmanaged remotes (without plak-remote-path) found."
+        fi
+        return 0
+    fi
+
+    if [ "$json" -eq 1 ]; then
+        printf "%s\n" "$filtered" | awk -F'|' '
+            function esc(s) {
+                gsub(/\\/, "\\\\", s)
+                gsub(/"/, "\\\"", s)
+                gsub(/\n/, "\\n", s)
+                return s
+            }
+            BEGIN { first = 1; printf "[" }
+            {
+                if (!first) printf ","
+                first = 0
+                printf "{\"name\":\"%s\",\"host\":\"%s\",\"user\":\"%s\",\"port\":\"%s\",\"identity\":\"%s\",\"path\":\"%s\"}",
+                    esc($1), esc($2), esc($3), esc($4), esc($5), esc($6)
+            }
+            END { printf "]\n" }
+        '
+        return 0
+    fi
+
+    if plak_command_exists gum && [ -t 1 ]; then
+        {
+            echo "Name"$'\t'"Host"$'\t'"User"$'\t'"Port"$'\t'"Path"
+            printf "%s\n" "$filtered" | awk -F'|' 'BEGIN { OFS="\t" } { print $1, $2, $3, $4, ($6 == "" ? "(no path)" : $6) }'
+        } | gum table --columns "Name,Host,User,Port,Path" --widths "16,28,12,6,22" --border rounded --padding "0 1"
+    else
+        printf "%-16s %-28s %-12s %-6s %s\n" "Name" "Host" "User" "Port" "Path"
+        printf "%-16s %-28s %-12s %-6s %s\n" "----------------" "----------------------------" "------------" "------" "----------------------"
+        printf "%s\n" "$filtered" | awk -F'|' '{ p = ($6 == "" ? "(no path)" : $6); printf "%-16s %-28s %-12s %-6s %s\n", $1, $2, $3, $4, p }'
+    fi
+}
+
+plak_remote_pick_identity() {
+    local identity_file=""
+    local identity_choice
+    identity_choice=$(find "$HOME/.ssh" -maxdepth 1 -type f \
+        ! -name '.*' \
+        ! -name '*.pub' \
+        ! -name 'authorized_keys' \
+        ! -name 'known_hosts*' \
+        ! -name '*_known_hosts' \
+        ! -name 'config' \
+        -exec sh -c 'head -n 1 "$1" 2>/dev/null | grep -q "PRIVATE KEY"' sh {} \; \
+        -print 2>/dev/null | sort || true)
+    if [ -n "$identity_choice" ]; then
+        identity_file=$(echo "$identity_choice" | gum filter --placeholder "Choose identity file or press Esc") || identity_file=""
+    fi
+    if [ -z "$identity_file" ]; then
+        identity_file=$(gum input --prompt "IdentityFile: " --placeholder "~/.ssh/id_ed25519")
+    fi
+    printf '%s\n' "$identity_file"
+}
+
+plak_remote_prompt_path() {
+    local default="${1:-public/}"
+    local current="${2:-}"
+    local value
+    if [ -n "$current" ]; then
+        value=$(gum input --width 0 --value "$current" --prompt "Remote path (WordPress root): ")
+    else
+        value=$(gum input --width 0 --value "$default" --prompt "Remote path (WordPress root): ")
+    fi
+    printf '%s\n' "$value"
+}
+
+plak_remote_add() {
+    local name="" host="" user="" port="22" identity_file="" remote_path="public/"
+    local set_identity=0
+    local positional=()
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --host) host="$2"; shift 2 ;;
+            --user) user="$2"; shift 2 ;;
+            --port) port="$2"; shift 2 ;;
+            --path) remote_path="$2"; shift 2 ;;
+            --identity) identity_file="$2"; set_identity=1; shift 2 ;;
+            --no-identity) identity_file=""; set_identity=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                plak_display_command_help remote
+                exit 1
+                ;;
+            *) positional+=("$1"); shift 1 ;;
+        esac
+    done
+
+    if [ ${#positional[@]} -gt 0 ]; then
+        name="${positional[0]}"
+    fi
+
+    local have_all=1
+    [ -z "$name" ] && have_all=0
+    [ -z "$host" ] && have_all=0
+    [ -z "$user" ] && have_all=0
+
+    if [ "$have_all" -eq 0 ]; then
+        plak_require_gum
+        plak_ui_title "Add Plak remote"
+    fi
+
+    if [ -z "$name" ]; then
+        while true; do
+            name=$(gum input --prompt "Name: " --placeholder "prod")
+            [ -n "$name" ] || return 0
+
+            if ! plak_validate_hostname_alias "$name"; then
+                plak_ui_error "Use only letters, numbers, dots, underscores and hyphens."
+                continue
+            fi
+
+            if plak_remote_host_exists "$name"; then
+                plak_ui_error "Remote '$name' already exists."
+                continue
+            fi
+            break
+        done
+    else
+        if ! plak_validate_hostname_alias "$name"; then
+            plak_ui_error "Invalid name '$name'. Use only letters, numbers, dots, underscores and hyphens."
+            exit 1
+        fi
+        if plak_remote_host_exists "$name"; then
+            plak_ui_error "Remote '$name' already exists."
+            exit 1
+        fi
+    fi
+
+    if [ -z "$host" ]; then
+        host=$(gum input --prompt "Hostname/IP: " --placeholder "example.com")
+        [ -n "$host" ] || return 0
+    fi
+
+    if [ -z "$user" ]; then
+        user=$(gum input --prompt "User: " --placeholder "ubuntu")
+        [ -n "$user" ] || return 0
+    fi
+
+    if ! plak_validate_port "$port"; then
+        plak_ui_error "Invalid port '$port'. Use a number from 1 to 65535."
+        exit 1
+    fi
+
+    if [ "$have_all" -eq 0 ] && [ "$set_identity" -eq 0 ]; then
+        if gum confirm "Use an identity file?"; then
+            identity_file=$(plak_remote_pick_identity)
+            set_identity=1
+        fi
+    fi
+
+    if [ "$have_all" -eq 0 ] && [ -z "$remote_path" -o "$remote_path" = "public/" ]; then
+        local prompted_path
+        prompted_path=$(plak_remote_prompt_path "public/")
+        [ -n "$prompted_path" ] || return 0
+        remote_path="$prompted_path"
+    fi
+
+    if [ "$have_all" -eq 0 ]; then
+        echo ""
+        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
+            "Host $name" \
+            "HostName $host" \
+            "User $user" \
+            "Port $port" \
+            "IdentityFile ${identity_file:-none}" \
+            "RemotePath ${remote_path}"
+
+        if ! gum confirm "Save this remote?"; then
+            plak_ui_warn "Cancelled."
+            return 0
+        fi
+    fi
+
+    if [ "$set_identity" -eq 0 ]; then
+        identity_file=""
+    fi
+
+    plak_remote_append_config "$name" "$host" "$user" "$port" "$identity_file" "$remote_path"
+    plak_ui_success "Remote '$name' added to $PLAK_SSH_CONFIG."
+}
+
+plak_remote_edit() {
+    local name="" newname="" host="" user="" port="" remote_path="" identity_file=""
+    local identity_mode="unchanged"
+    local positional=()
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --newname) newname="$2"; shift 2 ;;
+            --host) host="$2"; shift 2 ;;
+            --user) user="$2"; shift 2 ;;
+            --port) port="$2"; shift 2 ;;
+            --path) remote_path="$2"; shift 2 ;;
+            --identity) identity_file="$2"; identity_mode="set"; shift 2 ;;
+            --no-identity) identity_file=""; identity_mode="cleared"; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                plak_display_command_help remote
+                exit 1
+                ;;
+            *) positional+=("$1"); shift 1 ;;
+        esac
+    done
+
+    if [ ${#positional[@]} -gt 0 ]; then
+        name="${positional[0]}"
+    fi
+
+    local have_any=0
+    [ -n "$newname" ] && have_any=1
+    [ -n "$host" ] && have_any=1
+    [ -n "$user" ] && have_any=1
+    [ -n "$port" ] && have_any=1
+    [ -n "$remote_path" ] && have_any=1
+    [ "$identity_mode" != "unchanged" ] && have_any=1
+
+    if [ -z "$name" ]; then
+        plak_require_gum
+        local entries
+        entries=$(plak_remote_parse_hosts)
+        if [ -z "$entries" ]; then
+            plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+            return 0
+        fi
+        name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote to edit")
+        [ -n "$name" ] || return 0
+    fi
+
+    local current
+    current=$(plak_remote_get_host "$name")
+    if [ -z "$current" ]; then
+        plak_ui_error "Remote '$name' does not exist."
+        exit 1
+    fi
+
+    local cur_host cur_user cur_port cur_idf cur_path
+    IFS='|' read -r _ cur_host cur_user cur_port cur_idf cur_path <<< "$current"
+
+    if [ "$have_any" -eq 0 ]; then
+        plak_require_gum
+        plak_ui_title "Edit remote: $name"
+
+        newname=$(gum input --prompt "Name: " --value "$name")
+        [ -n "$newname" ] || return 0
+
+        host=$(gum input --prompt "Hostname/IP: " --value "$cur_host")
+        [ -n "$host" ] || return 0
+
+        user=$(gum input --prompt "User: " --value "$cur_user")
+        [ -n "$user" ] || return 0
+
+        while true; do
+            port=$(gum input --prompt "Port: " --value "${cur_port:-22}")
+            if plak_validate_port "$port"; then
+                break
+            fi
+            plak_ui_error "Invalid port. Use a number from 1 to 65535."
+        done
+
+        if gum confirm "Use an identity file?" --affirmative "Yes" --negative "Keep current"; then
+            identity_file=$(plak_remote_pick_identity)
+            identity_mode="set"
+        else
+            identity_file="$cur_idf"
+            identity_mode="unchanged"
+        fi
+
+        remote_path=$(plak_remote_prompt_path "public/" "$cur_path")
+        [ -n "$remote_path" ] || return 0
+
+        echo ""
+        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
+            "Host $newname" \
+            "HostName $host" \
+            "User $user" \
+            "Port $port" \
+            "IdentityFile ${identity_file:-none}" \
+            "RemotePath ${remote_path}"
+
+        if ! gum confirm "Save these changes?"; then
+            plak_ui_warn "Cancelled."
+            return 0
+        fi
+    fi
+
+    [ -z "$newname" ] && newname="$name"
+    [ -z "$host" ] && host="$cur_host"
+    [ -z "$user" ] && user="$cur_user"
+    [ -z "$port" ] && port="${cur_port:-22}"
+    [ -z "$remote_path" ] && remote_path="$cur_path"
+    case "$identity_mode" in
+        unchanged) identity_file="$cur_idf" ;;
+        cleared)   identity_file="" ;;
+        set)       : ;;
+    esac
+
+    if [ "$newname" != "$name" ]; then
+        if ! plak_validate_hostname_alias "$newname"; then
+            plak_ui_error "Invalid new name '$newname'."
+            exit 1
+        fi
+        if plak_remote_host_exists "$newname"; then
+            plak_ui_error "Remote '$newname' already exists."
+            exit 1
+        fi
+    fi
+
+    if ! plak_validate_port "$port"; then
+        plak_ui_error "Invalid port '$port'."
+        exit 1
+    fi
+
+    plak_remote_replace_config "$name" "$newname" "$host" "$user" "$port" "$identity_file" "$remote_path"
+    plak_ui_success "Remote '$newname' updated."
+}
+
+plak_remote_delete() {
+    local name="" yes=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *) name="$1"; shift 1 ;;
+        esac
+    done
+
+    if [ -z "$name" ]; then
+        plak_require_gum
+        local entries
+        entries=$(plak_remote_parse_hosts)
+        if [ -z "$entries" ]; then
+            plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+            return 0
+        fi
+        name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote to delete")
+        [ -n "$name" ] || return 0
+    fi
+
+    if [ -z "$(plak_remote_get_host "$name")" ]; then
+        plak_ui_error "Remote '$name' does not exist."
+        exit 1
+    fi
+
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Delete remote '$name'?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        else
+            plak_ui_error "Refusing to delete '$name' without --yes in non-interactive mode."
+            exit 1
+        fi
+    fi
+
+    if plak_remote_remove_config "$name"; then
+        plak_ui_success "Remote '$name' deleted."
+    else
+        plak_ui_error "Could not delete remote '$name'."
+        exit 1
+    fi
+}
+
+plak_remote_connect() {
+    local name="${1:-}"
+    local entries
+    entries=$(plak_remote_parse_hosts)
+
+    if [ -z "$entries" ]; then
+        plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+        return 0
+    fi
+
+    if [ -z "$name" ]; then
+        plak_require_gum
+        name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote")
+        [ -n "$name" ] || return 0
+    fi
+
+    if ! plak_validate_hostname_alias "$name"; then
+        plak_ui_error "Invalid remote alias: $name"
+        exit 1
+    fi
+
+    if [ -z "$(plak_remote_get_host "$name")" ]; then
+        plak_ui_error "Remote '$name' does not exist in $PLAK_SSH_CONFIG."
+        exit 1
+    fi
+
+    local remote_path
+    remote_path=$(plak_remote_get_host "$name" | awk -F'|' '{print $6}')
+
+    plak_ui_success "Connecting to $name..."
+    if [ -n "$remote_path" ]; then
+        ssh -t "$name" "cd $(shell_quote "$remote_path") && exec \$SHELL"
+    else
+        ssh "$name"
+    fi
+}
+
+plak_remote_attach() {
+    local remote_name="" site_name="" yes=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *)
+                if [ -z "$remote_name" ]; then
+                    remote_name="$1"
+                elif [ -z "$site_name" ]; then
+                    site_name="$1"
+                fi
+                shift 1
+                ;;
+        esac
+    done
+
+    if [ -n "$remote_name" ] && [ -n "$site_name" ]; then
+        plak_remote_attach_to "$remote_name" "$site_name" "$yes"
+        return $?
+    fi
+
+    plak_require_gum
+
+    local entries sites site_dirs
+    entries=$(plak_remote_parse_hosts)
+    if [ -z "$entries" ]; then
+        plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG. Add one with 'plak remote add'."
+        return 0
+    fi
+
+    if [ -z "$site_name" ]; then
+        site_dirs=$(find "$SITES_DIR" -maxdepth 1 -mindepth 1 -type d -name '*.localhost' 2>/dev/null | sort)
+        if [ -z "$site_dirs" ]; then
+            plak_ui_warn "No Plak sites found under $SITES_DIR."
+            return 0
+        fi
+        sites=$(printf "%s\n" "$site_dirs" | awk -F/ '{print $NF}' | sed 's/\.localhost$//')
+        site_name=$(printf "%s\n" "$sites" | gum filter --placeholder "Choose site to attach")
+        [ -n "$site_name" ] || return 0
+    fi
+
+    if [ -z "$remote_name" ]; then
+        remote_name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote to attach")
+        [ -n "$remote_name" ] || return 0
+    fi
+
+    plak_remote_attach_to "$remote_name" "$site_name" "$yes"
+}
+
+plak_remote_attach_to() {
+    local remote_name="$1" site_name="$2" yes="${3:-0}"
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local binding_file="$site_dir/.remote"
+
+    if [ ! -d "$site_dir" ]; then
+        plak_ui_error "Site '$site_name' does not exist under $SITES_DIR."
+        exit 1
+    fi
+
+    if [ -z "$(plak_remote_get_host "$remote_name")" ]; then
+        plak_ui_error "Remote '$remote_name' does not exist in $PLAK_SSH_CONFIG."
+        exit 1
+    fi
+
+    local remote_path
+    remote_path=$(plak_remote_get_host "$remote_name" | awk -F'|' '{print $6}')
+    if [ -z "$remote_path" ]; then
+        plak_ui_warn "Remote '$remote_name' has no remote_path set. Run 'plak remote edit $remote_name' to set one — push/pull will still ask for the path until then."
+    fi
+
+    if [ -f "$binding_file" ]; then
+        local current_binding
+        current_binding=$(cat "$binding_file")
+        if [ "$current_binding" = "$remote_name" ]; then
+            plak_ui_warn "Site '$site_name' is already attached to '$remote_name'."
+            return 0
+        fi
+        if [ "$yes" -eq 0 ]; then
+            if [ -t 0 ] && plak_command_exists gum; then
+                if ! gum confirm "Site '$site_name' is already attached to '$current_binding'. Replace with '$remote_name'?"; then
+                    plak_ui_warn "Cancelled."
+                    return 0
+                fi
+            else
+                plak_ui_error "Site '$site_name' is already attached to '$current_binding'. Use --yes to replace in non-interactive mode."
+                exit 1
+            fi
+        fi
+    fi
+
+    printf '%s\n' "$remote_name" > "$binding_file"
+    plak_ui_success "Attached '$remote_name' to site '$site_name'."
+}
+
+plak_remote_detach() {
+    local site_name="" yes=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
+    done
+
+    if [ -z "$site_name" ]; then
+        plak_require_gum
+
+        local site_dirs sites binding_files
+        site_dirs=$(find "$SITES_DIR" -maxdepth 1 -mindepth 1 -type d -name '*.localhost' 2>/dev/null | sort)
+        if [ -z "$site_dirs" ]; then
+            plak_ui_warn "No Plak sites found under $SITES_DIR."
+            return 0
+        fi
+
+        binding_files=$(printf "%s\n" "$site_dirs" | while read -r d; do
+            f="$d/.remote"
+            if [ -f "$f" ]; then
+                printf "%s\n" "${d##*/}" | sed 's/\.localhost$//'
+            fi
+        done)
+
+        if [ -z "$binding_files" ]; then
+            plak_ui_warn "No attached remotes found."
+            return 0
+        fi
+
+        site_name=$(printf "%s\n" "$binding_files" | gum filter --placeholder "Choose site to detach")
+        [ -n "$site_name" ] || return 0
+    fi
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local binding_file="$site_dir/.remote"
+
+    if [ ! -d "$site_dir" ]; then
+        plak_ui_error "Site '$site_name' does not exist under $SITES_DIR."
+        exit 1
+    fi
+
+    if [ ! -f "$binding_file" ]; then
+        plak_ui_warn "Site '$site_name' has no remote attached."
+        return 0
+    fi
+
+    local current_binding
+    current_binding=$(cat "$binding_file")
+
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Detach site '$site_name' from remote '$current_binding'?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        else
+            plak_ui_error "Site '$site_name' is attached to '$current_binding'. Use --yes to detach in non-interactive mode."
+            exit 1
+        fi
+    fi
+
+    rm -f "$binding_file"
+    plak_ui_success "Detached '$site_name' from '$current_binding'."
+}
+
+plak_remote_get_binding() {
+    local site_name="$1"
+    local binding_file="$SITES_DIR/$site_name.localhost/.remote"
+
+    [ -f "$binding_file" ] || return 1
+    local remote_name
+    remote_name=$(cat "$binding_file")
+    [ -n "$remote_name" ] || return 1
+
+    local host_data
+    host_data=$(plak_remote_get_host "$remote_name")
+    [ -n "$host_data" ] || return 2
+
+    local remote_path
+    remote_path=$(printf "%s\n" "$host_data" | awk -F'|' '{print $6}')
+    [ -n "$remote_path" ] || return 3
+
+    printf '%s|%s\n' "$remote_name" "$remote_path"
+    return 0
+}
+
+plak_remote() {
+    local action="${1:-help}"
+    if [ "$#" -gt 0 ]; then
+        shift
+    fi
+
+    case "$action" in
+        list|view)
+            plak_remote_list "$@"
+            ;;
+        connect)
+            plak_remote_connect "$@"
+            ;;
+        add|create)
+            plak_remote_add "$@"
+            ;;
+        edit|update)
+            plak_remote_edit "$@"
+            ;;
+        delete|remove)
+            plak_remote_delete "$@"
+            ;;
+        attach)
+            plak_remote_attach "$@"
+            ;;
+        detach)
+            plak_remote_detach "$@"
+            ;;
+        help|--help|-h)
+            plak_display_command_help remote
+            ;;
+        *)
+            plak_ui_error "Unknown remote action '$action'"
+            plak_display_command_help remote
+            exit 1
+            ;;
+    esac
+}

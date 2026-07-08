@@ -69,8 +69,8 @@ Usage:
   plak <command> [arguments]
 
 Commands:
-  server      Manage SSH server connections
-  domain      Manage local hosts entries
+  remote      Manage SSH remotes and site bindings
+  hosts       Manage entries in /etc/hosts
   sshkey      Manage SSH keys
   add         Create a WordPress or plain local site
   delete      Delete a local site
@@ -99,8 +99,8 @@ Commands:
   help        Show this help
 
 Examples:
-  plak server list
-  plak server connect
+  plak remote list
+  plak remote connect
   plak status
 HELP
 }
@@ -109,29 +109,34 @@ plak_display_command_help() {
     local command="${1:-}"
 
     case "$command" in
-        server)
+        remote)
             cat <<'HELP'
 Usage:
-  plak server <action>
+  plak remote <action> [args]
 
 Actions:
-  list        List hosts from ~/.ssh/config
-  connect     Pick a host with gum and connect through ssh
-  add         Add a new SSH host interactively
-  delete      Delete an SSH host interactively
-  help        Show server help
+  list        List hosts from ~/.ssh/config (use --managed, --unmanaged, or --json)
+  add         Add a remote. Flags: --host --user [--port] [--path] [--identity|--no-identity]
+  edit        Edit a remote. Flags: --newname --host --user --port --path --identity --no-identity
+  delete      Delete a remote. Use --yes to skip confirmation
+  connect     ssh into a remote (cd into remote_path)
+  attach      Bind a remote to a Plak site. Use --yes to skip replace confirmation
+  detach      Unbind a remote from a Plak site. Use --yes to skip confirmation
+  help        Show remote help
+
+Agent-friendly: every action accepts non-interactive flags. See 'plak remote help' for details.
 HELP
             ;;
-        domain)
+        hosts)
             cat <<'HELP'
 Usage:
-  plak domain <action>
+  plak hosts <action>
 
 Actions:
   list        List non-comment entries from /etc/hosts
-  add         Add a hosts entry interactively
-  delete      Delete a hosts entry interactively
-  help        Show domain help
+  add         Add a hosts entry (positional: <ip> <domain>)
+  delete      Delete a hosts entry (use --yes in non-interactive mode)
+  help        Show hosts help
 HELP
             ;;
         sshkey)
@@ -166,16 +171,16 @@ HELP
             echo "Usage: plak status"
             ;;
         add)
-            echo "Usage: plak add <name> [--plain]"
+            echo "Usage: plak add <name> [--plain] [--no-reload]"
             ;;
         delete)
-            echo "Usage: plak delete <name> [--force]"
+            echo "Usage: plak delete <name> [--force|--yes] [--no-reload]"
             ;;
         list)
-            echo "Usage: plak list [--totals]"
+            echo "Usage: plak list [--totals] [--json]"
             ;;
         login)
-            echo "Usage: plak login <site> [<user>]"
+            echo "Usage: plak login <site> [<user>] [--raw]"
             ;;
         db)
             echo "Usage: plak db <backup|list>"
@@ -204,12 +209,27 @@ main() {
     fi
     export PLAK_SITE_CMD
 
+    PLAK_QUIET=0
+    PLAK_JSON=0
+    local new_args=()
     for arg in "$@"; do
-        if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
-            plak_display_command_help "${1:-}"
+        if [[ "$arg" == "--quiet" || "$arg" == "-q" ]]; then
+            PLAK_QUIET=1
+        elif [[ "$arg" == "--json" ]]; then
+            PLAK_JSON=1
+        elif [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+            plak_display_command_help "${new_args[0]:-${1:-}}"
             exit 0
+        else
+            new_args+=("$arg")
         fi
     done
+    export PLAK_QUIET
+    export PLAK_JSON
+    if [ "$PLAK_JSON" = "1" ]; then
+        new_args+=("--json")
+    fi
+    set -- "${new_args[@]}"
 
     local command="${1:-help}"
     if [ "$#" -gt 0 ]; then
@@ -223,10 +243,11 @@ main() {
     esac
 
     case "$command" in
-        server)
-            plak_server "$@"
+        remote)
+            plak_remote "$@"
             ;;
-        domain)
+        hosts)
+            plak_hosts "$@"
             ;;
         sshkey)
             plak_sshkey "$@"
@@ -371,7 +392,7 @@ main() {
             plak_install "$@"
             ;;
         version|--version|-v)
-            plak_version
+            plak_version "$@"
             ;;
         help)
             plak_show_help
@@ -390,7 +411,7 @@ main() {
 # Source: shared/remote
 plak_remote_choose_ssh() {
     local hosts selected manual_label="Enter manually"
-    hosts=$(plak_server_parse_hosts)
+    hosts=$(plak_remote_parse_hosts | awk -F'|' '{print $1}')
 
     if [ -n "$hosts" ]; then
         selected=$(printf "%s\n%s\n" "$hosts" "$manual_label" | gum filter --placeholder "Choose SSH connection")
@@ -3017,6 +3038,7 @@ plak_ui_warn() {
 }
 
 plak_ui_success() {
+    [ "${PLAK_QUIET:-0}" = "1" ] && return 0
     if plak_command_exists gum; then
         gum style --foreground green "$1"
     else
@@ -3038,8 +3060,8 @@ plak_validate_port() {
 }
 
 # --- Command Functions ---
-# Source: commands/domain
-plak_domain_entries() {
+# Source: commands/hosts
+plak_hosts_entries() {
     local hosts_file="${1:-$PLAK_HOSTS_FILE}"
 
     [ -f "$hosts_file" ] || return 0
@@ -3056,22 +3078,22 @@ plak_domain_entries() {
     ' "$hosts_file"
 }
 
-plak_domain_exists() {
+plak_hosts_exists() {
     local domain="$1"
-    plak_domain_entries | awk -F, -v target="$domain" '$2 == target { found = 1 } END { exit found ? 0 : 1 }'
+    plak_hosts_entries | awk -F, -v target="$domain" '$2 == target { found = 1 } END { exit found ? 0 : 1 }'
 }
 
-plak_domain_validate_name() {
+plak_hosts_validate_name() {
     local domain="$1"
     [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && [[ "$domain" == *.* || "$domain" == "localhost" ]]
 }
 
-plak_domain_validate_ip() {
+plak_hosts_validate_ip() {
     local ip="$1"
     [[ "$ip" =~ ^[A-Za-z0-9:.%-]+$ ]]
 }
 
-plak_domain_write_hosts_file() {
+plak_hosts_write_hosts_file() {
     local tmp_file="$1" backup_path
     backup_path="${PLAK_HOSTS_FILE}.plak.bak.$(date +%Y%m%d%H%M%S)"
 
@@ -3085,7 +3107,7 @@ plak_domain_write_hosts_file() {
     sudo cp "$tmp_file" "$PLAK_HOSTS_FILE"
 }
 
-plak_domain_add_entry() {
+plak_hosts_add_entry() {
     local ip="$1" domain="$2" tmp_file
 
     [ -f "$PLAK_HOSTS_FILE" ] || {
@@ -3093,8 +3115,8 @@ plak_domain_add_entry() {
         return 1
     }
 
-    if plak_domain_exists "$domain"; then
-        plak_ui_error "Domain '$domain' already exists in $PLAK_HOSTS_FILE."
+    if plak_hosts_exists "$domain"; then
+        plak_ui_error "Host entry '$domain' already exists in $PLAK_HOSTS_FILE."
         return 1
     fi
 
@@ -3102,11 +3124,11 @@ plak_domain_add_entry() {
     cat "$PLAK_HOSTS_FILE" > "$tmp_file"
     printf '\n%s\t%s # plak\n' "$ip" "$domain" >> "$tmp_file"
 
-    plak_domain_write_hosts_file "$tmp_file"
+    plak_hosts_write_hosts_file "$tmp_file"
     rm -f "$tmp_file"
 }
 
-plak_domain_remove_entry() {
+plak_hosts_remove_entry() {
     local domain="$1" tmp_file
 
     [ -f "$PLAK_HOSTS_FILE" ] || return 1
@@ -3152,18 +3174,18 @@ plak_domain_remove_entry() {
         return "$code"
     }
 
-    plak_domain_write_hosts_file "$tmp_file"
+    plak_hosts_write_hosts_file "$tmp_file"
     rm -f "$tmp_file"
 }
 
-plak_domain_list() {
+plak_hosts_list() {
     if [ ! -f "$PLAK_HOSTS_FILE" ]; then
         plak_ui_warn "Hosts file not found: $PLAK_HOSTS_FILE"
         return 0
     fi
 
     local rows
-    rows=$(plak_domain_entries)
+    rows=$(plak_hosts_entries)
 
     if [ -z "$rows" ]; then
         plak_ui_warn "No hosts entries found."
@@ -3180,68 +3202,126 @@ plak_domain_list() {
     fi
 }
 
-plak_domain_add() {
-    plak_require_gum
+plak_hosts_add() {
+    local domain="" ip="" yes=0
 
-    plak_ui_title "Add hosts entry"
-
-    local domain ip
-    while true; do
-        domain=$(gum input --prompt "Domain: " --placeholder "site.localhost")
-        [ -n "$domain" ] || return 0
-        if plak_domain_validate_name "$domain"; then
-            break
-        fi
-        plak_ui_error "Invalid domain name."
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --ip) ip="$2"; shift 2 ;;
+            --yes|-y) yes=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; exit 1 ;;
+            *)
+                if [ -z "$ip" ]; then
+                    ip="$1"
+                elif [ -z "$domain" ]; then
+                    domain="$1"
+                fi
+                shift 1
+                ;;
+        esac
     done
 
-    while true; do
-        ip=$(gum input --prompt "IP: " --value "127.0.0.1")
-        [ -n "$ip" ] || return 0
-        if plak_domain_validate_ip "$ip"; then
-            break
+    local have_all=1
+    [ -z "$ip" ] && have_all=0
+    [ -z "$domain" ] && have_all=0
+
+    if [ "$have_all" -eq 0 ]; then
+        plak_require_gum
+        plak_ui_title "Add hosts entry"
+    fi
+
+    if [ -z "$domain" ]; then
+        while true; do
+            domain=$(gum input --prompt "Domain: " --placeholder "site.localhost")
+            [ -n "$domain" ] || return 0
+            if plak_hosts_validate_name "$domain"; then
+                break
+            fi
+            plak_ui_error "Invalid domain name."
+        done
+    else
+        if ! plak_hosts_validate_name "$domain"; then
+            plak_ui_error "Invalid domain name '$domain'."
+            exit 1
         fi
-        plak_ui_error "Invalid IP or host value."
+    fi
+
+    if [ -z "$ip" ]; then
+        while true; do
+            ip=$(gum input --prompt "IP: " --value "127.0.0.1")
+            [ -n "$ip" ] || return 0
+            if plak_hosts_validate_ip "$ip"; then
+                break
+            fi
+            plak_ui_error "Invalid IP or host value."
+        done
+    else
+        if ! plak_hosts_validate_ip "$ip"; then
+            plak_ui_error "Invalid IP '$ip'."
+            exit 1
+        fi
+    fi
+
+    if [ "$have_all" -eq 0 ]; then
+        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
+            "Hosts entry" \
+            "$ip    $domain"
+
+        if [ "$yes" -eq 0 ]; then
+            if ! gum confirm "Add this entry to $PLAK_HOSTS_FILE?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        fi
+    fi
+
+    plak_hosts_add_entry "$ip" "$domain"
+    plak_ui_success "Host entry '$domain' added to $PLAK_HOSTS_FILE."
+}
+
+plak_hosts_delete() {
+    local domain="" yes=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; exit 1 ;;
+            *) domain="$1"; shift 1 ;;
+        esac
     done
 
-    gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
-        "Hosts entry" \
-        "$ip    $domain"
-
-    if ! gum confirm "Add this entry to $PLAK_HOSTS_FILE?"; then
-        plak_ui_warn "Cancelled."
-        return 0
+    if [ -z "$domain" ]; then
+        plak_require_gum
+        local rows
+        rows=$(plak_hosts_entries)
+        if [ -z "$rows" ]; then
+            plak_ui_warn "No hosts entries found."
+            return 0
+        fi
+        local selected
+        selected=$(echo "$rows" | awk -F, '{ print $2 "    " $1 }' | gum filter --placeholder "Choose domain to delete")
+        [ -n "$selected" ] || return 0
+        domain=$(echo "$selected" | awk '{ print $1 }')
     fi
 
-    plak_domain_add_entry "$ip" "$domain"
-    plak_ui_success "Domain '$domain' added."
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            plak_require_gum
+            if ! gum confirm "Delete domain '$domain' from $PLAK_HOSTS_FILE?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        else
+            plak_ui_error "Refusing to delete '$domain' without --yes in non-interactive mode."
+            exit 1
+        fi
+    fi
+
+    plak_hosts_remove_entry "$domain"
+    plak_ui_success "Host entry '$domain' deleted from $PLAK_HOSTS_FILE."
 }
 
-plak_domain_delete() {
-    plak_require_gum
-
-    local rows selected domain
-    rows=$(plak_domain_entries)
-
-    if [ -z "$rows" ]; then
-        plak_ui_warn "No hosts entries found."
-        return 0
-    fi
-
-    selected=$(echo "$rows" | awk -F, '{ print $2 "    " $1 }' | gum filter --placeholder "Choose domain to delete")
-    [ -n "$selected" ] || return 0
-
-    domain=$(echo "$selected" | awk '{ print $1 }')
-    if ! gum confirm "Delete domain '$domain' from $PLAK_HOSTS_FILE?"; then
-        plak_ui_warn "Cancelled."
-        return 0
-    fi
-
-    plak_domain_remove_entry "$domain"
-    plak_ui_success "Domain '$domain' deleted."
-}
-
-plak_domain() {
+plak_hosts() {
     local action="${1:-help}"
     if [ "$#" -gt 0 ]; then
         shift
@@ -3249,20 +3329,20 @@ plak_domain() {
 
     case "$action" in
         list|view)
-            plak_domain_list "$@"
+            plak_hosts_list "$@"
             ;;
         add|create)
-            plak_domain_add "$@"
+            plak_hosts_add "$@"
             ;;
         delete|remove)
-            plak_domain_delete "$@"
+            plak_hosts_delete "$@"
             ;;
         help|--help|-h)
-            plak_display_command_help domain
+            plak_display_command_help hosts
             ;;
         *)
-            plak_ui_error "Unknown domain action '$action'"
-            plak_display_command_help domain
+            plak_ui_error "Unknown hosts action '$action'"
+            plak_display_command_help hosts
             exit 1
             ;;
     esac
@@ -3273,31 +3353,46 @@ plak_install() {
     plak_site_install "$@"
 }
 
-# Source: commands/server
-plak_server_parse_hosts() {
+# Source: commands/remote
+plak_remote_parse_hosts() {
     local config_path="${1:-$PLAK_SSH_CONFIG}"
 
     [ -f "$config_path" ] || return 0
 
     awk '
         BEGIN { IGNORECASE = 1 }
-        /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-        /^[[:space:]]*Host[[:space:]]+/ {
+        /^[ \t]*Host[ \t]+/ {
+            if (cur_name != "") printf "%s|%s|%s|%s|%s|%s\n", cur_name, cur_host, cur_user, cur_port, cur_idf, cur_path
+            cur_name = ""; cur_host = ""; cur_user = ""; cur_port = ""; cur_idf = ""; cur_path = ""
             for (i = 2; i <= NF; i++) {
-                if ($i !~ /[*?]/) {
-                    print $i
-                }
+                if ($i !~ /[*?]/) { cur_name = $i; break }
             }
+            next
         }
-    ' "$config_path" | sort -u
+        /^[ \t]+HostName[ \t]+/ { cur_host = $2; next }
+        /^[ \t]+User[ \t]+/ { cur_user = $2; next }
+        /^[ \t]+Port[ \t]+/ { cur_port = $2; next }
+        /^[ \t]+IdentityFile[ \t]+/ { cur_idf = $2; next }
+        /^[ \t]+# plak-remote-path[ \t]*:/ {
+            sub(/^[ \t]+# plak-remote-path[ \t]*:[ \t]*/, "")
+            cur_path = $0
+            next
+        }
+        END { if (cur_name != "") printf "%s|%s|%s|%s|%s|%s\n", cur_name, cur_host, cur_user, cur_port, cur_idf, cur_path }
+    ' "$config_path"
 }
 
-plak_server_host_exists() {
+plak_remote_host_exists() {
     local name="$1"
-    plak_server_parse_hosts | awk -v target="$name" '$0 == target { found = 1 } END { exit found ? 0 : 1 }'
+    plak_remote_parse_hosts | awk -F'|' -v target="$name" '$1 == target { found = 1 } END { exit found ? 0 : 1 }'
 }
 
-plak_server_ensure_config() {
+plak_remote_get_host() {
+    local name="$1"
+    plak_remote_parse_hosts | awk -F'|' -v target="$name" '$1 == target { print; exit }'
+}
+
+plak_remote_ensure_config() {
     local config_dir
     config_dir=$(dirname "$PLAK_SSH_CONFIG")
 
@@ -3312,10 +3407,10 @@ plak_server_ensure_config() {
     fi
 }
 
-plak_server_append_config() {
-    local name="$1" hostname="$2" user="$3" port="$4" identity_file="${5:-}"
+plak_remote_append_config() {
+    local name="$1" hostname="$2" user="$3" port="$4" identity_file="${5:-}" remote_path="${6:-}"
 
-    plak_server_ensure_config
+    plak_remote_ensure_config
 
     {
         echo ""
@@ -3326,25 +3421,23 @@ plak_server_append_config() {
         if [ -n "$identity_file" ]; then
             echo "    IdentityFile $identity_file"
         fi
+        if [ -n "$remote_path" ]; then
+            echo "    # plak-remote-path: $remote_path"
+        fi
     } >> "$PLAK_SSH_CONFIG"
 }
 
-plak_server_remove_config() {
+plak_remote_remove_config() {
     local name="$1" tmp_file
 
     [ -f "$PLAK_SSH_CONFIG" ] || return 1
     tmp_file=$(mktemp)
 
     awk -v target="$name" '
-        BEGIN { skip = 0; found = 0 }
-        /^[[:space:]]*Host[[:space:]]+/ {
+        /^[ \t]*Host[ \t]+/ {
             skip = 0
             for (i = 2; i <= NF; i++) {
-                if ($i == target) {
-                    skip = 1
-                    found = 1
-                    next
-                }
+                if ($i == target) { skip = 1; found = 1; break }
             }
         }
         skip == 0 { print }
@@ -3359,149 +3452,689 @@ plak_server_remove_config() {
     rm -f "$tmp_file"
 }
 
-plak_server_list() {
-    local hosts
-    hosts=$(plak_server_parse_hosts)
+plak_remote_replace_config() {
+    local old_name="$1" new_name="$2" hostname="$3" user="$4" port="$5" identity_file="${6:-}" remote_path="${7:-}"
+    local tmp_file
+    tmp_file=$(mktemp)
 
-    if [ -z "$hosts" ]; then
-        plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+    awk -v old="$old_name" -v new="$new_name" -v host="$hostname" -v usr="$user" -v prt="$port" -v idf="$identity_file" -v rp="$remote_path" '
+        function emit_new() {
+            print ""
+            print "Host " new
+            print "    HostName " host
+            print "    User " usr
+            print "    Port " prt
+            if (idf != "") print "    IdentityFile " idf
+            if (rp != "") print "    # plak-remote-path: " rp
+            pending = 0
+        }
+        BEGIN { skip = 0; found = 0; pending = 0 }
+        /^[ \t]*Host[ \t]+/ {
+            if (skip == 1 && pending == 1) emit_new()
+            skip = 0
+            for (i = 2; i <= NF; i++) {
+                if ($i == old) { skip = 1; found = 1; pending = 1; break }
+            }
+            if (skip == 0) print
+            next
+        }
+        skip == 0 { print }
+        END { if (pending == 1) emit_new() }
+    ' "$PLAK_SSH_CONFIG" > "$tmp_file" || {
+        local code=$?
+        rm -f "$tmp_file"
+        return "$code"
+    }
+
+    cat "$tmp_file" > "$PLAK_SSH_CONFIG"
+    rm -f "$tmp_file"
+}
+
+plak_remote_list() {
+    local entries managed_only=0 unmanaged_only=0 json=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --managed)   managed_only=1; shift 1 ;;
+            --unmanaged) unmanaged_only=1; shift 1 ;;
+            --json)      json=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown list flag '$1'"
+                exit 1
+                ;;
+            *) shift 1 ;;
+        esac
+    done
+
+    entries=$(plak_remote_parse_hosts)
+    if [ -z "$entries" ]; then
+        if [ "$json" -eq 1 ]; then
+            printf "[]\n"
+        else
+            plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+        fi
+        return 0
+    fi
+
+    local filtered
+    if [ "$managed_only" = 1 ]; then
+        filtered=$(printf "%s\n" "$entries" | awk -F'|' '$6 != ""')
+    elif [ "$unmanaged_only" = 1 ]; then
+        filtered=$(printf "%s\n" "$entries" | awk -F'|' '$6 == ""')
+    else
+        filtered="$entries"
+    fi
+
+    if [ -z "$filtered" ]; then
+        if [ "$json" -eq 1 ]; then
+            printf "[]\n"
+            return 0
+        fi
+        if [ "$managed_only" = 1 ]; then
+            plak_ui_warn "No managed remotes (with plak-remote-path) found."
+        else
+            plak_ui_warn "No unmanaged remotes (without plak-remote-path) found."
+        fi
+        return 0
+    fi
+
+    if [ "$json" -eq 1 ]; then
+        printf "%s\n" "$filtered" | awk -F'|' '
+            function esc(s) {
+                gsub(/\\/, "\\\\", s)
+                gsub(/"/, "\\\"", s)
+                gsub(/\n/, "\\n", s)
+                return s
+            }
+            BEGIN { first = 1; printf "[" }
+            {
+                if (!first) printf ","
+                first = 0
+                printf "{\"name\":\"%s\",\"host\":\"%s\",\"user\":\"%s\",\"port\":\"%s\",\"identity\":\"%s\",\"path\":\"%s\"}",
+                    esc($1), esc($2), esc($3), esc($4), esc($5), esc($6)
+            }
+            END { printf "]\n" }
+        '
         return 0
     fi
 
     if plak_command_exists gum && [ -t 1 ]; then
         {
-            echo "Name"
-            echo "$hosts"
-        } | gum table
+            echo "Name"$'\t'"Host"$'\t'"User"$'\t'"Port"$'\t'"Path"
+            printf "%s\n" "$filtered" | awk -F'|' 'BEGIN { OFS="\t" } { print $1, $2, $3, $4, ($6 == "" ? "(no path)" : $6) }'
+        } | gum table --columns "Name,Host,User,Port,Path" --widths "16,28,12,6,22" --border rounded --padding "0 1"
     else
-        echo "$hosts"
+        printf "%-16s %-28s %-12s %-6s %s\n" "Name" "Host" "User" "Port" "Path"
+        printf "%-16s %-28s %-12s %-6s %s\n" "----------------" "----------------------------" "------------" "------" "----------------------"
+        printf "%s\n" "$filtered" | awk -F'|' '{ p = ($6 == "" ? "(no path)" : $6); printf "%-16s %-28s %-12s %-6s %s\n", $1, $2, $3, $4, p }'
     fi
 }
 
-plak_server_connect() {
-    plak_require_gum
-
-    local hosts selected
-    hosts=$(plak_server_parse_hosts)
-
-    if [ -z "$hosts" ]; then
-        plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
-        return 0
+plak_remote_pick_identity() {
+    local identity_file=""
+    local identity_choice
+    identity_choice=$(find "$HOME/.ssh" -maxdepth 1 -type f \
+        ! -name '.*' \
+        ! -name '*.pub' \
+        ! -name 'authorized_keys' \
+        ! -name 'known_hosts*' \
+        ! -name '*_known_hosts' \
+        ! -name 'config' \
+        -exec sh -c 'head -n 1 "$1" 2>/dev/null | grep -q "PRIVATE KEY"' sh {} \; \
+        -print 2>/dev/null | sort || true)
+    if [ -n "$identity_choice" ]; then
+        identity_file=$(echo "$identity_choice" | gum filter --placeholder "Choose identity file or press Esc") || identity_file=""
     fi
-
-    selected=$(echo "$hosts" | gum filter --placeholder "Choose SSH host")
-    [ -n "$selected" ] || return 0
-
-    if ! plak_validate_hostname_alias "$selected"; then
-        plak_ui_error "Invalid SSH host alias: $selected"
-        exit 1
+    if [ -z "$identity_file" ]; then
+        identity_file=$(gum input --prompt "IdentityFile: " --placeholder "~/.ssh/id_ed25519")
     fi
-
-    plak_ui_success "Connecting to $selected..."
-    ssh "$selected"
+    printf '%s\n' "$identity_file"
 }
 
-plak_server_add() {
-    plak_require_gum
+plak_remote_prompt_path() {
+    local default="${1:-public/}"
+    local current="${2:-}"
+    local value
+    if [ -n "$current" ]; then
+        value=$(gum input --width 0 --value "$current" --prompt "Remote path (WordPress root): ")
+    else
+        value=$(gum input --width 0 --value "$default" --prompt "Remote path (WordPress root): ")
+    fi
+    printf '%s\n' "$value"
+}
 
-    plak_ui_title "Add SSH connection"
+plak_remote_add() {
+    local name="" host="" user="" port="22" identity_file="" remote_path="public/"
+    local set_identity=0
+    local positional=()
 
-    local name hostname user port identity_choice identity_file=""
-
-    while true; do
-        name=$(gum input --prompt "Name: " --placeholder "my-server")
-        [ -n "$name" ] || return 0
-
-        if ! plak_validate_hostname_alias "$name"; then
-            plak_ui_error "Use only letters, numbers, dots, underscores and hyphens."
-            continue
-        fi
-
-        if plak_server_host_exists "$name"; then
-            plak_ui_error "SSH host '$name' already exists."
-            continue
-        fi
-
-        break
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --host) host="$2"; shift 2 ;;
+            --user) user="$2"; shift 2 ;;
+            --port) port="$2"; shift 2 ;;
+            --path) remote_path="$2"; shift 2 ;;
+            --identity) identity_file="$2"; set_identity=1; shift 2 ;;
+            --no-identity) identity_file=""; set_identity=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                plak_display_command_help remote
+                exit 1
+                ;;
+            *) positional+=("$1"); shift 1 ;;
+        esac
     done
 
-    hostname=$(gum input --prompt "Hostname/IP: " --placeholder "example.com")
-    [ -n "$hostname" ] || return 0
+    if [ ${#positional[@]} -gt 0 ]; then
+        name="${positional[0]}"
+    fi
 
-    user=$(gum input --prompt "User: " --placeholder "ubuntu")
-    [ -n "$user" ] || return 0
+    local have_all=1
+    [ -z "$name" ] && have_all=0
+    [ -z "$host" ] && have_all=0
+    [ -z "$user" ] && have_all=0
 
-    while true; do
-        port=$(gum input --prompt "Port: " --value "22")
-        if plak_validate_port "$port"; then
+    if [ "$have_all" -eq 0 ]; then
+        plak_require_gum
+        plak_ui_title "Add Plak remote"
+    fi
+
+    if [ -z "$name" ]; then
+        while true; do
+            name=$(gum input --prompt "Name: " --placeholder "prod")
+            [ -n "$name" ] || return 0
+
+            if ! plak_validate_hostname_alias "$name"; then
+                plak_ui_error "Use only letters, numbers, dots, underscores and hyphens."
+                continue
+            fi
+
+            if plak_remote_host_exists "$name"; then
+                plak_ui_error "Remote '$name' already exists."
+                continue
+            fi
             break
+        done
+    else
+        if ! plak_validate_hostname_alias "$name"; then
+            plak_ui_error "Invalid name '$name'. Use only letters, numbers, dots, underscores and hyphens."
+            exit 1
         fi
-        plak_ui_error "Invalid port. Use a number from 1 to 65535."
-    done
-
-    if gum confirm "Use an identity file?"; then
-        identity_choice=$(find "$HOME/.ssh" -maxdepth 1 -type f \
-            ! -name '.*' \
-            ! -name '*.pub' \
-            ! -name 'authorized_keys' \
-            ! -name 'known_hosts*' \
-            ! -name '*_known_hosts' \
-            ! -name 'config' \
-            -exec sh -c 'head -n 1 "$1" 2>/dev/null | grep -q "PRIVATE KEY"' sh {} \; \
-            -print 2>/dev/null | sort || true)
-        if [ -n "$identity_choice" ]; then
-            identity_file=$(echo "$identity_choice" | gum filter --placeholder "Choose identity file or press Esc") || identity_file=""
-        fi
-        if [ -z "$identity_file" ]; then
-            identity_file=$(gum input --prompt "IdentityFile: " --placeholder "~/.ssh/id_ed25519")
+        if plak_remote_host_exists "$name"; then
+            plak_ui_error "Remote '$name' already exists."
+            exit 1
         fi
     fi
 
-    echo ""
-    gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
-        "Host $name" \
-        "HostName $hostname" \
-        "User $user" \
-        "Port $port" \
-        "IdentityFile ${identity_file:-none}"
-
-    if ! gum confirm "Save this SSH connection?"; then
-        plak_ui_warn "Cancelled."
-        return 0
+    if [ -z "$host" ]; then
+        host=$(gum input --prompt "Hostname/IP: " --placeholder "example.com")
+        [ -n "$host" ] || return 0
     fi
 
-    plak_server_append_config "$name" "$hostname" "$user" "$port" "$identity_file"
-    plak_ui_success "SSH connection '$name' added to $PLAK_SSH_CONFIG."
+    if [ -z "$user" ]; then
+        user=$(gum input --prompt "User: " --placeholder "ubuntu")
+        [ -n "$user" ] || return 0
+    fi
+
+    if ! plak_validate_port "$port"; then
+        plak_ui_error "Invalid port '$port'. Use a number from 1 to 65535."
+        exit 1
+    fi
+
+    if [ "$have_all" -eq 0 ] && [ "$set_identity" -eq 0 ]; then
+        if gum confirm "Use an identity file?"; then
+            identity_file=$(plak_remote_pick_identity)
+            set_identity=1
+        fi
+    fi
+
+    if [ "$have_all" -eq 0 ] && [ -z "$remote_path" -o "$remote_path" = "public/" ]; then
+        local prompted_path
+        prompted_path=$(plak_remote_prompt_path "public/")
+        [ -n "$prompted_path" ] || return 0
+        remote_path="$prompted_path"
+    fi
+
+    if [ "$have_all" -eq 0 ]; then
+        echo ""
+        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
+            "Host $name" \
+            "HostName $host" \
+            "User $user" \
+            "Port $port" \
+            "IdentityFile ${identity_file:-none}" \
+            "RemotePath ${remote_path}"
+
+        if ! gum confirm "Save this remote?"; then
+            plak_ui_warn "Cancelled."
+            return 0
+        fi
+    fi
+
+    if [ "$set_identity" -eq 0 ]; then
+        identity_file=""
+    fi
+
+    plak_remote_append_config "$name" "$host" "$user" "$port" "$identity_file" "$remote_path"
+    plak_ui_success "Remote '$name' added to $PLAK_SSH_CONFIG."
 }
 
-plak_server_delete() {
-    plak_require_gum
+plak_remote_edit() {
+    local name="" newname="" host="" user="" port="" remote_path="" identity_file=""
+    local identity_mode="unchanged"
+    local positional=()
 
-    local hosts selected
-    hosts=$(plak_server_parse_hosts)
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --newname) newname="$2"; shift 2 ;;
+            --host) host="$2"; shift 2 ;;
+            --user) user="$2"; shift 2 ;;
+            --port) port="$2"; shift 2 ;;
+            --path) remote_path="$2"; shift 2 ;;
+            --identity) identity_file="$2"; identity_mode="set"; shift 2 ;;
+            --no-identity) identity_file=""; identity_mode="cleared"; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                plak_display_command_help remote
+                exit 1
+                ;;
+            *) positional+=("$1"); shift 1 ;;
+        esac
+    done
 
-    if [ -z "$hosts" ]; then
-        plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
-        return 0
+    if [ ${#positional[@]} -gt 0 ]; then
+        name="${positional[0]}"
     fi
 
-    selected=$(echo "$hosts" | gum filter --placeholder "Choose SSH host to delete")
-    [ -n "$selected" ] || return 0
+    local have_any=0
+    [ -n "$newname" ] && have_any=1
+    [ -n "$host" ] && have_any=1
+    [ -n "$user" ] && have_any=1
+    [ -n "$port" ] && have_any=1
+    [ -n "$remote_path" ] && have_any=1
+    [ "$identity_mode" != "unchanged" ] && have_any=1
 
-    if ! gum confirm "Delete SSH connection '$selected'?"; then
-        plak_ui_warn "Cancelled."
-        return 0
+    if [ -z "$name" ]; then
+        plak_require_gum
+        local entries
+        entries=$(plak_remote_parse_hosts)
+        if [ -z "$entries" ]; then
+            plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+            return 0
+        fi
+        name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote to edit")
+        [ -n "$name" ] || return 0
     fi
 
-    if plak_server_remove_config "$selected"; then
-        plak_ui_success "SSH connection '$selected' deleted."
+    local current
+    current=$(plak_remote_get_host "$name")
+    if [ -z "$current" ]; then
+        plak_ui_error "Remote '$name' does not exist."
+        exit 1
+    fi
+
+    local cur_host cur_user cur_port cur_idf cur_path
+    IFS='|' read -r _ cur_host cur_user cur_port cur_idf cur_path <<< "$current"
+
+    if [ "$have_any" -eq 0 ]; then
+        plak_require_gum
+        plak_ui_title "Edit remote: $name"
+
+        newname=$(gum input --prompt "Name: " --value "$name")
+        [ -n "$newname" ] || return 0
+
+        host=$(gum input --prompt "Hostname/IP: " --value "$cur_host")
+        [ -n "$host" ] || return 0
+
+        user=$(gum input --prompt "User: " --value "$cur_user")
+        [ -n "$user" ] || return 0
+
+        while true; do
+            port=$(gum input --prompt "Port: " --value "${cur_port:-22}")
+            if plak_validate_port "$port"; then
+                break
+            fi
+            plak_ui_error "Invalid port. Use a number from 1 to 65535."
+        done
+
+        if gum confirm "Use an identity file?" --affirmative "Yes" --negative "Keep current"; then
+            identity_file=$(plak_remote_pick_identity)
+            identity_mode="set"
+        else
+            identity_file="$cur_idf"
+            identity_mode="unchanged"
+        fi
+
+        remote_path=$(plak_remote_prompt_path "public/" "$cur_path")
+        [ -n "$remote_path" ] || return 0
+
+        echo ""
+        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 \
+            "Host $newname" \
+            "HostName $host" \
+            "User $user" \
+            "Port $port" \
+            "IdentityFile ${identity_file:-none}" \
+            "RemotePath ${remote_path}"
+
+        if ! gum confirm "Save these changes?"; then
+            plak_ui_warn "Cancelled."
+            return 0
+        fi
+    fi
+
+    [ -z "$newname" ] && newname="$name"
+    [ -z "$host" ] && host="$cur_host"
+    [ -z "$user" ] && user="$cur_user"
+    [ -z "$port" ] && port="${cur_port:-22}"
+    [ -z "$remote_path" ] && remote_path="$cur_path"
+    case "$identity_mode" in
+        unchanged) identity_file="$cur_idf" ;;
+        cleared)   identity_file="" ;;
+        set)       : ;;
+    esac
+
+    if [ "$newname" != "$name" ]; then
+        if ! plak_validate_hostname_alias "$newname"; then
+            plak_ui_error "Invalid new name '$newname'."
+            exit 1
+        fi
+        if plak_remote_host_exists "$newname"; then
+            plak_ui_error "Remote '$newname' already exists."
+            exit 1
+        fi
+    fi
+
+    if ! plak_validate_port "$port"; then
+        plak_ui_error "Invalid port '$port'."
+        exit 1
+    fi
+
+    plak_remote_replace_config "$name" "$newname" "$host" "$user" "$port" "$identity_file" "$remote_path"
+    plak_ui_success "Remote '$newname' updated."
+}
+
+plak_remote_delete() {
+    local name="" yes=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *) name="$1"; shift 1 ;;
+        esac
+    done
+
+    if [ -z "$name" ]; then
+        plak_require_gum
+        local entries
+        entries=$(plak_remote_parse_hosts)
+        if [ -z "$entries" ]; then
+            plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+            return 0
+        fi
+        name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote to delete")
+        [ -n "$name" ] || return 0
+    fi
+
+    if [ -z "$(plak_remote_get_host "$name")" ]; then
+        plak_ui_error "Remote '$name' does not exist."
+        exit 1
+    fi
+
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Delete remote '$name'?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        else
+            plak_ui_error "Refusing to delete '$name' without --yes in non-interactive mode."
+            exit 1
+        fi
+    fi
+
+    if plak_remote_remove_config "$name"; then
+        plak_ui_success "Remote '$name' deleted."
     else
-        plak_ui_error "Could not delete SSH connection '$selected'."
+        plak_ui_error "Could not delete remote '$name'."
         exit 1
     fi
 }
 
-plak_server() {
+plak_remote_connect() {
+    local name="${1:-}"
+    local entries
+    entries=$(plak_remote_parse_hosts)
+
+    if [ -z "$entries" ]; then
+        plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG."
+        return 0
+    fi
+
+    if [ -z "$name" ]; then
+        plak_require_gum
+        name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote")
+        [ -n "$name" ] || return 0
+    fi
+
+    if ! plak_validate_hostname_alias "$name"; then
+        plak_ui_error "Invalid remote alias: $name"
+        exit 1
+    fi
+
+    if [ -z "$(plak_remote_get_host "$name")" ]; then
+        plak_ui_error "Remote '$name' does not exist in $PLAK_SSH_CONFIG."
+        exit 1
+    fi
+
+    local remote_path
+    remote_path=$(plak_remote_get_host "$name" | awk -F'|' '{print $6}')
+
+    plak_ui_success "Connecting to $name..."
+    if [ -n "$remote_path" ]; then
+        ssh -t "$name" "cd $(shell_quote "$remote_path") && exec \$SHELL"
+    else
+        ssh "$name"
+    fi
+}
+
+plak_remote_attach() {
+    local remote_name="" site_name="" yes=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *)
+                if [ -z "$remote_name" ]; then
+                    remote_name="$1"
+                elif [ -z "$site_name" ]; then
+                    site_name="$1"
+                fi
+                shift 1
+                ;;
+        esac
+    done
+
+    if [ -n "$remote_name" ] && [ -n "$site_name" ]; then
+        plak_remote_attach_to "$remote_name" "$site_name" "$yes"
+        return $?
+    fi
+
+    plak_require_gum
+
+    local entries sites site_dirs
+    entries=$(plak_remote_parse_hosts)
+    if [ -z "$entries" ]; then
+        plak_ui_warn "No SSH hosts found in $PLAK_SSH_CONFIG. Add one with 'plak remote add'."
+        return 0
+    fi
+
+    if [ -z "$site_name" ]; then
+        site_dirs=$(find "$SITES_DIR" -maxdepth 1 -mindepth 1 -type d -name '*.localhost' 2>/dev/null | sort)
+        if [ -z "$site_dirs" ]; then
+            plak_ui_warn "No Plak sites found under $SITES_DIR."
+            return 0
+        fi
+        sites=$(printf "%s\n" "$site_dirs" | awk -F/ '{print $NF}' | sed 's/\.localhost$//')
+        site_name=$(printf "%s\n" "$sites" | gum filter --placeholder "Choose site to attach")
+        [ -n "$site_name" ] || return 0
+    fi
+
+    if [ -z "$remote_name" ]; then
+        remote_name=$(printf "%s\n" "$entries" | awk -F'|' '{print $1}' | gum filter --placeholder "Choose remote to attach")
+        [ -n "$remote_name" ] || return 0
+    fi
+
+    plak_remote_attach_to "$remote_name" "$site_name" "$yes"
+}
+
+plak_remote_attach_to() {
+    local remote_name="$1" site_name="$2" yes="${3:-0}"
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local binding_file="$site_dir/.remote"
+
+    if [ ! -d "$site_dir" ]; then
+        plak_ui_error "Site '$site_name' does not exist under $SITES_DIR."
+        exit 1
+    fi
+
+    if [ -z "$(plak_remote_get_host "$remote_name")" ]; then
+        plak_ui_error "Remote '$remote_name' does not exist in $PLAK_SSH_CONFIG."
+        exit 1
+    fi
+
+    local remote_path
+    remote_path=$(plak_remote_get_host "$remote_name" | awk -F'|' '{print $6}')
+    if [ -z "$remote_path" ]; then
+        plak_ui_warn "Remote '$remote_name' has no remote_path set. Run 'plak remote edit $remote_name' to set one — push/pull will still ask for the path until then."
+    fi
+
+    if [ -f "$binding_file" ]; then
+        local current_binding
+        current_binding=$(cat "$binding_file")
+        if [ "$current_binding" = "$remote_name" ]; then
+            plak_ui_warn "Site '$site_name' is already attached to '$remote_name'."
+            return 0
+        fi
+        if [ "$yes" -eq 0 ]; then
+            if [ -t 0 ] && plak_command_exists gum; then
+                if ! gum confirm "Site '$site_name' is already attached to '$current_binding'. Replace with '$remote_name'?"; then
+                    plak_ui_warn "Cancelled."
+                    return 0
+                fi
+            else
+                plak_ui_error "Site '$site_name' is already attached to '$current_binding'. Use --yes to replace in non-interactive mode."
+                exit 1
+            fi
+        fi
+    fi
+
+    printf '%s\n' "$remote_name" > "$binding_file"
+    plak_ui_success "Attached '$remote_name' to site '$site_name'."
+}
+
+plak_remote_detach() {
+    local site_name="" yes=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
+    done
+
+    if [ -z "$site_name" ]; then
+        plak_require_gum
+
+        local site_dirs sites binding_files
+        site_dirs=$(find "$SITES_DIR" -maxdepth 1 -mindepth 1 -type d -name '*.localhost' 2>/dev/null | sort)
+        if [ -z "$site_dirs" ]; then
+            plak_ui_warn "No Plak sites found under $SITES_DIR."
+            return 0
+        fi
+
+        binding_files=$(printf "%s\n" "$site_dirs" | while read -r d; do
+            f="$d/.remote"
+            if [ -f "$f" ]; then
+                printf "%s\n" "${d##*/}" | sed 's/\.localhost$//'
+            fi
+        done)
+
+        if [ -z "$binding_files" ]; then
+            plak_ui_warn "No attached remotes found."
+            return 0
+        fi
+
+        site_name=$(printf "%s\n" "$binding_files" | gum filter --placeholder "Choose site to detach")
+        [ -n "$site_name" ] || return 0
+    fi
+
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local binding_file="$site_dir/.remote"
+
+    if [ ! -d "$site_dir" ]; then
+        plak_ui_error "Site '$site_name' does not exist under $SITES_DIR."
+        exit 1
+    fi
+
+    if [ ! -f "$binding_file" ]; then
+        plak_ui_warn "Site '$site_name' has no remote attached."
+        return 0
+    fi
+
+    local current_binding
+    current_binding=$(cat "$binding_file")
+
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Detach site '$site_name' from remote '$current_binding'?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        else
+            plak_ui_error "Site '$site_name' is attached to '$current_binding'. Use --yes to detach in non-interactive mode."
+            exit 1
+        fi
+    fi
+
+    rm -f "$binding_file"
+    plak_ui_success "Detached '$site_name' from '$current_binding'."
+}
+
+plak_remote_get_binding() {
+    local site_name="$1"
+    local binding_file="$SITES_DIR/$site_name.localhost/.remote"
+
+    [ -f "$binding_file" ] || return 1
+    local remote_name
+    remote_name=$(cat "$binding_file")
+    [ -n "$remote_name" ] || return 1
+
+    local host_data
+    host_data=$(plak_remote_get_host "$remote_name")
+    [ -n "$host_data" ] || return 2
+
+    local remote_path
+    remote_path=$(printf "%s\n" "$host_data" | awk -F'|' '{print $6}')
+    [ -n "$remote_path" ] || return 3
+
+    printf '%s|%s\n' "$remote_name" "$remote_path"
+    return 0
+}
+
+plak_remote() {
     local action="${1:-help}"
     if [ "$#" -gt 0 ]; then
         shift
@@ -3509,23 +4142,32 @@ plak_server() {
 
     case "$action" in
         list|view)
-            plak_server_list "$@"
+            plak_remote_list "$@"
             ;;
         connect)
-            plak_server_connect "$@"
+            plak_remote_connect "$@"
             ;;
         add|create)
-            plak_server_add "$@"
+            plak_remote_add "$@"
+            ;;
+        edit|update)
+            plak_remote_edit "$@"
             ;;
         delete|remove)
-            plak_server_delete "$@"
+            plak_remote_delete "$@"
+            ;;
+        attach)
+            plak_remote_attach "$@"
+            ;;
+        detach)
+            plak_remote_detach "$@"
             ;;
         help|--help|-h)
-            plak_display_command_help server
+            plak_display_command_help remote
             ;;
         *)
-            plak_ui_error "Unknown server action '$action'"
-            plak_display_command_help server
+            plak_ui_error "Unknown remote action '$action'"
+            plak_display_command_help remote
             exit 1
             ;;
     esac
@@ -3777,7 +4419,20 @@ plak_site_db_backup() {
 plak_site_db_list() {
     source_config # To get DB_USER and DB_PASSWORD for mysql command
 
-    echo "🔎 Gathering database information for all WordPress sites..."
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak db list [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = false ]; then
+        echo "🔎 Gathering database information for all WordPress sites..."
+    fi
 
     if ! command -v wp &> /dev/null; then
         gum style --foreground red "❌ wp-cli is not installed or not in your PATH. Please run 'plak install'."
@@ -3785,7 +4440,11 @@ plak_site_db_list() {
     fi
 
     if [ ! -d "$SITES_DIR" ] || [ -z "$(ls -A "$SITES_DIR" 2>/dev/null)" ]; then
-        gum style --padding "1 2" "ℹ️ No sites found."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            gum style --padding "1 2" "ℹ️ No sites found."
+        fi
         exit 0
     fi
 
@@ -3802,7 +4461,7 @@ plak_site_db_list() {
     local frank
     frank=$(command -v frankenphp)
     local php_output
-    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
+    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
             if ($bytes === 0) return "0 B";
             $units = ["B", "KB", "MB", "GB", "TB"];
@@ -3818,9 +4477,13 @@ plak_site_db_list() {
         $wp_root_flag = getenv("WP_ROOT_FLAG");
         $wp_path = getenv("WP_PATH");
         $frank_bin = getenv("FRANK_BIN");
+        $json_mode = getenv("JSON_MODE") === "true";
         $wp_invoker = escapeshellarg($frank_bin) . " php-cli " . escapeshellarg($wp_path);
 
-        if (!is_dir($sites_dir)) { exit; }
+        if (!is_dir($sites_dir)) {
+            if ($json_mode) echo "[]\n";
+            exit;
+        }
 
         try {
             $pdo = new PDO("mysql:host={$db_host};port={$db_port}", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
@@ -3867,10 +4530,18 @@ plak_site_db_list() {
             }
         }
 
-        if (empty($sites_info)) { exit; }
+        if (empty($sites_info)) {
+            if ($json_mode) echo "[]\n";
+            exit;
+        }
 
         array_multisort(array_column($sites_info, "name"), SORT_ASC, $sites_info);
-        
+
+        if ($json_mode) {
+            echo json_encode($sites_info, JSON_UNESCAPED_SLASHES) . "\n";
+            exit;
+        }
+
         $output = [];
         $w = ["name" => 20, "db_name" => 25, "db_user" => 20, "db_pass" => 25, "size" => 15];
         $header = str_pad("Name", $w["name"]) . " " . str_pad("DB Name", $w["db_name"]) . " " . str_pad("DB User", $w["db_user"]) . " " . str_pad("DB Pass", $w["db_pass"]) . " " . str_pad("Size", $w["size"]);
@@ -3886,9 +4557,17 @@ plak_site_db_list() {
     ')
 
     if [ -z "$php_output" ]; then
-        gum style --padding "1 2" "ℹ️ No WordPress sites with readable database configurations found."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            gum style --padding "1 2" "ℹ️ No WordPress sites with readable database configurations found."
+        fi
     else
-        echo "$php_output" | gum style --border normal --margin "1" --padding "1 2" --border-foreground 212
+        if [ "$json_mode" = true ]; then
+            echo "$php_output"
+        else
+            echo "$php_output" | gum style --border normal --margin "1" --padding "1 2" --border-foreground 212
+        fi
     fi
 }
 
@@ -4101,27 +4780,66 @@ plak_site_directive_delete() {
 }
 
 plak_site_directive_list() {
-    echo "🔎 Listing all custom Caddy directives..."
-    
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak directive list [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = false ]; then
+        echo "🔎 Listing all custom Caddy directives..."
+    fi
+
     if [ ! -d "$CUSTOM_CADDY_DIR" ] || [ -z "$(ls -A "$CUSTOM_CADDY_DIR" 2>/dev/null)" ]; then
-        echo ""
-        gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            echo ""
+            gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
+        fi
         exit 0
     fi
 
+    local entries=()
     local found_one=false
     for conf_file in $(find "$CUSTOM_CADDY_DIR" -type f | sort); do
         found_one=true
         local site_name
         site_name=$(basename "$conf_file")
-        
+
         local content
         content=$(cat "$conf_file")
 
-        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 "📄 $site_name" "" "$content"
+        if [ "$json_mode" = true ]; then
+            # JSON-escape content for inline emission
+            local escaped
+            escaped=$(printf '%s' "$content" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null \
+                || printf '%s' "$content" | awk 'BEGIN { ORS="\\n" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); print }' | awk '{ printf "%s", $0 }')
+            entries+=("{\"site\":\"$site_name\",\"content\":$escaped}")
+        else
+            gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 "📄 $site_name" "" "$content"
+        fi
     done
 
-    if ! $found_one; then
+    if [ "$json_mode" = true ]; then
+        if [ "$found_one" = true ]; then
+            printf '[\n'
+            local first=1
+            for e in "${entries[@]}"; do
+                if [ $first -eq 0 ]; then printf ',\n'; fi
+                printf '  %s' "$e"
+                first=0
+            done
+            printf '\n]\n'
+        else
+            echo "[]"
+        fi
+    elif [ "$found_one" = false ]; then
         echo ""
         gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
     fi
@@ -4366,7 +5084,7 @@ Expose local sites to your Tailscale network.
 HELP
             ;;
         mappings)
-            echo "Usage: plak mappings <site> [add|remove|list] [domain]"
+            echo "Usage: plak mappings <site> [add|remove] [domain] [--json]"
             ;;
         lan)
             echo "Usage: plak lan <enable|disable|status|trust> [site]"
@@ -4381,13 +5099,13 @@ HELP
             echo "Usage: plak log [site] [-f|--follow]"
             ;;
         share)
-            echo "Usage: plak share [site]"
+            echo "Usage: plak share [<site>] [--print-url] [--no-install]"
             ;;
         pull)
-            echo "Usage: plak pull [--proxy-uploads]"
+            echo "Usage: plak pull [<site>] [--yes] [--proxy-uploads]"
             ;;
         push)
-            echo "Usage: plak push"
+            echo "Usage: plak push [<site>] [--yes]"
             ;;
         reload)
             echo "Usage: plak reload"
@@ -4628,10 +5346,14 @@ plak_site_install() {
         fi
 
         local choice
-        choice=$(gum choose \
-            "Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})" \
-            "$default_label" \
-            "Pick different custom ports")
+        if $auto_yes; then
+            choice="Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})"
+        else
+            choice=$(gum choose \
+                "Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})" \
+                "$default_label" \
+                "Pick different custom ports")
+        fi
 
         case "$choice" in
             "Keep current"*)
@@ -4673,20 +5395,33 @@ plak_site_install() {
         echo ""
 
         local choice
-        choice=$(gum choose \
-            "Use alternative ports (8090 / 8453) — run alongside other tools" \
-            "Pick custom ports" \
-            "Proceed with ${HTTP_PORT}/${HTTPS_PORT} anyway" \
-            "Cancel installation")
+        if $auto_yes; then
+            # Non-interactive: pick the safest default that avoids the conflict.
+            choice="Use alternative ports (8090 / 8453) — run alongside other tools"
+        else
+            choice=$(gum choose \
+                "Use alternative ports (8090 / 8453) — run alongside other tools" \
+                "Pick custom ports" \
+                "Proceed with ${HTTP_PORT}/${HTTPS_PORT} anyway" \
+                "Cancel installation")
+        fi
 
         case "$choice" in
             "Use alternative ports"*)
                 HTTP_PORT=8090
                 HTTPS_PORT=8453
                 if port_has_conflict "$HTTP_PORT" || port_has_conflict "$HTTPS_PORT"; then
-                    gum style --foreground yellow \
-                        "⚠️  8090 or 8453 is also in use — please pick custom ports."
-                    prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
+                    if ! $auto_yes; then
+                        gum style --foreground yellow \
+                            "⚠️  8090 or 8453 is also in use — please pick custom ports."
+                    fi
+                    if $auto_yes; then
+                        # Auto-pick next free port
+                        HTTP_PORT=$(next_free_port 8090)
+                        HTTPS_PORT=$(next_free_port 8453)
+                    else
+                        prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
+                    fi
                 fi
                 ;;
             "Pick custom ports")
@@ -5030,6 +5765,9 @@ INI
         if echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
+        elif $auto_yes; then
+            echo "   - ❌ Automatic database setup failed and --yes is set. Cannot prompt for root credentials."
+            exit 1
         else
             echo "   - ⚠️ Automatic setup failed. Falling back to manual credential entry..."
             local root_user
@@ -5457,14 +6195,21 @@ plak_site_lan() {
 
 # Source: commands/site/list
 plak_site_list() {
-    local show_totals=false
-    if [[ "$1" == "--totals" ]]; then
-        show_totals=true
-    fi
+    local show_totals=false json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --totals) show_totals=true ;;
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak list [--totals] [--json]"
+                exit 0
+                ;;
+        esac
+    done
 
-    # PHP script to find, sort, and format the site list with box-drawing characters
+    # PHP script to find, sort, and format the site list
     local php_output
-    php_output=$(SITES_DIR="$SITES_DIR" SHOW_TOTALS="$show_totals" HTTPS_PORT_SUFFIX="$(https_port_suffix)" frankenphp php-cli -r '
+    php_output=$(SITES_DIR="$SITES_DIR" SHOW_TOTALS="$show_totals" JSON_MODE="$json_mode" HTTPS_PORT_SUFFIX="$(https_port_suffix)" frankenphp php-cli -r '
         function getDirectorySize(string $path): int {
             if (!is_dir($path)) return 0;
             $total_size = 0;
@@ -5486,9 +6231,11 @@ plak_site_list() {
 
         $sites_dir = getenv("SITES_DIR");
         $show_totals = getenv("SHOW_TOTALS") === "true";
+        $json_mode = getenv("JSON_MODE") === "true";
         $port_suffix = getenv("HTTPS_PORT_SUFFIX") ?: "";
 
         if (!is_dir($sites_dir)) {
+            if ($json_mode) echo "[]\n";
             exit;
         }
 
@@ -5511,7 +6258,8 @@ plak_site_list() {
         }
 
         if (empty($sites)) {
-             exit;
+            if ($json_mode) echo "[]\n";
+            exit;
         }
 
         // Sort the array: first by type, then by name
@@ -5520,6 +6268,12 @@ plak_site_list() {
             array_column($sites, "name"), SORT_ASC,
             $sites
         );
+
+        // JSON output branch — machine-parseable
+        if ($json_mode) {
+            echo json_encode($sites, JSON_UNESCAPED_SLASHES) . "\n";
+            exit;
+        }
 
         // Column padding/gap
         $gap = 3;
@@ -5582,12 +6336,20 @@ plak_site_list() {
     ')
 
     if [ -z "$php_output" ]; then
-        gum style --padding "1 2" "No sites found. Add one with 'plak add <name>'."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            gum style --padding "1 2" "No sites found. Add one with 'plak add <name>'."
+        fi
     else
-        echo ""
-        gum style --faint "Sites are located in ~/Plak/Sites/"
-        echo ""
-        echo "$php_output"
+        if [ "$json_mode" = true ]; then
+            echo "$php_output"
+        else
+            echo ""
+            gum style --faint "Sites are located in ~/Plak/Sites/"
+            echo ""
+            echo "$php_output"
+        fi
     fi
 }
 # Source: commands/site/log
@@ -5677,8 +6439,22 @@ plak_site_log() {
 
 # Source: commands/site/login
 plak_site_login() {
-    local site_name="$1"
-    local user_identifier="${2:-}" # Optional second argument for the user
+    local raw_mode=false
+    local positional=()
+
+    for arg in "$@"; do
+        case "$arg" in
+            --raw|-r) raw_mode=true ;;
+            -h|--help)
+                echo "Usage: plak login <site> [<user>] [--raw]"
+                exit 0
+                ;;
+            *) positional+=("$arg") ;;
+        esac
+    done
+
+    local site_name="${positional[0]:-}"
+    local user_identifier="${positional[1]:-}"
 
     # 1. Validate that a site name was provided.
     if [ -z "$site_name" ]; then
@@ -5742,7 +6518,11 @@ plak_site_login() {
 
     # 5. Display the final URL or an error message.
     if [ -n "$login_url" ]; then
-        gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "🔗 One-Time Login URL for '$admin_to_login'" "$login_url"
+        if [ "$raw_mode" = true ]; then
+            printf '%s\n' "$login_url"
+        else
+            gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "🔗 One-Time Login URL for '$admin_to_login'" "$login_url"
+        fi
     else
         gum style --foreground red "❌ Error: Failed to generate the login link after all checks."
         exit 1
@@ -5751,14 +6531,29 @@ plak_site_login() {
 
 # Source: commands/site/mappings
 plak_site_mappings() {
-    local site_name="$1"
-    local action="$2"
-    local domain="$3"
+    local json_mode=false
+    local positional=()
+
+    # Filter --json from positional args first
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak mappings <site> [add|remove] [domain] [--json]"
+                exit 0
+                ;;
+            *) positional+=("$arg") ;;
+        esac
+    done
+
+    local site_name="${positional[0]:-}"
+    local action="${positional[1]:-}"
+    local domain="${positional[2]:-}"
 
     # --- 1. Validation ---
     if [ -z "$site_name" ]; then
         gum style --foreground red "❌ Error: A site name is required."
-        echo "Usage: plak mappings <site> [add|remove] [domain]"
+        echo "Usage: plak mappings <site> [add|remove] [domain] [--json]"
         exit 1
     fi
 
@@ -5772,14 +6567,27 @@ plak_site_mappings() {
 
     # --- 2. List Mappings (Default Action) ---
     if [ -z "$action" ] || [ "$action" == "list" ]; then
-        echo "🔎 Checking domain mappings for $site_name..."
-        
+        if [ "$json_mode" = false ]; then
+            echo "🔎 Checking domain mappings for $site_name..."
+        fi
+
         if [ ! -f "$mappings_file" ] || [ ! -s "$mappings_file" ]; then
-             gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "ℹ️  No additional mappings found." "Main domain: $site_name.localhost"
+            if [ "$json_mode" = true ]; then
+                printf '{"site":"%s","main":"%s.localhost","mappings":[]}\n' "$site_name" "$site_name"
+            else
+                gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "ℹ️  No additional mappings found." "Main domain: $site_name.localhost"
+            fi
         else
-            local content
-            content=$(cat "$mappings_file")
-            gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "📂 Domain Mappings ($site_name)" "" "$content"
+            if [ "$json_mode" = true ]; then
+                local escaped
+                escaped=$(python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))' < "$mappings_file" 2>/dev/null \
+                    || awk 'BEGIN{ printf "["; first=1 } NF { if (!first) printf ","; first=0; gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "\"%s\"", $0 } END{ print "]" }' "$mappings_file")
+                printf '{"site":"%s","main":"%s.localhost","mappings":%s}\n' "$site_name" "$site_name" "$escaped"
+            else
+                local content
+                content=$(cat "$mappings_file")
+                gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "📂 Domain Mappings ($site_name)" "" "$content"
+            fi
         fi
         return 0
     fi
@@ -6606,12 +7414,12 @@ plak_site_pull() {
     source_config
 
     # --- UI/Logging Functions ---
-    log_step() { 
+    log_step() {
         echo ""
         gum style --bold --foreground "yellow" "➡️  $1"
     }
-    log_success() { 
-        gum style --foreground "green" "✅ $1" 
+    log_success() {
+        gum style --foreground "green" "✅ $1"
     }
     log_error() {
         gum style --foreground "red" "❌ ERROR: $1" >&2
@@ -6619,12 +7427,14 @@ plak_site_pull() {
     }
 
     # --- Argument Parsing ---
-    local proxy_uploads=false
-    for arg in "$@"; do
-        if [ "$arg" == "--proxy-uploads" ]; then
-            proxy_uploads=true
-            break
-        fi
+    local site_name="" yes=0 proxy_uploads=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            --proxy-uploads) proxy_uploads=true; shift 1 ;;
+            -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
     done
 
     # Define quiet SSH options to prevent host key warnings. ControlMaster
@@ -6642,64 +7452,176 @@ plak_site_pull() {
     trap "rm -f '$ssh_ctl'" EXIT
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pulling a remote WordPress site into Plak."
-    # --- 1. Gather Remote Info ---
-    log_step "Choose remote server"
-    local remote_ssh
-    remote_ssh=$(plak_remote_choose_ssh)
-    if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
 
-    local remote_path
-    remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
-    if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
-    local remote_path_q
+    # --- 0. Resolve site_name and remote binding ---
+    # Three paths lead to a (site_name, remote_ssh, remote_path) tuple:
+    #   (a) site arg given + it has a binding   → use binding, no prompts
+    #   (b) site arg given + no binding         → ask for remote info (interactive)
+    #   (c) no site arg, bound sites exist      → pre-step picker (interactive)
+    #   (d) no site arg, no bound sites         → ask for everything (interactive)
+    local remote_ssh remote_path remote_path_q binding
+
+    if [ -n "$site_name" ]; then
+        # Validate site exists
+        if [ ! -d "$SITES_DIR/$site_name.localhost" ]; then
+            log_error "Site '$site_name' does not exist under $SITES_DIR."
+        fi
+
+        # Try to use its binding
+        binding=$(plak_remote_get_binding "$site_name" 2>/dev/null)
+        local binding_rc=$?
+        if [ "$binding_rc" -eq 0 ]; then
+            remote_ssh="${binding%|*}"
+            remote_path="${binding#*|}"
+            log_success "Using remote '$remote_ssh' (path: $remote_path)"
+        elif [ "$binding_rc" -eq 2 ] || [ "$binding_rc" -eq 3 ]; then
+            case "$binding_rc" in
+                2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
+                3) log_error "Remote attached to '$site_name' has no remote_path set. Run 'plak remote edit <name>' to set one." ;;
+            esac
+        else
+            # No binding for this site — fall through to manual remote info
+            plak_require_gum
+            log_step "Site '$site_name' has no remote binding. Choose remote manually."
+            log_step "Choose remote server"
+            remote_ssh=$(plak_remote_choose_ssh)
+            if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+            remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
+            if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+        fi
+    else
+        # No site arg: scan for bound sites and offer the pre-step
+        local bound_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            [ -d "$site_dir" ] || continue
+            if [ -f "$site_dir/.remote" ]; then
+                bound_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
+
+        if [ ${#bound_sites[@]} -gt 0 ]; then
+            plak_require_gum
+            log_step "Bound sites detected"
+            local bound_list=""
+            for s in "${bound_sites[@]}"; do
+                local r p
+                r=$(cat "$SITES_DIR/$s.localhost/.remote")
+                p=$(plak_remote_get_binding "$s" 2>/dev/null | awk -F'|' '{print $2}')
+                if [ -n "$p" ]; then
+                    bound_list="${bound_list}${bound_list:+\n}  • ${s}  →  ${r}  (path: ${p})"
+                else
+                    bound_list="${bound_list}${bound_list:+\n}  • ${s}  →  ${r}  (no path set)"
+                fi
+            done
+            gum style --border normal --margin "0 0 1 2" --padding "0 1" --border-foreground 244 "$bound_list"
+
+            local pre_choice
+            pre_choice=$(printf "%s\n%s\n" "Use a bound site" "Specify remote manually" | gum choose)
+            if [ "$pre_choice" = "Use a bound site" ]; then
+                site_name=$(printf "%s\n" "${bound_sites[@]}" | gum filter --placeholder "Choose bound site")
+                [ -n "$site_name" ] || exit 0
+
+                binding=$(plak_remote_get_binding "$site_name")
+                local binding_rc=$?
+                case "$binding_rc" in
+                    0)
+                        remote_ssh="${binding%|*}"
+                        remote_path="${binding#*|}"
+                        log_success "Using remote '$remote_ssh' (path: $remote_path)"
+                        ;;
+                    2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
+                    3) log_error "Remote attached to '$site_name' has no remote_path set. Run 'plak remote edit <name>' to set one." ;;
+                    *) log_error "Could not resolve binding for '$site_name'." ;;
+                esac
+            fi
+        else
+            plak_require_gum
+        fi
+    fi
+
+    # --- 1. Gather Remote Info (only if not already set) ---
+    if [ -z "$site_name" ] || [ -z "$remote_ssh" ]; then
+        if [ -z "$site_name" ]; then
+            log_step "Choose remote server"
+            remote_ssh=$(plak_remote_choose_ssh)
+            if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+            remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
+            if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+        fi
+        # If site_name given but no binding, the prompt block above already ran
+    fi
     remote_path_q=$(shell_quote "$remote_path")
 
     # --- 2. Validate Remote Site ---
     log_step "Validating remote WordPress site..."
     local remote_url
     remote_url=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home 2>/dev/null")
+    local domain
     domain=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//')
-    
+
     if [ -z "$remote_url" ] || [[ ! "$remote_url" == http* ]]; then
         log_error "Could not find a valid WordPress site at the specified path. Check your connection details and path."
     fi
     log_success "Found WordPress site: $remote_url"
 
-    # --- 3. Choose Destination ---
-    log_step "Choose a destination for the pulled site"
-    
-    local wp_sites=()
-    for site_dir in "$SITES_DIR"/*.localhost; do
-        if [ -f "$site_dir/public/wp-config.php" ]; then
-            wp_sites+=("$(basename "$site_dir" .localhost)")
+    # --- 3. Choose Destination (skip if site_name already known) ---
+    local dest_path local_url db_name
+
+    if [ -z "$site_name" ]; then
+        log_step "Choose a destination for the pulled site"
+
+        local wp_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            if [ -f "$site_dir/public/wp-config.php" ]; then
+                wp_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
+
+        local destination_choice
+        destination_choice=$(gum choose "New Site" "${wp_sites[@]}")
+
+        if [ "$destination_choice" == "New Site" ]; then
+            local proposed_name
+            proposed_name=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//; s/\./-/g')
+            site_name=$(gum input --width 0 --value "$proposed_name" --prompt "Enter a name for the new local site: ")
+            if [ -z "$site_name" ]; then log_error "Site name cannot be empty."; fi
+
+            log_step "Creating new placeholder site: ${site_name}.localhost"
+            "$PLAK_SITE_CMD" add "$site_name"
+            if [ $? -ne 0 ]; then log_error "Failed to create placeholder site. Does it already exist?"; fi
+
+        else
+            site_name="$destination_choice"
+            if [ "$yes" -eq 0 ]; then
+                if [ -t 0 ] && plak_command_exists gum; then
+                    if ! gum confirm "Are you sure you want to overwrite '${site_name}'? All its files and database content will be replaced."; then
+                        echo "🚫 Pull cancelled."
+                        exit 0
+                    fi
+                else
+                    log_error "Refusing to overwrite '$site_name' without --yes in non-interactive mode."
+                fi
+            fi
+
+            log_step "Preparing to overwrite existing site: ${site_name}.localhost"
+            db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+            mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
         fi
-    done
-    
-    local destination_choice
-    destination_choice=$(gum choose "New Site" "${wp_sites[@]}")
-
-    local site_name
-    local dest_path
-    local local_url
-    local db_name
-
-    if [ "$destination_choice" == "New Site" ]; then
-        local proposed_name
-        proposed_name=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//; s/\./-/g')
-        site_name=$(gum input --width 0 --value "$proposed_name" --prompt "Enter a name for the new local site: ")
-        if [ -z "$site_name" ]; then log_error "Site name cannot be empty."; fi
-
-        log_step "Creating new placeholder site: ${site_name}.localhost"
-        "$PLAK_SITE_CMD" add "$site_name"
-        if [ $? -ne 0 ]; then log_error "Failed to create placeholder site. Does it already exist?"; fi
-        
     else
-        site_name="$destination_choice"
-        if ! gum confirm "Are you sure you want to overwrite '${site_name}'? All its files and database content will be replaced."; then
-            echo "🚫 Pull cancelled."
-            exit 0
+        # site_name already known — always overwrite prep (pulling into an existing site)
+        if [ "$yes" -eq 0 ]; then
+            if [ -t 0 ] && plak_command_exists gum; then
+                if ! gum confirm "Are you sure you want to overwrite '${site_name}'? All its files and database content will be replaced."; then
+                    echo "🚫 Pull cancelled."
+                    exit 0
+                fi
+            else
+                log_error "Refusing to overwrite '$site_name' without --yes in non-interactive mode."
+            fi
         fi
-        
+
         log_step "Preparing to overwrite existing site: ${site_name}.localhost"
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
         mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
@@ -6770,25 +7692,35 @@ EOM
     remote_backup_q=$(shell_quote "$remote_path/$filename")
     ssh $ssh_opts $remote_ssh "rm -f $remote_backup_q" 2>/dev/null
     log_success "Cleanup complete."
- 
+
     # --- 8. Finalize ---
     regenerate_caddyfile
-    
+
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site is ready." "URL: ${local_url}"
 }
 
 # Source: commands/site/push
 plak_site_push() {
+    # --- Argument Parsing ---
+    local site_name="" yes=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
+    done
+
     # --- UI/Logging Functions ---
-    log_step() { 
+    log_step() {
         echo ""
         gum style --bold --foreground "yellow" "➡️  $1"
     }
-    log_success() { 
-        gum style --foreground "green" "✅ $1" 
+    log_success() {
+        gum style --foreground "green" "✅ $1"
     }
     log_error() {
-        gum style --foreground "red" "❌ ERROR: $1" 
+        gum style --foreground "red" "❌ ERROR: $1"
         >&2
         exit 1
     }
@@ -6806,50 +7738,78 @@ plak_site_push() {
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pushing a local Plak site to a remote server."
 
     # --- 1. Choose Local Site ---
-    log_step "Choose a local site to push"
-    local wp_sites=()
-    for site_dir in "$SITES_DIR"/*.localhost; do
-        if [ -f "$site_dir/public/wp-config.php" ]; then
-            wp_sites+=("$(basename "$site_dir" .localhost)")
-        fi
-    done
+    if [ -z "$site_name" ]; then
+        plak_require_gum
+        log_step "Choose a local site to push"
+        local wp_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            if [ -f "$site_dir/public/wp-config.php" ]; then
+                wp_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
 
-    if [ ${#wp_sites[@]} -eq 0 ]; then
-        log_error "No local WordPress sites found to push."
+        if [ ${#wp_sites[@]} -eq 0 ]; then
+            log_error "No local WordPress sites found to push."
+        fi
+
+        site_name=$(printf "%s\n" "${wp_sites[@]}" | gum filter --placeholder "Choose local site to push")
+        if [ -z "$site_name" ]; then log_error "No site selected."; fi
+    else
+        if [ ! -d "$SITES_DIR/$site_name.localhost" ]; then
+            log_error "Site '$site_name' does not exist under $SITES_DIR."
+        fi
+        if [ ! -f "$SITES_DIR/$site_name.localhost/public/wp-config.php" ]; then
+            log_error "Site '$site_name' is not a WordPress site (no wp-config.php found)."
+        fi
     fi
 
-    local site_name
-    site_name=$(printf "%s\n" "${wp_sites[@]}" | gum filter --placeholder "Choose local site to push")
-    if [ -z "$site_name" ]; then log_error "No site selected."; fi
-
     local local_path="$SITES_DIR/$site_name.localhost/public"
-    
-    # --- 2. Gather Remote Info ---
-    log_step "Choose remote server"
-    local remote_ssh
-    remote_ssh=$(plak_remote_choose_ssh)
-    if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
 
-    local remote_path
-    remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")
-    if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
-    local remote_path_q
+    # --- 2. Gather Remote Info ---
+    local remote_ssh remote_path remote_path_q binding
+    binding=$(plak_remote_get_binding "$site_name" 2>/dev/null)
+    local binding_rc=$?
+
+    if [ "$binding_rc" -eq 0 ]; then
+        remote_ssh="${binding%|*}"
+        remote_path="${binding#*|}"
+        log_success "Using remote '$remote_ssh' (path: $remote_path)"
+    else
+        case "$binding_rc" in
+            2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
+            3) log_error "Remote attached to '$site_name' has no remote_path set. Run 'plak remote edit <name>' to set one." ;;
+            *) plak_require_gum
+               log_step "Choose remote server"
+               remote_ssh=$(plak_remote_choose_ssh)
+               if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+               remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")
+               if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+               ;;
+        esac
+    fi
     remote_path_q=$(shell_quote "$remote_path")
 
     # --- 3. Validate Remote Site ---
     log_step "Validating remote WordPress site..."
     local remote_url
     remote_url=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home 2>/dev/null")
-    
+
     if [ -z "$remote_url" ] || [[ ! "$remote_url" == http* ]]; then
         log_error "Could not find a valid WordPress site at the specified path. Check your connection details and path."
     fi
     log_success "Found remote site to overwrite: $remote_url"
 
     # --- 4. Confirmation ---
-    if ! gum confirm "🚨 Are you sure you want to push '${site_name}' to '${remote_url}'? This will completely overwrite the remote site's files and database."; then
-        echo "🚫 Push cancelled."
-        exit 0
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "🚨 Are you sure you want to push '${site_name}' to '${remote_url}'? This will completely overwrite the remote site's files and database."; then
+                echo "🚫 Push cancelled."
+                exit 0
+            fi
+        else
+            log_error "Refusing to push without --yes in non-interactive mode."
+        fi
     fi
 
     # --- 5. Perform Local Backup ---
@@ -7075,8 +8035,24 @@ plak_site_rename() {
 SHARE_PROXY_PORT=19876
 
 plak_site_share() {
-    local site_name="$1"
-    
+    local print_url_only=false
+    local no_install=false
+    local positional=()
+
+    for arg in "$@"; do
+        case "$arg" in
+            --print-url) print_url_only=true ;;
+            --no-install) no_install=true ;;
+            -h|--help)
+                echo "Usage: plak share [<site>] [--print-url] [--no-install]"
+                exit 0
+                ;;
+            *) positional+=("$arg") ;;
+        esac
+    done
+
+    local site_name="${positional[0]:-}"
+
     # --- 1. Validate Site ---
     if [ -z "$site_name" ]; then
         # Interactive mode: let user select a site
@@ -7086,15 +8062,20 @@ plak_site_share() {
                 all_sites+=("$(basename "$site_dir" .localhost)")
             fi
         done
-        
+
         if [ ${#all_sites[@]} -eq 0 ]; then
             gum style --foreground red "Error: No sites found. Create one with 'plak add <name>'."
             exit 1
         fi
-        
+
+        if [ "$print_url_only" = true ]; then
+            gum style --foreground red "Error: --print-url requires a site name (no interactive picker in non-TTY mode)."
+            exit 1
+        fi
+
         echo "Select a site to share:"
         site_name=$(gum choose "${all_sites[@]}")
-        
+
         if [ -z "$site_name" ]; then
             echo "Cancelled."
             exit 0
@@ -7135,18 +8116,32 @@ plak_site_share() {
         fi
         
         if [ -n "$install_cmd" ]; then
-            if gum confirm "Install cloudflared via ${install_name}?"; then
-                echo "Installing cloudflared..."
+            if [ "$no_install" = true ]; then
+                gum style --foreground red "Error: --no-install set but cloudflared is not installed."
+                exit 1
+            fi
+            if [ "$print_url_only" = false ] && [ -t 0 ] && plak_command_exists gum; then
+                if gum confirm "Install cloudflared via ${install_name}?"; then
+                    echo "Installing cloudflared..."
+                    eval "$install_cmd"
+                    if ! command -v cloudflared &> /dev/null; then
+                        gum style --foreground red "Error: Failed to install cloudflared."
+                        exit 1
+                    fi
+                    echo "cloudflared installed successfully."
+                    echo ""
+                else
+                    gum style --foreground red "Error: cloudflared is required."
+                    exit 1
+                fi
+            else
+                # Non-interactive: just install without prompting
+                echo "Installing cloudflared via ${install_name}..."
                 eval "$install_cmd"
                 if ! command -v cloudflared &> /dev/null; then
                     gum style --foreground red "Error: Failed to install cloudflared."
                     exit 1
                 fi
-                echo "cloudflared installed successfully."
-                echo ""
-            else
-                gum style --foreground red "Error: cloudflared is required."
-                exit 1
             fi
         else
             gum style --foreground red "Error: cloudflared not found."
@@ -7234,7 +8229,17 @@ plak_site_share() {
     
     # Extract just the hostname from the URL
     local public_host="${public_url#https://}"
-    
+
+    if [ "$print_url_only" = true ]; then
+        # Agent mode: print just the URL and exit
+        printf '%s\n' "$public_url"
+        kill $tunnel_pid 2>/dev/null
+        wait $tunnel_pid 2>/dev/null
+        kill $proxy_pid 2>/dev/null
+        wait $proxy_pid 2>/dev/null
+        exit 0
+    fi
+
     gum style --foreground 212 --bold "Public URL: $(plak_terminal_link "$public_url")"
     echo ""
     echo "Share this URL with anyone to give them access to your site."
@@ -7398,27 +8403,40 @@ PYTHON_PROXY
 
 # Source: commands/site/status
 plak_site_status() {
-    echo "🔎 Checking Plak service status..."
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak status [--json]"
+                exit 0
+                ;;
+        esac
+    done
 
-    local caddy_status="❌ Stopped"
-    local mariadb_status="❌ Stopped"
-    local mailpit_status="❌ Stopped"
+    if [ "$json_mode" = false ]; then
+        echo "🔎 Checking Plak service status..."
+    fi
+
+    local caddy_running=false
+    local mariadb_running=false
+    local mailpit_running=false
 
     # Probe Caddy's admin endpoint. The prior pidfile check fell over on
     # Linux where sudo frankenphp start left the pidfile root-owned (0600),
     # so the user reading it as austin got "" and the status falsely showed
     # Stopped. The TCP probe is readable by any local user.
     if is_caddy_running; then
-        caddy_status="✅ Running"
+        caddy_running=true
     fi
 
     # Check MariaDB and Mailpit status on MacOS
     if [ "$OS" == "macos" ]; then
         if brew services list 2>/dev/null | grep -q "mariadb.*started"; then
-            mariadb_status="✅ Running"
+            mariadb_running=true
         fi
         if launchctl list 2>/dev/null | grep -q "com.plak.mailpit"; then
-            mailpit_status="✅ Running"
+            mailpit_running=true
         fi
     fi
 
@@ -7428,12 +8446,33 @@ plak_site_status() {
         local mariadb_service
         mariadb_service=$(get_mariadb_service_name)
         if systemctl is-active --quiet "$mariadb_service" 2>/dev/null; then
-            mariadb_status="✅ Running"
+            mariadb_running=true
         fi
         if systemctl is-active --quiet mailpit 2>/dev/null; then
-            mailpit_status="✅ Running"
+            mailpit_running=true
         fi
     fi
+
+    if [ "$json_mode" = true ]; then
+        local caddy_s="stopped"
+        local mariadb_s="stopped"
+        local mailpit_s="stopped"
+        [ "$caddy_running" = true ] && caddy_s="running"
+        [ "$mariadb_running" = true ] && mariadb_s="running"
+        [ "$mailpit_running" = true ] && mailpit_s="running"
+        printf '{"caddy":"%s","mariadb":"%s","mailpit":"%s","dashboard":"%s","all_running":%s}\n' \
+            "$caddy_s" "$mariadb_s" "$mailpit_s" \
+            "$(url_for plak.localhost)" \
+            "$([ "$caddy_running" = true ] && [ "$mariadb_running" = true ] && [ "$mailpit_running" = true ] && echo true || echo false)"
+        return 0
+    fi
+
+    local caddy_status="❌ Stopped"
+    local mariadb_status="❌ Stopped"
+    local mailpit_status="❌ Stopped"
+    [ "$caddy_running" = true ] && caddy_status="✅ Running"
+    [ "$mariadb_running" = true ] && mariadb_status="✅ Running"
+    [ "$mailpit_running" = true ] && mailpit_status="✅ Running"
 
     echo ""
     echo "  Caddy Server: $caddy_status"
@@ -7475,7 +8514,7 @@ plak_site_status() {
 TAILSCALE_CONFIG="$APP_DIR/tailscale"
 
 plak_site_tailscale_enable() {
-    local hostname="$1"
+    local hostname="${1:-}"
 
     # Try to auto-detect hostname if not provided
     if [ -z "$hostname" ]; then
@@ -7488,6 +8527,10 @@ plak_site_tailscale_enable() {
 
     # Interactive mode if still no hostname
     if [ -z "$hostname" ]; then
+        if [ ! -t 0 ] || ! plak_command_exists gum; then
+            gum style --foreground red "❌ Error: Could not auto-detect Tailscale hostname. Pass it explicitly: plak tailscale enable <hostname>"
+            exit 1
+        fi
         echo "📝 Enter your Tailscale machine hostname"
         echo "   (e.g., mycomputer.tail1234.ts.net)"
         hostname=$(gum input --width 0 --placeholder "your-machine.tailnet.ts.net")
@@ -8532,42 +9575,99 @@ plak_sshkey_view() {
 }
 
 plak_sshkey_create() {
-    plak_require_gum
+    local key_name="" key_type="ed25519" bits="" passphrase="" overwrite=false
 
-    plak_ui_title "Create SSH key"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --type) key_type="$2"; shift 2 ;;
+            --bits) bits="$2"; shift 2 ;;
+            --passphrase) passphrase="$2"; shift 2 ;;
+            --force|--yes|-y) overwrite=true; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *)
+                if [ -z "$key_name" ]; then
+                    key_name="$1"
+                fi
+                shift 1
+                ;;
+        esac
+    done
 
-    local ssh_dir key_name key_path key_type bits passphrase overwrite=false
-    ssh_dir="$HOME/.ssh"
+    local have_all=1
+    [ -z "$key_name" ] && have_all=0
+
+    if [ "$have_all" -eq 0 ]; then
+        plak_require_gum
+        plak_ui_title "Create SSH key"
+    fi
+
+    if [ -z "$key_name" ]; then
+        while true; do
+            key_name=$(gum input --prompt "Key name: " --value "id_ed25519")
+            [ -n "$key_name" ] || return 0
+            if [[ "$key_name" == */* || "$key_name" == .* ]]; then
+                plak_ui_error "Use a file name only, without slashes or leading dots."
+                continue
+            fi
+            break
+        done
+    else
+        if [[ "$key_name" == */* || "$key_name" == .* ]]; then
+            plak_ui_error "Invalid key name '$key_name'. Use a file name only."
+            exit 1
+        fi
+    fi
+
+    local ssh_dir="$HOME/.ssh"
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir"
 
-    while true; do
-        key_name=$(gum input --prompt "Key name: " --value "id_ed25519")
-        [ -n "$key_name" ] || return 0
-        if [[ "$key_name" == */* || "$key_name" == .* ]]; then
-            plak_ui_error "Use a file name only, without slashes or leading dots."
-            continue
-        fi
-        break
-    done
+    local key_path="$ssh_dir/$key_name"
 
-    key_path="$ssh_dir/$key_name"
     if [ -e "$key_path" ] || [ -e "$key_path.pub" ]; then
-        if gum confirm "Key '$key_name' already exists. Overwrite?"; then
-            overwrite=true
-        else
-            plak_ui_warn "Cancelled."
-            return 0
+        if [ "$have_all" -eq 0 ] && [ "$overwrite" = false ]; then
+            if gum confirm "Key '$key_name' already exists. Overwrite?"; then
+                overwrite=true
+            else
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        fi
+        if [ "$overwrite" = false ]; then
+            plak_ui_error "Key '$key_name' already exists. Use --yes to overwrite."
+            exit 1
         fi
     fi
 
-    key_type=$(gum choose "ed25519" "rsa" "ecdsa")
-    bits=""
-    if [ "$key_type" = "rsa" ]; then
-        bits=$(gum choose "4096" "2048")
+    if [ "$have_all" -eq 0 ]; then
+        if [ -z "$key_type" ]; then
+            key_type=$(gum choose "ed25519" "rsa" "ecdsa")
+        fi
+        if [ "$key_type" = "rsa" ] && [ -z "$bits" ]; then
+            bits=$(gum choose "4096" "2048")
+        fi
+        if [ -z "$passphrase" ]; then
+            passphrase=$(gum input --password --placeholder "Passphrase (empty for none)")
+        fi
     fi
 
-    passphrase=$(gum input --password --placeholder "Passphrase (empty for none)")
+    case "$key_type" in
+        ed25519|rsa|ecdsa) : ;;
+        *) plak_ui_error "Invalid key type '$key_type'. Use ed25519, rsa, or ecdsa."; exit 1 ;;
+    esac
+
+    if [ "$key_type" = "rsa" ]; then
+        if [ -z "$bits" ]; then
+            bits=4096
+        fi
+        if [[ ! "$bits" =~ ^[0-9]+$ ]] || { [ "$bits" -lt 1024 ] || [ "$bits" -gt 16384 ]; }; then
+            plak_ui_error "Invalid bits '$bits'. Use 1024-16384 (recommend 4096)."
+            exit 1
+        fi
+    fi
 
     if [ "$overwrite" = true ]; then
         rm -f "$key_path" "$key_path.pub"
@@ -8578,12 +9678,16 @@ plak_sshkey_create() {
         cmd=(ssh-keygen -t "$key_type" -b "$bits" -f "$key_path" -N "$passphrase")
     fi
 
-    if "${cmd[@]}"; then
+    if "${cmd[@]}" 2>/dev/null; then
         chmod 600 "$key_path"
         [ -f "$key_path.pub" ] && chmod 644 "$key_path.pub"
-        plak_ui_success "SSH key '$key_name' created."
-        echo ""
-        plak_sshkey_show_details "$key_path"
+        if [ "$have_all" -eq 0 ]; then
+            plak_ui_success "SSH key '$key_name' created."
+            echo ""
+            plak_sshkey_show_details "$key_path"
+        else
+            plak_ui_success "SSH key '$key_name' created at $key_path"
+        fi
     else
         plak_ui_error "ssh-keygen failed."
         return 1
@@ -8591,25 +9695,53 @@ plak_sshkey_create() {
 }
 
 plak_sshkey_delete() {
-    plak_require_gum
+    local name="" yes=0
 
-    local keys selected
-    keys=$(plak_sshkey_private_keys)
-    if [ -z "$keys" ]; then
-        plak_ui_warn "No SSH keys found in $HOME/.ssh."
-        return 0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; exit 1 ;;
+            *) name="$1"; shift 1 ;;
+        esac
+    done
+
+    if [ -z "$name" ]; then
+        plak_require_gum
+        local keys
+        keys=$(plak_sshkey_private_keys)
+        if [ -z "$keys" ]; then
+            plak_ui_warn "No SSH keys found in $HOME/.ssh."
+            return 0
+        fi
+        name=$(echo "$keys" | gum filter --placeholder "Choose SSH key to delete")
+        [ -n "$name" ] || return 0
     fi
 
-    selected=$(echo "$keys" | gum filter --placeholder "Choose SSH key to delete")
-    [ -n "$selected" ] || return 0
-
-    if ! gum confirm "Delete '$(basename "$selected")' and its .pub file?"; then
-        plak_ui_warn "Cancelled."
-        return 0
+    local ssh_dir="$HOME/.ssh"
+    local key_path
+    if [ -f "$ssh_dir/$name" ]; then
+        key_path="$ssh_dir/$name"
+    elif [ -f "$name" ]; then
+        key_path="$name"
+    else
+        plak_ui_error "Key '$name' not found in $ssh_dir."
+        exit 1
     fi
 
-    rm -f "$selected" "$selected.pub"
-    plak_ui_success "SSH key '$(basename "$selected")' deleted."
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Delete '$(basename "$key_path")' and its .pub file?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        else
+            plak_ui_error "Refusing to delete '$(basename "$key_path")' without --yes in non-interactive mode."
+            exit 1
+        fi
+    fi
+
+    rm -f "$key_path" "$key_path.pub"
+    plak_ui_success "SSH key '$(basename "$key_path")' deleted."
 }
 
 plak_sshkey() {
@@ -8644,6 +9776,36 @@ plak_sshkey() {
 
 # Source: commands/status
 plak_status() {
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak status [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = true ]; then
+        local deps_json=""
+        local sep=""
+        local dep status
+        for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
+            if plak_command_exists "$dep"; then
+                status="found"
+            else
+                status="missing"
+            fi
+            deps_json="${deps_json}${sep}\"${dep}\":\"${status}\""
+            sep=","
+        done
+
+        printf '{"os":"%s","plak_home":"%s","sites_home":"%s","ssh_config":"%s","hosts_file":"%s","dependencies":{%s}}\n' \
+            "$PLAK_OS" "$PLAK_HOME" "$PLAK_SITE_DIR" "$PLAK_SSH_CONFIG" "$PLAK_HOSTS_FILE" "$deps_json"
+        return 0
+    fi
+
     plak_ui_title "Plak status"
     echo ""
     echo "OS:          $PLAK_OS"
@@ -8665,18 +9827,41 @@ plak_status() {
     done
 
     if [ -f "$CONFIG_FILE" ] && plak_command_exists "$CADDY_CMD" && plak_command_exists gum; then
-        echo ""
-        plak_site_status
+        if [ "$json_mode" = true ]; then
+            plak_site_status --json
+        else
+            echo ""
+            plak_site_status
+        fi
     else
-        echo ""
-        echo "Site services: not installed yet"
-        echo "Dashboard:     $(url_for plak.localhost)"
+        if [ "$json_mode" = true ]; then
+            printf '{"site_services":"not_installed","dashboard":"%s"}\n' "$(url_for plak.localhost)"
+        else
+            echo ""
+            echo "Site services: not installed yet"
+            echo "Dashboard:     $(url_for plak.localhost)"
+        fi
     fi
 }
 
 # Source: commands/version
 plak_version() {
-    echo "$PLAK_NAME v$PLAK_VERSION"
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak version [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = true ]; then
+        printf '{"name":"%s","version":"%s"}\n' "$PLAK_NAME" "$PLAK_VERSION"
+    else
+        echo "$PLAK_NAME v$PLAK_VERSION"
+    fi
 }
 
 # Pass all script arguments to the main function.

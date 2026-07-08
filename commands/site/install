@@ -218,10 +218,14 @@ plak_site_install() {
         fi
 
         local choice
-        choice=$(gum choose \
-            "Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})" \
-            "$default_label" \
-            "Pick different custom ports")
+        if $auto_yes; then
+            choice="Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})"
+        else
+            choice=$(gum choose \
+                "Keep current ports (${HTTP_PORT} / ${HTTPS_PORT})" \
+                "$default_label" \
+                "Pick different custom ports")
+        fi
 
         case "$choice" in
             "Keep current"*)
@@ -263,20 +267,33 @@ plak_site_install() {
         echo ""
 
         local choice
-        choice=$(gum choose \
-            "Use alternative ports (8090 / 8453) — run alongside other tools" \
-            "Pick custom ports" \
-            "Proceed with ${HTTP_PORT}/${HTTPS_PORT} anyway" \
-            "Cancel installation")
+        if $auto_yes; then
+            # Non-interactive: pick the safest default that avoids the conflict.
+            choice="Use alternative ports (8090 / 8453) — run alongside other tools"
+        else
+            choice=$(gum choose \
+                "Use alternative ports (8090 / 8453) — run alongside other tools" \
+                "Pick custom ports" \
+                "Proceed with ${HTTP_PORT}/${HTTPS_PORT} anyway" \
+                "Cancel installation")
+        fi
 
         case "$choice" in
             "Use alternative ports"*)
                 HTTP_PORT=8090
                 HTTPS_PORT=8453
                 if port_has_conflict "$HTTP_PORT" || port_has_conflict "$HTTPS_PORT"; then
-                    gum style --foreground yellow \
-                        "⚠️  8090 or 8453 is also in use — please pick custom ports."
-                    prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
+                    if ! $auto_yes; then
+                        gum style --foreground yellow \
+                            "⚠️  8090 or 8453 is also in use — please pick custom ports."
+                    fi
+                    if $auto_yes; then
+                        # Auto-pick next free port
+                        HTTP_PORT=$(next_free_port 8090)
+                        HTTPS_PORT=$(next_free_port 8453)
+                    else
+                        prompt_custom_ports "$(next_free_port 8090)" "$(next_free_port 8453)"
+                    fi
                 fi
                 ;;
             "Pick custom ports")
@@ -620,6 +637,9 @@ INI
         if echo "$sql_command" | $SUDO_CMD mysql &> /dev/null; then
             echo "   - ✅ Automatic database user creation successful."
             user_created_successfully=true
+        elif $auto_yes; then
+            echo "   - ❌ Automatic database setup failed and --yes is set. Cannot prompt for root credentials."
+            exit 1
         else
             echo "   - ⚠️ Automatic setup failed. Falling back to manual credential entry..."
             local root_user

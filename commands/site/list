@@ -1,12 +1,19 @@
 plak_site_list() {
-    local show_totals=false
-    if [[ "$1" == "--totals" ]]; then
-        show_totals=true
-    fi
+    local show_totals=false json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --totals) show_totals=true ;;
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak list [--totals] [--json]"
+                exit 0
+                ;;
+        esac
+    done
 
-    # PHP script to find, sort, and format the site list with box-drawing characters
+    # PHP script to find, sort, and format the site list
     local php_output
-    php_output=$(SITES_DIR="$SITES_DIR" SHOW_TOTALS="$show_totals" HTTPS_PORT_SUFFIX="$(https_port_suffix)" frankenphp php-cli -r '
+    php_output=$(SITES_DIR="$SITES_DIR" SHOW_TOTALS="$show_totals" JSON_MODE="$json_mode" HTTPS_PORT_SUFFIX="$(https_port_suffix)" frankenphp php-cli -r '
         function getDirectorySize(string $path): int {
             if (!is_dir($path)) return 0;
             $total_size = 0;
@@ -28,9 +35,11 @@ plak_site_list() {
 
         $sites_dir = getenv("SITES_DIR");
         $show_totals = getenv("SHOW_TOTALS") === "true";
+        $json_mode = getenv("JSON_MODE") === "true";
         $port_suffix = getenv("HTTPS_PORT_SUFFIX") ?: "";
 
         if (!is_dir($sites_dir)) {
+            if ($json_mode) echo "[]\n";
             exit;
         }
 
@@ -53,7 +62,8 @@ plak_site_list() {
         }
 
         if (empty($sites)) {
-             exit;
+            if ($json_mode) echo "[]\n";
+            exit;
         }
 
         // Sort the array: first by type, then by name
@@ -62,6 +72,12 @@ plak_site_list() {
             array_column($sites, "name"), SORT_ASC,
             $sites
         );
+
+        // JSON output branch — machine-parseable
+        if ($json_mode) {
+            echo json_encode($sites, JSON_UNESCAPED_SLASHES) . "\n";
+            exit;
+        }
 
         // Column padding/gap
         $gap = 3;
@@ -124,11 +140,19 @@ plak_site_list() {
     ')
 
     if [ -z "$php_output" ]; then
-        gum style --padding "1 2" "No sites found. Add one with 'plak add <name>'."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            gum style --padding "1 2" "No sites found. Add one with 'plak add <name>'."
+        fi
     else
-        echo ""
-        gum style --faint "Sites are located in ~/Plak/Sites/"
-        echo ""
-        echo "$php_output"
+        if [ "$json_mode" = true ]; then
+            echo "$php_output"
+        else
+            echo ""
+            gum style --faint "Sites are located in ~/Plak/Sites/"
+            echo ""
+            echo "$php_output"
+        fi
     fi
 }

@@ -1,25 +1,38 @@
 plak_site_status() {
-    echo "🔎 Checking Plak service status..."
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak status [--json]"
+                exit 0
+                ;;
+        esac
+    done
 
-    local caddy_status="❌ Stopped"
-    local mariadb_status="❌ Stopped"
-    local mailpit_status="❌ Stopped"
+    if [ "$json_mode" = false ]; then
+        echo "🔎 Checking Plak service status..."
+    fi
+
+    local caddy_running=false
+    local mariadb_running=false
+    local mailpit_running=false
 
     # Probe Caddy's admin endpoint. The prior pidfile check fell over on
     # Linux where sudo frankenphp start left the pidfile root-owned (0600),
     # so the user reading it as austin got "" and the status falsely showed
     # Stopped. The TCP probe is readable by any local user.
     if is_caddy_running; then
-        caddy_status="✅ Running"
+        caddy_running=true
     fi
 
     # Check MariaDB and Mailpit status on MacOS
     if [ "$OS" == "macos" ]; then
         if brew services list 2>/dev/null | grep -q "mariadb.*started"; then
-            mariadb_status="✅ Running"
+            mariadb_running=true
         fi
         if launchctl list 2>/dev/null | grep -q "com.plak.mailpit"; then
-            mailpit_status="✅ Running"
+            mailpit_running=true
         fi
     fi
 
@@ -29,12 +42,33 @@ plak_site_status() {
         local mariadb_service
         mariadb_service=$(get_mariadb_service_name)
         if systemctl is-active --quiet "$mariadb_service" 2>/dev/null; then
-            mariadb_status="✅ Running"
+            mariadb_running=true
         fi
         if systemctl is-active --quiet mailpit 2>/dev/null; then
-            mailpit_status="✅ Running"
+            mailpit_running=true
         fi
     fi
+
+    if [ "$json_mode" = true ]; then
+        local caddy_s="stopped"
+        local mariadb_s="stopped"
+        local mailpit_s="stopped"
+        [ "$caddy_running" = true ] && caddy_s="running"
+        [ "$mariadb_running" = true ] && mariadb_s="running"
+        [ "$mailpit_running" = true ] && mailpit_s="running"
+        printf '{"caddy":"%s","mariadb":"%s","mailpit":"%s","dashboard":"%s","all_running":%s}\n' \
+            "$caddy_s" "$mariadb_s" "$mailpit_s" \
+            "$(url_for plak.localhost)" \
+            "$([ "$caddy_running" = true ] && [ "$mariadb_running" = true ] && [ "$mailpit_running" = true ] && echo true || echo false)"
+        return 0
+    fi
+
+    local caddy_status="❌ Stopped"
+    local mariadb_status="❌ Stopped"
+    local mailpit_status="❌ Stopped"
+    [ "$caddy_running" = true ] && caddy_status="✅ Running"
+    [ "$mariadb_running" = true ] && mariadb_status="✅ Running"
+    [ "$mailpit_running" = true ] && mailpit_status="✅ Running"
 
     echo ""
     echo "  Caddy Server: $caddy_status"

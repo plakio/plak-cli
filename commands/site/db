@@ -92,7 +92,20 @@ plak_site_db_backup() {
 plak_site_db_list() {
     source_config # To get DB_USER and DB_PASSWORD for mysql command
 
-    echo "🔎 Gathering database information for all WordPress sites..."
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak db list [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = false ]; then
+        echo "🔎 Gathering database information for all WordPress sites..."
+    fi
 
     if ! command -v wp &> /dev/null; then
         gum style --foreground red "❌ wp-cli is not installed or not in your PATH. Please run 'plak install'."
@@ -100,7 +113,11 @@ plak_site_db_list() {
     fi
 
     if [ ! -d "$SITES_DIR" ] || [ -z "$(ls -A "$SITES_DIR" 2>/dev/null)" ]; then
-        gum style --padding "1 2" "ℹ️ No sites found."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            gum style --padding "1 2" "ℹ️ No sites found."
+        fi
         exit 0
     fi
 
@@ -117,7 +134,7 @@ plak_site_db_list() {
     local frank
     frank=$(command -v frankenphp)
     local php_output
-    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
+    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
             if ($bytes === 0) return "0 B";
             $units = ["B", "KB", "MB", "GB", "TB"];
@@ -133,9 +150,13 @@ plak_site_db_list() {
         $wp_root_flag = getenv("WP_ROOT_FLAG");
         $wp_path = getenv("WP_PATH");
         $frank_bin = getenv("FRANK_BIN");
+        $json_mode = getenv("JSON_MODE") === "true";
         $wp_invoker = escapeshellarg($frank_bin) . " php-cli " . escapeshellarg($wp_path);
 
-        if (!is_dir($sites_dir)) { exit; }
+        if (!is_dir($sites_dir)) {
+            if ($json_mode) echo "[]\n";
+            exit;
+        }
 
         try {
             $pdo = new PDO("mysql:host={$db_host};port={$db_port}", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
@@ -182,10 +203,18 @@ plak_site_db_list() {
             }
         }
 
-        if (empty($sites_info)) { exit; }
+        if (empty($sites_info)) {
+            if ($json_mode) echo "[]\n";
+            exit;
+        }
 
         array_multisort(array_column($sites_info, "name"), SORT_ASC, $sites_info);
-        
+
+        if ($json_mode) {
+            echo json_encode($sites_info, JSON_UNESCAPED_SLASHES) . "\n";
+            exit;
+        }
+
         $output = [];
         $w = ["name" => 20, "db_name" => 25, "db_user" => 20, "db_pass" => 25, "size" => 15];
         $header = str_pad("Name", $w["name"]) . " " . str_pad("DB Name", $w["db_name"]) . " " . str_pad("DB User", $w["db_user"]) . " " . str_pad("DB Pass", $w["db_pass"]) . " " . str_pad("Size", $w["size"]);
@@ -201,8 +230,16 @@ plak_site_db_list() {
     ')
 
     if [ -z "$php_output" ]; then
-        gum style --padding "1 2" "ℹ️ No WordPress sites with readable database configurations found."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            gum style --padding "1 2" "ℹ️ No WordPress sites with readable database configurations found."
+        fi
     else
-        echo "$php_output" | gum style --border normal --margin "1" --padding "1 2" --border-foreground 212
+        if [ "$json_mode" = true ]; then
+            echo "$php_output"
+        else
+            echo "$php_output" | gum style --border normal --margin "1" --padding "1 2" --border-foreground 212
+        fi
     fi
 }

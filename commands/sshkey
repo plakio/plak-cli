@@ -102,42 +102,99 @@ plak_sshkey_view() {
 }
 
 plak_sshkey_create() {
-    plak_require_gum
+    local key_name="" key_type="ed25519" bits="" passphrase="" overwrite=false
 
-    plak_ui_title "Create SSH key"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --type) key_type="$2"; shift 2 ;;
+            --bits) bits="$2"; shift 2 ;;
+            --passphrase) passphrase="$2"; shift 2 ;;
+            --force|--yes|-y) overwrite=true; shift 1 ;;
+            -*)
+                plak_ui_error "Unknown flag: $1"
+                exit 1
+                ;;
+            *)
+                if [ -z "$key_name" ]; then
+                    key_name="$1"
+                fi
+                shift 1
+                ;;
+        esac
+    done
 
-    local ssh_dir key_name key_path key_type bits passphrase overwrite=false
-    ssh_dir="$HOME/.ssh"
+    local have_all=1
+    [ -z "$key_name" ] && have_all=0
+
+    if [ "$have_all" -eq 0 ]; then
+        plak_require_gum
+        plak_ui_title "Create SSH key"
+    fi
+
+    if [ -z "$key_name" ]; then
+        while true; do
+            key_name=$(gum input --prompt "Key name: " --value "id_ed25519")
+            [ -n "$key_name" ] || return 0
+            if [[ "$key_name" == */* || "$key_name" == .* ]]; then
+                plak_ui_error "Use a file name only, without slashes or leading dots."
+                continue
+            fi
+            break
+        done
+    else
+        if [[ "$key_name" == */* || "$key_name" == .* ]]; then
+            plak_ui_error "Invalid key name '$key_name'. Use a file name only."
+            exit 1
+        fi
+    fi
+
+    local ssh_dir="$HOME/.ssh"
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir"
 
-    while true; do
-        key_name=$(gum input --prompt "Key name: " --value "id_ed25519")
-        [ -n "$key_name" ] || return 0
-        if [[ "$key_name" == */* || "$key_name" == .* ]]; then
-            plak_ui_error "Use a file name only, without slashes or leading dots."
-            continue
-        fi
-        break
-    done
+    local key_path="$ssh_dir/$key_name"
 
-    key_path="$ssh_dir/$key_name"
     if [ -e "$key_path" ] || [ -e "$key_path.pub" ]; then
-        if gum confirm "Key '$key_name' already exists. Overwrite?"; then
-            overwrite=true
-        else
-            plak_ui_warn "Cancelled."
-            return 0
+        if [ "$have_all" -eq 0 ] && [ "$overwrite" = false ]; then
+            if gum confirm "Key '$key_name' already exists. Overwrite?"; then
+                overwrite=true
+            else
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        fi
+        if [ "$overwrite" = false ]; then
+            plak_ui_error "Key '$key_name' already exists. Use --yes to overwrite."
+            exit 1
         fi
     fi
 
-    key_type=$(gum choose "ed25519" "rsa" "ecdsa")
-    bits=""
-    if [ "$key_type" = "rsa" ]; then
-        bits=$(gum choose "4096" "2048")
+    if [ "$have_all" -eq 0 ]; then
+        if [ -z "$key_type" ]; then
+            key_type=$(gum choose "ed25519" "rsa" "ecdsa")
+        fi
+        if [ "$key_type" = "rsa" ] && [ -z "$bits" ]; then
+            bits=$(gum choose "4096" "2048")
+        fi
+        if [ -z "$passphrase" ]; then
+            passphrase=$(gum input --password --placeholder "Passphrase (empty for none)")
+        fi
     fi
 
-    passphrase=$(gum input --password --placeholder "Passphrase (empty for none)")
+    case "$key_type" in
+        ed25519|rsa|ecdsa) : ;;
+        *) plak_ui_error "Invalid key type '$key_type'. Use ed25519, rsa, or ecdsa."; exit 1 ;;
+    esac
+
+    if [ "$key_type" = "rsa" ]; then
+        if [ -z "$bits" ]; then
+            bits=4096
+        fi
+        if [[ ! "$bits" =~ ^[0-9]+$ ]] || { [ "$bits" -lt 1024 ] || [ "$bits" -gt 16384 ]; }; then
+            plak_ui_error "Invalid bits '$bits'. Use 1024-16384 (recommend 4096)."
+            exit 1
+        fi
+    fi
 
     if [ "$overwrite" = true ]; then
         rm -f "$key_path" "$key_path.pub"
@@ -148,12 +205,16 @@ plak_sshkey_create() {
         cmd=(ssh-keygen -t "$key_type" -b "$bits" -f "$key_path" -N "$passphrase")
     fi
 
-    if "${cmd[@]}"; then
+    if "${cmd[@]}" 2>/dev/null; then
         chmod 600 "$key_path"
         [ -f "$key_path.pub" ] && chmod 644 "$key_path.pub"
-        plak_ui_success "SSH key '$key_name' created."
-        echo ""
-        plak_sshkey_show_details "$key_path"
+        if [ "$have_all" -eq 0 ]; then
+            plak_ui_success "SSH key '$key_name' created."
+            echo ""
+            plak_sshkey_show_details "$key_path"
+        else
+            plak_ui_success "SSH key '$key_name' created at $key_path"
+        fi
     else
         plak_ui_error "ssh-keygen failed."
         return 1
@@ -161,25 +222,53 @@ plak_sshkey_create() {
 }
 
 plak_sshkey_delete() {
-    plak_require_gum
+    local name="" yes=0
 
-    local keys selected
-    keys=$(plak_sshkey_private_keys)
-    if [ -z "$keys" ]; then
-        plak_ui_warn "No SSH keys found in $HOME/.ssh."
-        return 0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; exit 1 ;;
+            *) name="$1"; shift 1 ;;
+        esac
+    done
+
+    if [ -z "$name" ]; then
+        plak_require_gum
+        local keys
+        keys=$(plak_sshkey_private_keys)
+        if [ -z "$keys" ]; then
+            plak_ui_warn "No SSH keys found in $HOME/.ssh."
+            return 0
+        fi
+        name=$(echo "$keys" | gum filter --placeholder "Choose SSH key to delete")
+        [ -n "$name" ] || return 0
     fi
 
-    selected=$(echo "$keys" | gum filter --placeholder "Choose SSH key to delete")
-    [ -n "$selected" ] || return 0
-
-    if ! gum confirm "Delete '$(basename "$selected")' and its .pub file?"; then
-        plak_ui_warn "Cancelled."
-        return 0
+    local ssh_dir="$HOME/.ssh"
+    local key_path
+    if [ -f "$ssh_dir/$name" ]; then
+        key_path="$ssh_dir/$name"
+    elif [ -f "$name" ]; then
+        key_path="$name"
+    else
+        plak_ui_error "Key '$name' not found in $ssh_dir."
+        exit 1
     fi
 
-    rm -f "$selected" "$selected.pub"
-    plak_ui_success "SSH key '$(basename "$selected")' deleted."
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Delete '$(basename "$key_path")' and its .pub file?"; then
+                plak_ui_warn "Cancelled."
+                return 0
+            fi
+        else
+            plak_ui_error "Refusing to delete '$(basename "$key_path")' without --yes in non-interactive mode."
+            exit 1
+        fi
+    fi
+
+    rm -f "$key_path" "$key_path.pub"
+    plak_ui_success "SSH key '$(basename "$key_path")' deleted."
 }
 
 plak_sshkey() {

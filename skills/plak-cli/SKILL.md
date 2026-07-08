@@ -91,8 +91,8 @@ plak tailscale <enable|disable|status>
 Original Plak utilities:
 
 ```bash
-plak server <list|add|connect|delete>
-plak domain <list|add|delete>
+plak remote <list|add|edit|delete|connect|attach|detach>
+plak hosts <list|add|delete>
 plak sshkey <list|view|create|delete>
 ```
 

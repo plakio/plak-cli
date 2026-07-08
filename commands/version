@@ -1,3 +1,18 @@
 plak_version() {
-    echo "$PLAK_NAME v$PLAK_VERSION"
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak version [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = true ]; then
+        printf '{"name":"%s","version":"%s"}\n' "$PLAK_NAME" "$PLAK_VERSION"
+    else
+        echo "$PLAK_NAME v$PLAK_VERSION"
+    fi
 }

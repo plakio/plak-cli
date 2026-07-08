@@ -1,6 +1,6 @@
 plak_remote_choose_ssh() {
     local hosts selected manual_label="Enter manually"
-    hosts=$(plak_server_parse_hosts)
+    hosts=$(plak_remote_parse_hosts | awk -F'|' '{print $1}')
 
     if [ -n "$hosts" ]; then
         selected=$(printf "%s\n%s\n" "$hosts" "$manual_label" | gum filter --placeholder "Choose SSH connection")

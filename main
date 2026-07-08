@@ -69,8 +69,8 @@ Usage:
   plak <command> [arguments]
 
 Commands:
-  server      Manage SSH server connections
-  domain      Manage local hosts entries
+  remote      Manage SSH remotes and site bindings
+  hosts       Manage entries in /etc/hosts
   sshkey      Manage SSH keys
   add         Create a WordPress or plain local site
   delete      Delete a local site
@@ -99,8 +99,8 @@ Commands:
   help        Show this help
 
 Examples:
-  plak server list
-  plak server connect
+  plak remote list
+  plak remote connect
   plak status
 HELP
 }
@@ -109,29 +109,34 @@ plak_display_command_help() {
     local command="${1:-}"
 
     case "$command" in
-        server)
+        remote)
             cat <<'HELP'
 Usage:
-  plak server <action>
+  plak remote <action> [args]
 
 Actions:
-  list        List hosts from ~/.ssh/config
-  connect     Pick a host with gum and connect through ssh
-  add         Add a new SSH host interactively
-  delete      Delete an SSH host interactively
-  help        Show server help
+  list        List hosts from ~/.ssh/config (use --managed, --unmanaged, or --json)
+  add         Add a remote. Flags: --host --user [--port] [--path] [--identity|--no-identity]
+  edit        Edit a remote. Flags: --newname --host --user --port --path --identity --no-identity
+  delete      Delete a remote. Use --yes to skip confirmation
+  connect     ssh into a remote (cd into remote_path)
+  attach      Bind a remote to a Plak site. Use --yes to skip replace confirmation
+  detach      Unbind a remote from a Plak site. Use --yes to skip confirmation
+  help        Show remote help
+
+Agent-friendly: every action accepts non-interactive flags. See 'plak remote help' for details.
 HELP
             ;;
-        domain)
+        hosts)
             cat <<'HELP'
 Usage:
-  plak domain <action>
+  plak hosts <action>
 
 Actions:
   list        List non-comment entries from /etc/hosts
-  add         Add a hosts entry interactively
-  delete      Delete a hosts entry interactively
-  help        Show domain help
+  add         Add a hosts entry (positional: <ip> <domain>)
+  delete      Delete a hosts entry (use --yes in non-interactive mode)
+  help        Show hosts help
 HELP
             ;;
         sshkey)
@@ -166,16 +171,16 @@ HELP
             echo "Usage: plak status"
             ;;
         add)
-            echo "Usage: plak add <name> [--plain]"
+            echo "Usage: plak add <name> [--plain] [--no-reload]"
             ;;
         delete)
-            echo "Usage: plak delete <name> [--force]"
+            echo "Usage: plak delete <name> [--force|--yes] [--no-reload]"
             ;;
         list)
-            echo "Usage: plak list [--totals]"
+            echo "Usage: plak list [--totals] [--json]"
             ;;
         login)
-            echo "Usage: plak login <site> [<user>]"
+            echo "Usage: plak login <site> [<user>] [--raw]"
             ;;
         db)
             echo "Usage: plak db <backup|list>"
@@ -204,12 +209,27 @@ main() {
     fi
     export PLAK_SITE_CMD
 
+    PLAK_QUIET=0
+    PLAK_JSON=0
+    local new_args=()
     for arg in "$@"; do
-        if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
-            plak_display_command_help "${1:-}"
+        if [[ "$arg" == "--quiet" || "$arg" == "-q" ]]; then
+            PLAK_QUIET=1
+        elif [[ "$arg" == "--json" ]]; then
+            PLAK_JSON=1
+        elif [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+            plak_display_command_help "${new_args[0]:-${1:-}}"
             exit 0
+        else
+            new_args+=("$arg")
         fi
     done
+    export PLAK_QUIET
+    export PLAK_JSON
+    if [ "$PLAK_JSON" = "1" ]; then
+        new_args+=("--json")
+    fi
+    set -- "${new_args[@]}"
 
     local command="${1:-help}"
     if [ "$#" -gt 0 ]; then
@@ -223,11 +243,11 @@ main() {
     esac
 
     case "$command" in
-        server)
-            plak_server "$@"
+        remote)
+            plak_remote "$@"
             ;;
-        domain)
-            plak_domain "$@"
+        hosts)
+            plak_hosts "$@"
             ;;
         sshkey)
             plak_sshkey "$@"
@@ -372,7 +392,7 @@ main() {
             plak_install "$@"
             ;;
         version|--version|-v)
-            plak_version
+            plak_version "$@"
             ;;
         help)
             plak_show_help

@@ -1,12 +1,27 @@
 plak_site_mappings() {
-    local site_name="$1"
-    local action="$2"
-    local domain="$3"
+    local json_mode=false
+    local positional=()
+
+    # Filter --json from positional args first
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak mappings <site> [add|remove] [domain] [--json]"
+                exit 0
+                ;;
+            *) positional+=("$arg") ;;
+        esac
+    done
+
+    local site_name="${positional[0]:-}"
+    local action="${positional[1]:-}"
+    local domain="${positional[2]:-}"
 
     # --- 1. Validation ---
     if [ -z "$site_name" ]; then
         gum style --foreground red "❌ Error: A site name is required."
-        echo "Usage: plak mappings <site> [add|remove] [domain]"
+        echo "Usage: plak mappings <site> [add|remove] [domain] [--json]"
         exit 1
     fi
 
@@ -20,14 +35,27 @@ plak_site_mappings() {
 
     # --- 2. List Mappings (Default Action) ---
     if [ -z "$action" ] || [ "$action" == "list" ]; then
-        echo "🔎 Checking domain mappings for $site_name..."
-        
+        if [ "$json_mode" = false ]; then
+            echo "🔎 Checking domain mappings for $site_name..."
+        fi
+
         if [ ! -f "$mappings_file" ] || [ ! -s "$mappings_file" ]; then
-             gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "ℹ️  No additional mappings found." "Main domain: $site_name.localhost"
+            if [ "$json_mode" = true ]; then
+                printf '{"site":"%s","main":"%s.localhost","mappings":[]}\n' "$site_name" "$site_name"
+            else
+                gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "ℹ️  No additional mappings found." "Main domain: $site_name.localhost"
+            fi
         else
-            local content
-            content=$(cat "$mappings_file")
-            gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "📂 Domain Mappings ($site_name)" "" "$content"
+            if [ "$json_mode" = true ]; then
+                local escaped
+                escaped=$(python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))' < "$mappings_file" 2>/dev/null \
+                    || awk 'BEGIN{ printf "["; first=1 } NF { if (!first) printf ","; first=0; gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "\"%s\"", $0 } END{ print "]" }' "$mappings_file")
+                printf '{"site":"%s","main":"%s.localhost","mappings":%s}\n' "$site_name" "$site_name" "$escaped"
+            else
+                local content
+                content=$(cat "$mappings_file")
+                gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "📂 Domain Mappings ($site_name)" "" "$content"
+            fi
         fi
         return 0
     fi

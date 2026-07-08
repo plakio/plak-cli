@@ -23,11 +23,11 @@ cat > "$hosts_file" <<'HOSTS'
 192.168.1.10 app.localhost old.localhost # dev entries
 HOSTS
 
-domain_output=$(PLAK_HOSTS_FILE="$hosts_file" bash -c 'source ./plak.sh >/dev/null; plak_domain_add_entry 127.0.0.1 new.localhost; plak_domain_remove_entry app.localhost; plak_domain_entries')
-grep -q 'new.localhost' <<<"$domain_output"
+hosts_output=$(PLAK_HOSTS_FILE="$hosts_file" bash -c 'source ./plak.sh >/dev/null; plak_hosts_add_entry 127.0.0.1 new.localhost; plak_hosts_remove_entry app.localhost; plak_hosts_entries')
+grep -q 'new.localhost' <<<"$hosts_output"
 
 if grep -q 'app.localhost' "$hosts_file"; then
-    echo "domain removal failed" >&2
+    echo "hosts removal failed" >&2
     exit 1
 fi
 

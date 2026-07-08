@@ -90,27 +90,66 @@ plak_site_directive_delete() {
 }
 
 plak_site_directive_list() {
-    echo "🔎 Listing all custom Caddy directives..."
-    
+    local json_mode=false
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            -h|--help)
+                echo "Usage: plak directive list [--json]"
+                exit 0
+                ;;
+        esac
+    done
+
+    if [ "$json_mode" = false ]; then
+        echo "🔎 Listing all custom Caddy directives..."
+    fi
+
     if [ ! -d "$CUSTOM_CADDY_DIR" ] || [ -z "$(ls -A "$CUSTOM_CADDY_DIR" 2>/dev/null)" ]; then
-        echo ""
-        gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
+        if [ "$json_mode" = true ]; then
+            echo "[]"
+        else
+            echo ""
+            gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
+        fi
         exit 0
     fi
 
+    local entries=()
     local found_one=false
     for conf_file in $(find "$CUSTOM_CADDY_DIR" -type f | sort); do
         found_one=true
         local site_name
         site_name=$(basename "$conf_file")
-        
+
         local content
         content=$(cat "$conf_file")
 
-        gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 "📄 $site_name" "" "$content"
+        if [ "$json_mode" = true ]; then
+            # JSON-escape content for inline emission
+            local escaped
+            escaped=$(printf '%s' "$content" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null \
+                || printf '%s' "$content" | awk 'BEGIN { ORS="\\n" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); print }' | awk '{ printf "%s", $0 }')
+            entries+=("{\"site\":\"$site_name\",\"content\":$escaped}")
+        else
+            gum style --border normal --margin "1 0" --padding "1 2" --border-foreground 212 "📄 $site_name" "" "$content"
+        fi
     done
 
-    if ! $found_one; then
+    if [ "$json_mode" = true ]; then
+        if [ "$found_one" = true ]; then
+            printf '[\n'
+            local first=1
+            for e in "${entries[@]}"; do
+                if [ $first -eq 0 ]; then printf ',\n'; fi
+                printf '  %s' "$e"
+                first=0
+            done
+            printf '\n]\n'
+        else
+            echo "[]"
+        fi
+    elif [ "$found_one" = false ]; then
         echo ""
         gum style --foreground "yellow" "ℹ️ No custom directives found for any sites."
     fi

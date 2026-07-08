@@ -2,12 +2,12 @@ plak_site_pull() {
     source_config
 
     # --- UI/Logging Functions ---
-    log_step() { 
+    log_step() {
         echo ""
         gum style --bold --foreground "yellow" "➡️  $1"
     }
-    log_success() { 
-        gum style --foreground "green" "✅ $1" 
+    log_success() {
+        gum style --foreground "green" "✅ $1"
     }
     log_error() {
         gum style --foreground "red" "❌ ERROR: $1" >&2
@@ -15,12 +15,14 @@ plak_site_pull() {
     }
 
     # --- Argument Parsing ---
-    local proxy_uploads=false
-    for arg in "$@"; do
-        if [ "$arg" == "--proxy-uploads" ]; then
-            proxy_uploads=true
-            break
-        fi
+    local site_name="" yes=0 proxy_uploads=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            --proxy-uploads) proxy_uploads=true; shift 1 ;;
+            -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
     done
 
     # Define quiet SSH options to prevent host key warnings. ControlMaster
@@ -38,64 +40,176 @@ plak_site_pull() {
     trap "rm -f '$ssh_ctl'" EXIT
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pulling a remote WordPress site into Plak."
-    # --- 1. Gather Remote Info ---
-    log_step "Choose remote server"
-    local remote_ssh
-    remote_ssh=$(plak_remote_choose_ssh)
-    if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
 
-    local remote_path
-    remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
-    if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
-    local remote_path_q
+    # --- 0. Resolve site_name and remote binding ---
+    # Three paths lead to a (site_name, remote_ssh, remote_path) tuple:
+    #   (a) site arg given + it has a binding   → use binding, no prompts
+    #   (b) site arg given + no binding         → ask for remote info (interactive)
+    #   (c) no site arg, bound sites exist      → pre-step picker (interactive)
+    #   (d) no site arg, no bound sites         → ask for everything (interactive)
+    local remote_ssh remote_path remote_path_q binding
+
+    if [ -n "$site_name" ]; then
+        # Validate site exists
+        if [ ! -d "$SITES_DIR/$site_name.localhost" ]; then
+            log_error "Site '$site_name' does not exist under $SITES_DIR."
+        fi
+
+        # Try to use its binding
+        binding=$(plak_remote_get_binding "$site_name" 2>/dev/null)
+        local binding_rc=$?
+        if [ "$binding_rc" -eq 0 ]; then
+            remote_ssh="${binding%|*}"
+            remote_path="${binding#*|}"
+            log_success "Using remote '$remote_ssh' (path: $remote_path)"
+        elif [ "$binding_rc" -eq 2 ] || [ "$binding_rc" -eq 3 ]; then
+            case "$binding_rc" in
+                2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
+                3) log_error "Remote attached to '$site_name' has no remote_path set. Run 'plak remote edit <name>' to set one." ;;
+            esac
+        else
+            # No binding for this site — fall through to manual remote info
+            plak_require_gum
+            log_step "Site '$site_name' has no remote binding. Choose remote manually."
+            log_step "Choose remote server"
+            remote_ssh=$(plak_remote_choose_ssh)
+            if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+            remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
+            if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+        fi
+    else
+        # No site arg: scan for bound sites and offer the pre-step
+        local bound_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            [ -d "$site_dir" ] || continue
+            if [ -f "$site_dir/.remote" ]; then
+                bound_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
+
+        if [ ${#bound_sites[@]} -gt 0 ]; then
+            plak_require_gum
+            log_step "Bound sites detected"
+            local bound_list=""
+            for s in "${bound_sites[@]}"; do
+                local r p
+                r=$(cat "$SITES_DIR/$s.localhost/.remote")
+                p=$(plak_remote_get_binding "$s" 2>/dev/null | awk -F'|' '{print $2}')
+                if [ -n "$p" ]; then
+                    bound_list="${bound_list}${bound_list:+\n}  • ${s}  →  ${r}  (path: ${p})"
+                else
+                    bound_list="${bound_list}${bound_list:+\n}  • ${s}  →  ${r}  (no path set)"
+                fi
+            done
+            gum style --border normal --margin "0 0 1 2" --padding "0 1" --border-foreground 244 "$bound_list"
+
+            local pre_choice
+            pre_choice=$(printf "%s\n%s\n" "Use a bound site" "Specify remote manually" | gum choose)
+            if [ "$pre_choice" = "Use a bound site" ]; then
+                site_name=$(printf "%s\n" "${bound_sites[@]}" | gum filter --placeholder "Choose bound site")
+                [ -n "$site_name" ] || exit 0
+
+                binding=$(plak_remote_get_binding "$site_name")
+                local binding_rc=$?
+                case "$binding_rc" in
+                    0)
+                        remote_ssh="${binding%|*}"
+                        remote_path="${binding#*|}"
+                        log_success "Using remote '$remote_ssh' (path: $remote_path)"
+                        ;;
+                    2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
+                    3) log_error "Remote attached to '$site_name' has no remote_path set. Run 'plak remote edit <name>' to set one." ;;
+                    *) log_error "Could not resolve binding for '$site_name'." ;;
+                esac
+            fi
+        else
+            plak_require_gum
+        fi
+    fi
+
+    # --- 1. Gather Remote Info (only if not already set) ---
+    if [ -z "$site_name" ] || [ -z "$remote_ssh" ]; then
+        if [ -z "$site_name" ]; then
+            log_step "Choose remote server"
+            remote_ssh=$(plak_remote_choose_ssh)
+            if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+            remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
+            if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+        fi
+        # If site_name given but no binding, the prompt block above already ran
+    fi
     remote_path_q=$(shell_quote "$remote_path")
 
     # --- 2. Validate Remote Site ---
     log_step "Validating remote WordPress site..."
     local remote_url
     remote_url=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home 2>/dev/null")
+    local domain
     domain=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//')
-    
+
     if [ -z "$remote_url" ] || [[ ! "$remote_url" == http* ]]; then
         log_error "Could not find a valid WordPress site at the specified path. Check your connection details and path."
     fi
     log_success "Found WordPress site: $remote_url"
 
-    # --- 3. Choose Destination ---
-    log_step "Choose a destination for the pulled site"
-    
-    local wp_sites=()
-    for site_dir in "$SITES_DIR"/*.localhost; do
-        if [ -f "$site_dir/public/wp-config.php" ]; then
-            wp_sites+=("$(basename "$site_dir" .localhost)")
+    # --- 3. Choose Destination (skip if site_name already known) ---
+    local dest_path local_url db_name
+
+    if [ -z "$site_name" ]; then
+        log_step "Choose a destination for the pulled site"
+
+        local wp_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            if [ -f "$site_dir/public/wp-config.php" ]; then
+                wp_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
+
+        local destination_choice
+        destination_choice=$(gum choose "New Site" "${wp_sites[@]}")
+
+        if [ "$destination_choice" == "New Site" ]; then
+            local proposed_name
+            proposed_name=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//; s/\./-/g')
+            site_name=$(gum input --width 0 --value "$proposed_name" --prompt "Enter a name for the new local site: ")
+            if [ -z "$site_name" ]; then log_error "Site name cannot be empty."; fi
+
+            log_step "Creating new placeholder site: ${site_name}.localhost"
+            "$PLAK_SITE_CMD" add "$site_name"
+            if [ $? -ne 0 ]; then log_error "Failed to create placeholder site. Does it already exist?"; fi
+
+        else
+            site_name="$destination_choice"
+            if [ "$yes" -eq 0 ]; then
+                if [ -t 0 ] && plak_command_exists gum; then
+                    if ! gum confirm "Are you sure you want to overwrite '${site_name}'? All its files and database content will be replaced."; then
+                        echo "🚫 Pull cancelled."
+                        exit 0
+                    fi
+                else
+                    log_error "Refusing to overwrite '$site_name' without --yes in non-interactive mode."
+                fi
+            fi
+
+            log_step "Preparing to overwrite existing site: ${site_name}.localhost"
+            db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+            mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
         fi
-    done
-    
-    local destination_choice
-    destination_choice=$(gum choose "New Site" "${wp_sites[@]}")
-
-    local site_name
-    local dest_path
-    local local_url
-    local db_name
-
-    if [ "$destination_choice" == "New Site" ]; then
-        local proposed_name
-        proposed_name=$(echo "$remote_url" | sed -E 's/https?:\/\/(www\.)?//; s/\/.*//; s/\./-/g')
-        site_name=$(gum input --width 0 --value "$proposed_name" --prompt "Enter a name for the new local site: ")
-        if [ -z "$site_name" ]; then log_error "Site name cannot be empty."; fi
-
-        log_step "Creating new placeholder site: ${site_name}.localhost"
-        "$PLAK_SITE_CMD" add "$site_name"
-        if [ $? -ne 0 ]; then log_error "Failed to create placeholder site. Does it already exist?"; fi
-        
     else
-        site_name="$destination_choice"
-        if ! gum confirm "Are you sure you want to overwrite '${site_name}'? All its files and database content will be replaced."; then
-            echo "🚫 Pull cancelled."
-            exit 0
+        # site_name already known — always overwrite prep (pulling into an existing site)
+        if [ "$yes" -eq 0 ]; then
+            if [ -t 0 ] && plak_command_exists gum; then
+                if ! gum confirm "Are you sure you want to overwrite '${site_name}'? All its files and database content will be replaced."; then
+                    echo "🚫 Pull cancelled."
+                    exit 0
+                fi
+            else
+                log_error "Refusing to overwrite '$site_name' without --yes in non-interactive mode."
+            fi
         fi
-        
+
         log_step "Preparing to overwrite existing site: ${site_name}.localhost"
         db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
         mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`;"
@@ -166,9 +280,9 @@ EOM
     remote_backup_q=$(shell_quote "$remote_path/$filename")
     ssh $ssh_opts $remote_ssh "rm -f $remote_backup_q" 2>/dev/null
     log_success "Cleanup complete."
- 
+
     # --- 8. Finalize ---
     regenerate_caddyfile
-    
+
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site is ready." "URL: ${local_url}"
 }

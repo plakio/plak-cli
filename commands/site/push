@@ -1,14 +1,24 @@
 plak_site_push() {
+    # --- Argument Parsing ---
+    local site_name="" yes=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
+    done
+
     # --- UI/Logging Functions ---
-    log_step() { 
+    log_step() {
         echo ""
         gum style --bold --foreground "yellow" "➡️  $1"
     }
-    log_success() { 
-        gum style --foreground "green" "✅ $1" 
+    log_success() {
+        gum style --foreground "green" "✅ $1"
     }
     log_error() {
-        gum style --foreground "red" "❌ ERROR: $1" 
+        gum style --foreground "red" "❌ ERROR: $1"
         >&2
         exit 1
     }
@@ -26,50 +36,78 @@ plak_site_push() {
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pushing a local Plak site to a remote server."
 
     # --- 1. Choose Local Site ---
-    log_step "Choose a local site to push"
-    local wp_sites=()
-    for site_dir in "$SITES_DIR"/*.localhost; do
-        if [ -f "$site_dir/public/wp-config.php" ]; then
-            wp_sites+=("$(basename "$site_dir" .localhost)")
-        fi
-    done
+    if [ -z "$site_name" ]; then
+        plak_require_gum
+        log_step "Choose a local site to push"
+        local wp_sites=()
+        for site_dir in "$SITES_DIR"/*.localhost; do
+            if [ -f "$site_dir/public/wp-config.php" ]; then
+                wp_sites+=("$(basename "$site_dir" .localhost)")
+            fi
+        done
 
-    if [ ${#wp_sites[@]} -eq 0 ]; then
-        log_error "No local WordPress sites found to push."
+        if [ ${#wp_sites[@]} -eq 0 ]; then
+            log_error "No local WordPress sites found to push."
+        fi
+
+        site_name=$(printf "%s\n" "${wp_sites[@]}" | gum filter --placeholder "Choose local site to push")
+        if [ -z "$site_name" ]; then log_error "No site selected."; fi
+    else
+        if [ ! -d "$SITES_DIR/$site_name.localhost" ]; then
+            log_error "Site '$site_name' does not exist under $SITES_DIR."
+        fi
+        if [ ! -f "$SITES_DIR/$site_name.localhost/public/wp-config.php" ]; then
+            log_error "Site '$site_name' is not a WordPress site (no wp-config.php found)."
+        fi
     fi
 
-    local site_name
-    site_name=$(printf "%s\n" "${wp_sites[@]}" | gum filter --placeholder "Choose local site to push")
-    if [ -z "$site_name" ]; then log_error "No site selected."; fi
-
     local local_path="$SITES_DIR/$site_name.localhost/public"
-    
-    # --- 2. Gather Remote Info ---
-    log_step "Choose remote server"
-    local remote_ssh
-    remote_ssh=$(plak_remote_choose_ssh)
-    if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
 
-    local remote_path
-    remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")
-    if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
-    local remote_path_q
+    # --- 2. Gather Remote Info ---
+    local remote_ssh remote_path remote_path_q binding
+    binding=$(plak_remote_get_binding "$site_name" 2>/dev/null)
+    local binding_rc=$?
+
+    if [ "$binding_rc" -eq 0 ]; then
+        remote_ssh="${binding%|*}"
+        remote_path="${binding#*|}"
+        log_success "Using remote '$remote_ssh' (path: $remote_path)"
+    else
+        case "$binding_rc" in
+            2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
+            3) log_error "Remote attached to '$site_name' has no remote_path set. Run 'plak remote edit <name>' to set one." ;;
+            *) plak_require_gum
+               log_step "Choose remote server"
+               remote_ssh=$(plak_remote_choose_ssh)
+               if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
+
+               remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")
+               if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
+               ;;
+        esac
+    fi
     remote_path_q=$(shell_quote "$remote_path")
 
     # --- 3. Validate Remote Site ---
     log_step "Validating remote WordPress site..."
     local remote_url
     remote_url=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home 2>/dev/null")
-    
+
     if [ -z "$remote_url" ] || [[ ! "$remote_url" == http* ]]; then
         log_error "Could not find a valid WordPress site at the specified path. Check your connection details and path."
     fi
     log_success "Found remote site to overwrite: $remote_url"
 
     # --- 4. Confirmation ---
-    if ! gum confirm "🚨 Are you sure you want to push '${site_name}' to '${remote_url}'? This will completely overwrite the remote site's files and database."; then
-        echo "🚫 Push cancelled."
-        exit 0
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "🚨 Are you sure you want to push '${site_name}' to '${remote_url}'? This will completely overwrite the remote site's files and database."; then
+                echo "🚫 Push cancelled."
+                exit 0
+            fi
+        else
+            log_error "Refusing to push without --yes in non-interactive mode."
+        fi
     fi
 
     # --- 5. Perform Local Backup ---

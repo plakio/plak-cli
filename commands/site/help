@@ -26,7 +26,7 @@ Expose local sites to your Tailscale network.
 HELP
             ;;
         mappings)
-            echo "Usage: plak mappings <site> [add|remove|list] [domain]"
+            echo "Usage: plak mappings <site> [add|remove] [domain] [--json]"
             ;;
         lan)
             echo "Usage: plak lan <enable|disable|status|trust> [site]"
@@ -41,13 +41,13 @@ HELP
             echo "Usage: plak log [site] [-f|--follow]"
             ;;
         share)
-            echo "Usage: plak share [site]"
+            echo "Usage: plak share [<site>] [--print-url] [--no-install]"
             ;;
         pull)
-            echo "Usage: plak pull [--proxy-uploads]"
+            echo "Usage: plak pull [<site>] [--yes] [--proxy-uploads]"
             ;;
         push)
-            echo "Usage: plak push"
+            echo "Usage: plak push [<site>] [--yes]"
             ;;
         reload)
             echo "Usage: plak reload"
