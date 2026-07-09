@@ -1,0 +1,50 @@
+go_reset() {
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        permissions) go_reset_permissions "$@" ;;
+        wp) go_reset_wp "$@" ;;
+        -h|--help|"") echo "Usage: _go reset <permissions|wp> [--admin-user=<user>] [--yes]" ;;
+        *) go_error "Unknown reset command: $action"; return 1 ;;
+    esac
+}
+
+go_reset_permissions() {
+    local target="."
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --path=*) target="${1#*=}" ;;
+            -h|--help) echo "Usage: _go reset permissions [--path=<path>]"; return 0 ;;
+            *) go_error "Unknown reset permissions argument: $1"; return 1 ;;
+        esac
+        shift
+    done
+    [ -d "$target" ] || { go_error "Directory not found: $target"; return 1; }
+    find "$target" -type d -exec chmod 755 {} \;
+    find "$target" -type f -exec chmod 644 {} \;
+    [ -f "$target/wp-config.php" ] && chmod 600 "$target/wp-config.php" 2>/dev/null || true
+    echo "Permissions reset under ${target}."
+}
+
+go_reset_wp() {
+    local admin_user="admin" yes=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --admin-user=*) admin_user="${1#*=}" ;;
+            --yes|-y) yes=true ;;
+            -h|--help) echo "Usage: _go reset wp --admin-user=<user> --yes"; return 0 ;;
+            *) go_error "Unknown reset wp argument: $1"; return 1 ;;
+        esac
+        shift
+    done
+    $yes || { go_error "reset wp is destructive. Re-run with --yes."; return 1; }
+    local wp_cmd url title email pass
+    wp_cmd=$(go_wp_cli) || return 1
+    url=$("$wp_cmd" option get siteurl --skip-plugins --skip-themes 2>/dev/null || echo "http://example.com")
+    title=$("$wp_cmd" option get blogname --skip-plugins --skip-themes 2>/dev/null || echo "WordPress")
+    email=$("$wp_cmd" user get "$admin_user" --field=user_email --skip-plugins --skip-themes 2>/dev/null || echo "admin@example.com")
+    pass="plak-$(date +%s)-${RANDOM:-0}"
+    "$wp_cmd" db reset --yes --skip-plugins --skip-themes
+    "$wp_cmd" core install --url="$url" --title="$title" --admin_user="$admin_user" --admin_password="$pass" --admin_email="$email" --skip-email
+    echo "WordPress reset complete. Admin user: ${admin_user}. Password: ${pass}"
+}

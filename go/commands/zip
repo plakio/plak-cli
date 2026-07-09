@@ -1,0 +1,30 @@
+go_zip() {
+    local target="" output=""
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --output=*) output="${1#*=}" ;;
+            -h|--help)
+                echo "Usage: _go zip <path> [--output=<file>]"
+                return 0
+                ;;
+            -* ) go_error "Unknown zip flag: $1"; return 1 ;;
+            *)
+                [ -z "$target" ] || { go_error "Unexpected zip argument: $1"; return 1; }
+                target="$1"
+                ;;
+        esac
+        shift
+    done
+
+    [ -n "$target" ] || { go_error "Please provide a path to zip."; return 1; }
+    [ -e "$target" ] || { go_error "Path not found: $target"; return 1; }
+    go_require_command zip || return 1
+
+    if [ -z "$output" ]; then
+        output="$(basename "$target")-$(date +%Y-%m-%d-%H%M%S).zip"
+    fi
+
+    zip -r "$output" "$target" -x '*/.git/*' '*/node_modules/*' '*/vendor/*' '*/cache/*' >/dev/null
+    echo "$output"
+}

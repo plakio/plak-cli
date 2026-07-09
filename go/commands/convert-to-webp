@@ -1,0 +1,149 @@
+go_cwebp_command() {
+    local install_flag="$1"
+
+    if command -v cwebp >/dev/null 2>&1; then
+        command -v cwebp
+        return 0
+    fi
+
+    local private_dir cwebp_path
+    private_dir=$(go_private_dir) || return 1
+    cwebp_path="${private_dir}/bin/cwebp"
+    if [ -x "$cwebp_path" ]; then
+        echo "$cwebp_path"
+        return 0
+    fi
+
+    if [ "$install_flag" != "true" ]; then
+        go_error "cwebp was not found. Re-run with --install-cwebp to install it locally."
+        return 1
+    fi
+
+    go_require_command tar || return 1
+    mkdir -p "${private_dir}/bin" "${private_dir}/tmp"
+
+    local os arch archive_url archive_file extract_dir found_cwebp
+    os=$(uname -s)
+    arch=$(uname -m)
+
+    case "${os}-${arch}" in
+        Linux-x86_64|Linux-amd64)
+            archive_url="https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0-linux-x86-64.tar.gz"
+            ;;
+        Darwin-x86_64)
+            archive_url="https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0-mac-x86-64.tar.gz"
+            ;;
+        *)
+            go_error "Automatic cwebp install is not available for ${os}/${arch}. Install cwebp manually or add it to PATH."
+            return 1
+            ;;
+    esac
+
+    archive_file="${private_dir}/tmp/libwebp.tar.gz"
+    extract_dir="${private_dir}/tmp/libwebp"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+
+    echo "Installing cwebp locally into ${private_dir}/bin..." >&2
+    if ! go_download_file "$archive_url" "$archive_file"; then
+        go_error "Failed to download cwebp."
+        return 1
+    fi
+
+    if ! tar -xzf "$archive_file" -C "$extract_dir"; then
+        rm -f "$archive_file"
+        go_error "Failed to extract cwebp archive."
+        return 1
+    fi
+
+    found_cwebp=$(find "$extract_dir" -type f -name cwebp -perm -u+x -print -quit)
+    if [ -z "$found_cwebp" ]; then
+        found_cwebp=$(find "$extract_dir" -type f -name cwebp -print -quit)
+    fi
+    if [ -z "$found_cwebp" ]; then
+        rm -f "$archive_file"
+        rm -rf "$extract_dir"
+        go_error "Downloaded archive did not contain cwebp."
+        return 1
+    fi
+
+    cp "$found_cwebp" "$cwebp_path"
+    chmod +x "$cwebp_path"
+    rm -f "$archive_file"
+    rm -rf "$extract_dir"
+    echo "$cwebp_path"
+}
+
+go_convert_to_webp() {
+    local target_path="wp-content/uploads"
+    local install_cwebp=false
+    local quality="82"
+    local overwrite=false
+    local dry_run=false
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --install-cwebp)
+                install_cwebp=true
+                ;;
+            --quality=*)
+                quality="${1#*=}"
+                ;;
+            --all)
+                overwrite=true
+                ;;
+            --dry-run)
+                dry_run=true
+                ;;
+            -h|--help)
+                echo "Usage: _go convert-to-webp [path] [--install-cwebp] [--quality=<1-100>] [--all] [--dry-run]"
+                return 0
+                ;;
+            -* )
+                go_error "Unknown convert-to-webp flag: $1"
+                return 1
+                ;;
+            *)
+                target_path="$1"
+                ;;
+        esac
+        shift
+    done
+
+    [ -d "$target_path" ] || { go_error "Directory not found: $target_path"; return 1; }
+    [[ "$quality" =~ ^[0-9]+$ ]] || { go_error "--quality must be a number from 1 to 100."; return 1; }
+    [ "$quality" -ge 1 ] && [ "$quality" -le 100 ] || { go_error "--quality must be between 1 and 100."; return 1; }
+
+    local cwebp_cmd=""
+    if ! $dry_run; then
+        cwebp_cmd=$(go_cwebp_command "$install_cwebp") || return 1
+    fi
+
+    local converted=0 skipped=0 failed=0 source_file output_file
+    echo "Converting images in ${target_path} with quality ${quality}..."
+
+    while IFS= read -r -d '' source_file; do
+        output_file="${source_file%.*}.webp"
+        if [ -f "$output_file" ] && [ "$overwrite" != "true" ]; then
+            echo "skipped: ${output_file} already exists"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        if $dry_run; then
+            echo "would convert: ${source_file} -> ${output_file}"
+            continue
+        fi
+
+        if "$cwebp_cmd" -quiet -q "$quality" "$source_file" -o "$output_file"; then
+            echo "converted: ${source_file} -> ${output_file}"
+            converted=$((converted + 1))
+        else
+            echo "failed: ${source_file}"
+            failed=$((failed + 1))
+        fi
+    done < <(find "$target_path" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) -print0)
+
+    echo "Done. Converted: ${converted}. Skipped: ${skipped}. Failed: ${failed}."
+    [ "$failed" -eq 0 ]
+}

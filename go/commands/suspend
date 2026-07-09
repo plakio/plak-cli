@@ -1,0 +1,60 @@
+go_suspend() {
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        activate) go_suspend_activate "$@" ;;
+        deactivate) go_suspend_deactivate "$@" ;;
+        -h|--help|"") echo "Usage: _go suspend <activate|deactivate> [--name=<name>] [--link=<url>]" ;;
+        *) go_error "Unknown suspend command: $action"; return 1 ;;
+    esac
+}
+
+go_suspend_activate() {
+    local name="Website" link=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --name=*) name="${1#*=}" ;;
+            --link=*) link="${1#*=}" ;;
+            *) go_error "Unknown suspend activate argument: $1"; return 1 ;;
+        esac
+        shift
+    done
+    local wp_cmd mu_dir file safe_name safe_link
+    wp_cmd=$(go_wp_cli) || return 1
+    mu_dir=$("$wp_cmd" eval 'echo WPMU_PLUGIN_DIR;' --skip-plugins --skip-themes 2>/dev/null)
+    mkdir -p "$mu_dir"
+    file="${mu_dir}/plak-suspended.php"
+    safe_name=$(printf "%s" "$name" | sed "s/'/\\\\'/g")
+    safe_link=$(printf "%s" "$link" | sed "s/'/\\\\'/g")
+    cat > "$file" <<PHP
+<?php
+/** Plugin Name: Plak Suspended Site */
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+add_action( 'template_redirect', function () {
+    if ( is_admin() || wp_doing_ajax() || ( defined( 'WP_CLI' ) && WP_CLI ) ) { return; }
+    \$plak_suspend_name = '${safe_name}';
+    \$plak_suspend_link = '${safe_link}';
+    status_header( 503 );
+    header( 'Retry-After: 3600' );
+    nocache_headers();
+    echo '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Website temporarily unavailable</title><style>body{font-family:system-ui,sans-serif;display:grid;min-height:100vh;place-items:center;margin:0;background:#111;color:#fff}.box{max-width:620px;padding:48px;text-align:center}a{color:#8bd3ff}</style></head><body><main class="box"><h1>' . esc_html( \$plak_suspend_name ) . ' is temporarily unavailable</h1><p>This website is currently suspended or under maintenance.</p>';
+    if ( \$plak_suspend_link !== '' ) { echo '<p><a href="' . esc_url( \$plak_suspend_link ) . '">Contact support</a></p>'; }
+    echo '</main></body></html>';
+    exit;
+}, 0 );
+PHP
+    echo "Suspension activated: ${file}"
+}
+
+go_suspend_deactivate() {
+    local wp_cmd mu_dir file
+    wp_cmd=$(go_wp_cli) || return 1
+    mu_dir=$("$wp_cmd" eval 'echo WPMU_PLUGIN_DIR;' --skip-plugins --skip-themes 2>/dev/null)
+    file="${mu_dir}/plak-suspended.php"
+    if [ -f "$file" ]; then
+        rm -f "$file"
+        echo "Suspension deactivated."
+    else
+        echo "Suspension plugin not found."
+    fi
+}

@@ -1,0 +1,43 @@
+go_checkpoint() {
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        create) go_checkpoint_create "$@" ;;
+        list) go_checkpoint_list ;;
+        latest) go_checkpoint_latest ;;
+        show) go_checkpoint_show "${1:-}" ;;
+        revert) go_checkpoint_revert "$@" ;;
+        -h|--help|"") echo "Usage: _go checkpoint <create|list|show|revert|latest> [hash] [--yes]" ;;
+        *) go_error "Unknown checkpoint command: $action"; return 1 ;;
+    esac
+}
+
+go_checkpoint_git_ready() {
+    go_require_command git || return 1
+    if [ ! -d .git ]; then
+        git init >/dev/null
+        git config user.name "Plak CLI Go" >/dev/null
+        git config user.email "go@plak.sh" >/dev/null
+    fi
+}
+
+go_checkpoint_create() {
+    go_checkpoint_git_ready || return 1
+    git add wp-admin wp-includes wp-content index.php wp-*.php .htaccess 2>/dev/null || true
+    if git diff --cached --quiet; then echo "No file changes to checkpoint."; return 0; fi
+    git commit -m "Plak checkpoint $(date +%Y-%m-%d-%H%M%S)" >/dev/null
+    git rev-parse --short HEAD
+}
+
+go_checkpoint_list() { go_checkpoint_git_ready || return 1; git log --oneline -20; }
+go_checkpoint_latest() { go_checkpoint_git_ready || return 1; git rev-parse --short HEAD; }
+go_checkpoint_show() { [ -n "$1" ] || { go_error "Missing checkpoint hash."; return 1; }; git show --stat "$1"; }
+
+go_checkpoint_revert() {
+    local hash="" yes=false
+    while [ "$#" -gt 0 ]; do case "$1" in --yes|-y) yes=true ;; *) hash="$1" ;; esac; shift; done
+    [ -n "$hash" ] || { go_error "Missing checkpoint hash."; return 1; }
+    $yes || { go_error "Reverting files is destructive. Re-run with --yes."; return 1; }
+    git checkout "$hash" -- wp-admin wp-includes wp-content index.php wp-*.php .htaccess 2>/dev/null || return 1
+    echo "Reverted files to checkpoint ${hash}."
+}

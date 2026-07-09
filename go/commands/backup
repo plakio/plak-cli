@@ -36,7 +36,7 @@ go_backup() {
 
     if [ -z "$target_folder" ]; then
         go_error "Please provide a folder path."
-        go_error "Usage: go backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
+        go_error "Usage: _go backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
         return 1
     fi
 

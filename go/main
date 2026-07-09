@@ -2,18 +2,125 @@
 
 set -euo pipefail
 
+PLAK_CLI_GO_VERSION="0.1.0"
+
 go_usage() {
     cat <<'EOF'
-Plak Go
+Plak CLI Go
+
+Portable WordPress operations for remote servers. It is designed to be used
+without installing Plak CLI on the remote machine.
+
+Alias:
+  alias _go='curl -sL https://plak.sh/go | bash -s'
 
 Usage:
-  go <command> [arguments] [--flags]
+  _go <command> [arguments] [--flags]
 
 Commands:
-  backup      Create a WordPress backup.
-  migrate     Restore a WordPress backup.
-  help        Show this help text.
+  backup              Create a full WordPress backup ZIP.
+  checkpoint          Manage file checkpoints with git.
+  clean               Clean inactive plugins/themes or inspect disk usage.
+  convert-to-webp     Convert JPG/PNG images to WebP.
+  cron                Manage Plak CLI Go cron jobs.
+  db backup           Create a database-only backup.
+  db check-autoload   Report autoloaded options size.
+  db optimize         Convert MyISAM tables, show large tables, clean transients.
+  dump                Concatenate matching files for agent context.
+  email               Send an email through wp_mail.
+  find recent-files   List recently modified files.
+  find slow-plugins   Measure active plugin impact on WP-CLI bootstrap time.
+  find hidden-plugins Detect plugins hidden from the normal active list.
+  find malware        Scan for suspicious PHP patterns and verify checksums.
+  find php-tags       Find outdated PHP short tags.
+  https               Replace site URLs with https:// URLs.
+  login               Generate a temporary one-click WordPress login URL.
+  migrate             Restore a WordPress backup.
+  monitor             Monitor common access/error logs.
+  reset               Reset permissions or WordPress.
+  suspend             Add or remove a neutral suspension MU plugin.
+  update              Run WordPress updates with checkpoints.
+  vault               Manage restic snapshots.
+  version             Show Plak CLI Go version.
+  wpcli check         Diagnose WP-CLI warnings.
+  zip                 Create a ZIP archive.
+  help                Show this help text.
+
+Examples:
+  _go help
+  _go backup . --quiet
+  _go convert-to-webp wp-content/uploads --install-cwebp
+  _go db backup
+  _go db check-autoload
+  _go find slow-plugins
+  _go login admin --raw
+  _go migrate --url=https://example.com/backup.zip --update-urls
 EOF
+}
+
+go_command_help() {
+    case "${1:-}" in
+        backup)
+            echo "Usage: _go backup <folder> [--quiet] [--format=filename] [--exclude=<pattern>]"
+            ;;
+        checkpoint)
+            echo "Usage: _go checkpoint <create|list|show|revert|latest> [hash] [--yes]"
+            ;;
+        clean)
+            echo "Usage: _go clean <plugins|themes|disk> [--yes]"
+            ;;
+        db)
+            echo "Usage: _go db <backup|check-autoload|optimize>"
+            ;;
+        dump)
+            echo "Usage: _go dump <pattern> [--output=<file>] [--exclude=<pattern>]"
+            ;;
+        convert-to-webp)
+            echo "Usage: _go convert-to-webp [path] [--install-cwebp] [--quality=<1-100>] [--all] [--dry-run]"
+            ;;
+        cron)
+            echo "Usage: _go cron <list|add|delete|run> [arguments]"
+            ;;
+        email)
+            echo "Usage: _go email --to=<email> --subject=<subject> [--content=<html>] [--content-file=<file>]"
+            ;;
+        find)
+            echo "Usage: _go find <recent-files|slow-plugins|hidden-plugins|malware|php-tags> [arguments]"
+            ;;
+        https)
+            echo "Usage: _go https [--www|--no-www] [--yes]"
+            ;;
+        login)
+            echo "Usage: _go login <user-id|user-login|email> [--expires=<seconds>] [--raw]"
+            ;;
+        migrate)
+            echo "Usage: _go migrate --url=<backup.zip> [--update-urls]"
+            ;;
+        monitor)
+            echo "Usage: _go monitor <errors|access.log|error.log|traffic> [--now] [--top=<n>]"
+            ;;
+        reset)
+            echo "Usage: _go reset <permissions|wp> [--admin-user=<user>] [--yes]"
+            ;;
+        suspend)
+            echo "Usage: _go suspend <activate|deactivate> [--name=<name>] [--link=<url>]"
+            ;;
+        update)
+            echo "Usage: _go update <all|list>"
+            ;;
+        vault)
+            echo "Usage: _go vault <create|snapshots|info|prune>"
+            ;;
+        wpcli)
+            echo "Usage: _go wpcli check"
+            ;;
+        zip)
+            echo "Usage: _go zip <path> [--output=<file>]"
+            ;;
+        *)
+            go_usage
+            ;;
+    esac
 }
 
 go_main() {
@@ -26,11 +133,129 @@ go_main() {
         backup)
             go_backup "$@"
             ;;
+        checkpoint)
+            go_checkpoint "$@"
+            ;;
+        clean)
+            go_clean "$@"
+            ;;
+        convert-to-webp)
+            go_convert_to_webp "$@"
+            ;;
+        cron)
+            go_cron "$@"
+            ;;
+        db)
+            local subcommand="${1:-}"
+            [ "$#" -gt 0 ] && shift
+            case "$subcommand" in
+                backup)
+                    go_db_backup "$@"
+                    ;;
+                check-autoload)
+                    go_db_check_autoload "$@"
+                    ;;
+                optimize)
+                    go_db_optimize "$@"
+                    ;;
+                help|--help|-h|"")
+                    go_command_help db
+                    ;;
+                *)
+                    go_error "Unknown db command: $subcommand"
+                    go_command_help db >&2
+                    return 1
+                    ;;
+            esac
+            ;;
+        dump)
+            go_dump "$@"
+            ;;
+        email)
+            go_email "$@"
+            ;;
+        find)
+            local subcommand="${1:-}"
+            [ "$#" -gt 0 ] && shift
+            case "$subcommand" in
+                recent-files)
+                    go_find_recent_files "$@"
+                    ;;
+                slow-plugins)
+                    go_find_slow_plugins "$@"
+                    ;;
+                hidden-plugins)
+                    go_find_hidden_plugins "$@"
+                    ;;
+                malware)
+                    go_find_malware "$@"
+                    ;;
+                php-tags)
+                    go_find_php_tags "$@"
+                    ;;
+                help|--help|-h|"")
+                    go_command_help find
+                    ;;
+                *)
+                    go_error "Unknown find command: $subcommand"
+                    go_command_help find >&2
+                    return 1
+                    ;;
+            esac
+            ;;
+        https)
+            go_https "$@"
+            ;;
+        login)
+            go_login "$@"
+            ;;
         migrate)
             go_migrate "$@"
             ;;
-        help|--help|-h)
-            go_usage
+        monitor)
+            go_monitor "$@"
+            ;;
+        reset)
+            go_reset "$@"
+            ;;
+        suspend)
+            go_suspend "$@"
+            ;;
+        update)
+            go_update "$@"
+            ;;
+        vault)
+            go_vault "$@"
+            ;;
+        version)
+            go_version
+            ;;
+        wpcli)
+            local subcommand="${1:-}"
+            [ "$#" -gt 0 ] && shift
+            case "$subcommand" in
+                check)
+                    go_wpcli_check "$@"
+                    ;;
+                help|--help|-h|"")
+                    go_command_help wpcli
+                    ;;
+                *)
+                    go_error "Unknown wpcli command: $subcommand"
+                    go_command_help wpcli >&2
+                    return 1
+                    ;;
+            esac
+            ;;
+        zip)
+            go_zip "$@"
+            ;;
+        help)
+            if [ "${1:-}" != "" ]; then
+                go_command_help "$1"
+            else
+                go_usage
+            fi
             ;;
         *)
             go_error "Unknown command: $command"

@@ -1,0 +1,61 @@
+go_https() {
+    local use_www="" yes=false
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --www) use_www=true ;;
+            --no-www) use_www=false ;;
+            --yes|-y) yes=true ;;
+            -h|--help)
+                echo "Usage: _go https [--www|--no-www] [--yes]"
+                return 0
+                ;;
+            *)
+                go_error "Unknown https argument: $1"
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    local wp_cmd current_url domain new_url new_url_escaped
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    current_url=$("$wp_cmd" option get home --skip-plugins --skip-themes)
+    domain=${current_url#http://}
+    domain=${domain#https://}
+    domain=${domain#www.}
+    domain=${domain%%/*}
+
+    if [ -z "$use_www" ]; then
+        use_www=false
+    fi
+
+    if $use_www; then
+        new_url="https://www.${domain}"
+        new_url_escaped="https:\/\/www.${domain}"
+    else
+        new_url="https://${domain}"
+        new_url_escaped="https:\/\/${domain}"
+    fi
+
+    if ! $yes && [ -t 0 ]; then
+        printf "Update all URLs to '%s'? [y/N] " "$new_url"
+        read -r answer
+        case "$answer" in
+            y|Y|yes|YES) ;;
+            *) echo "Operation cancelled."; return 0 ;;
+        esac
+    elif ! $yes; then
+        go_error "Confirmation required in non-interactive mode. Re-run with --yes."
+        return 1
+    fi
+
+    "$wp_cmd" search-replace "http://${domain}" "$new_url" --all-tables --skip-plugins --skip-themes --report-changed-only
+    "$wp_cmd" search-replace "http://www.${domain}" "$new_url" --all-tables --skip-plugins --skip-themes --report-changed-only
+    "$wp_cmd" search-replace "http:\/\/${domain}" "$new_url_escaped" --all-tables --skip-plugins --skip-themes --report-changed-only
+    "$wp_cmd" search-replace "http:\/\/www.${domain}" "$new_url_escaped" --all-tables --skip-plugins --skip-themes --report-changed-only
+    "$wp_cmd" cache flush || true
+    echo "HTTPS migration complete: ${new_url}"
+}

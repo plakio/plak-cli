@@ -1,0 +1,75 @@
+go_monitor() {
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        errors) go_monitor_errors "$@" ;;
+        access.log) go_monitor_log access "$@" ;;
+        error.log) go_monitor_log error "$@" ;;
+        traffic) go_monitor_traffic "$@" ;;
+        -h|--help|"") echo "Usage: _go monitor <errors|access.log|error.log|traffic> [--now] [--top=<n>]" ;;
+        *) go_error "Unknown monitor command: $action"; return 1 ;;
+    esac
+}
+
+go_monitor_find_logs() {
+    local type="$1"
+    local candidates=(
+        "./${type}.log"
+        "../logs/${type}.log"
+        "../log/${type}.log"
+        "../../logs/${type}.log"
+        "${HOME}/logs/${type}.log"
+    )
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        [ -f "$candidate" ] && echo "$candidate"
+    done
+}
+
+go_monitor_log() {
+    local type="$1" now=false
+    shift || true
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --now) now=true ;;
+            *) go_error "Unknown monitor flag: $1"; return 1 ;;
+        esac
+        shift
+    done
+    local logs=()
+    while IFS= read -r log; do logs+=("$log"); done < <(go_monitor_find_logs "$type")
+    [ "${#logs[@]}" -gt 0 ] || { go_error "No ${type}.log files found in common locations."; return 1; }
+    if $now; then
+        tail -n 100 "${logs[@]}"
+    else
+        tail -n 100 -f "${logs[@]}"
+    fi
+}
+
+go_monitor_errors() {
+    local now=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in --now) now=true ;; *) go_error "Unknown monitor errors flag: $1"; return 1 ;; esac
+        shift
+    done
+    local logs=()
+    while IFS= read -r log; do logs+=("$log"); done < <(go_monitor_find_logs access; go_monitor_find_logs error)
+    [ "${#logs[@]}" -gt 0 ] || { go_error "No access/error logs found in common locations."; return 1; }
+    if $now; then
+        grep -Ei ' 500 |fatal|parse error|uncaught|critical' "${logs[@]}" | tail -n 100 || true
+    else
+        tail -n 0 -f "${logs[@]}" | grep -Ei ' 500 |fatal|parse error|uncaught|critical'
+    fi
+}
+
+go_monitor_traffic() {
+    local top=20
+    while [ "$#" -gt 0 ]; do
+        case "$1" in --top=*) top="${1#*=}" ;; --now) ;; *) go_error "Unknown monitor traffic flag: $1"; return 1 ;; esac
+        shift
+    done
+    local logs=()
+    while IFS= read -r log; do logs+=("$log"); done < <(go_monitor_find_logs access)
+    [ "${#logs[@]}" -gt 0 ] || { go_error "No access.log files found in common locations."; return 1; }
+    awk '{print $1}' "${logs[@]}" | sort | uniq -c | sort -nr | head -n "$top"
+}

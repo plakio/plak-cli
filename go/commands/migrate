@@ -25,7 +25,7 @@ go_migrate() {
 
     if [ -z "$backup_url" ]; then
         go_error "Please provide a backup URL or filename."
-        go_error "Usage: go migrate --url=<backup.zip> [--update-urls]"
+        go_error "Usage: _go migrate --url=<backup.zip> [--update-urls]"
         return 1
     fi
 

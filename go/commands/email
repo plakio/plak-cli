@@ -1,0 +1,52 @@
+go_email() {
+    local to_email="" subject="" content="" content_file=""
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --to=*) to_email="${1#*=}" ;;
+            --subject=*) subject="${1#*=}" ;;
+            --content=*) content="${1#*=}" ;;
+            --content-file=*) content_file="${1#*=}" ;;
+            -h|--help)
+                echo "Usage: _go email --to=<email> --subject=<subject> [--content=<html>] [--content-file=<file>]"
+                return 0
+                ;;
+            *)
+                go_error "Unknown email argument: $1"
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    if [ -n "$content_file" ]; then
+        [ -f "$content_file" ] || { go_error "Content file not found: $content_file"; return 1; }
+        content=$(<"$content_file")
+    elif [ -z "$content" ] && [ ! -t 0 ]; then
+        content=$(cat)
+    fi
+
+    [ -n "$to_email" ] || { go_error "Missing --to=<email>."; return 1; }
+    [ -n "$subject" ] || { go_error "Missing --subject=<subject>."; return 1; }
+    [ -n "$content" ] || { go_error "Missing --content=<html>, --content-file=<file>, or stdin content."; return 1; }
+
+    local wp_cmd php_file escaped_to escaped_subject escaped_content
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    php_file=$(mktemp)
+    escaped_to=$(printf "%s" "$to_email" | sed "s/'/'\\\\''/g")
+    escaped_subject=$(printf "%s" "$subject" | sed "s/'/'\\\\''/g")
+    escaped_content=$(printf "%s" "$content" | sed "s/'/'\\\\''/g")
+    printf "if (! wp_mail('%s', '%s', '%s', ['Content-Type: text/html; charset=UTF-8'])) { exit(1); }\n" "$escaped_to" "$escaped_subject" "$escaped_content" > "$php_file"
+
+    if "$wp_cmd" eval-file "$php_file"; then
+        rm -f "$php_file"
+        echo "Email command sent to ${to_email}."
+        return 0
+    fi
+
+    rm -f "$php_file"
+    go_error "wp_mail failed. Check WordPress mail configuration."
+    return 1
+}

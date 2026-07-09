@@ -1,0 +1,98 @@
+go_db_backup() {
+    local quiet=false
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --quiet)
+                quiet=true
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: _go db backup [--quiet]"
+                return 0
+                ;;
+            *)
+                go_error "Unknown db backup argument: $1"
+                return 1
+                ;;
+        esac
+    done
+
+    local wp_cmd private_dir database_name database_username database_password database_host database_port dump_command backup_file
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    private_dir=$(go_private_dir) || return 1
+    database_name=$("$wp_cmd" config get DB_NAME --skip-plugins --skip-themes --quiet)
+    database_username=$("$wp_cmd" config get DB_USER --skip-plugins --skip-themes --quiet)
+    database_password=$("$wp_cmd" config get DB_PASSWORD --skip-plugins --skip-themes --quiet)
+    database_host=$("$wp_cmd" config get DB_HOST --skip-plugins --skip-themes --quiet 2>/dev/null || echo "localhost")
+    database_port="3306"
+
+    if [[ "$database_host" == *:* ]]; then
+        database_port="${database_host##*:}"
+        database_host="${database_host%:*}"
+    fi
+
+    if command -v mariadb-dump >/dev/null 2>&1; then
+        dump_command="mariadb-dump"
+    elif command -v mysqldump >/dev/null 2>&1; then
+        dump_command="mysqldump"
+    else
+        go_error "Neither mariadb-dump nor mysqldump could be found."
+        return 1
+    fi
+
+    backup_file="${private_dir}/database-backup-$(date +"%Y-%m-%d-%H%M%S").sql"
+    $quiet || echo "Creating database backup with ${dump_command}..."
+
+    if ! "${dump_command}" -h"${database_host}" -P"${database_port}" -u"${database_username}" -p"${database_password}" --max_allowed_packet=512M --default-character-set=utf8mb4 --add-drop-table --single-transaction --quick --lock-tables=false "${database_name}" > "${backup_file}"; then
+        rm -f "${backup_file}"
+        go_error "Database dump failed."
+        return 1
+    fi
+
+    chmod 600 "${backup_file}"
+    if $quiet; then
+        echo "${backup_file}"
+    else
+        echo "Database backup complete: ${backup_file}"
+    fi
+}
+
+go_db_check_autoload() {
+    local wp_cmd prefix
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+    prefix=$("$wp_cmd" db prefix --skip-plugins --skip-themes)
+
+    echo "Total autoloaded size:"
+    "$wp_cmd" db query "SELECT ROUND(SUM(LENGTH(option_value))/1024/1024, 2) AS 'Autoload MB', COUNT(*) AS 'Count' FROM ${prefix}options WHERE autoload IN ('yes', 'on');" --skip-plugins --skip-themes
+    echo
+    echo "Top 25 autoloaded options:"
+    "$wp_cmd" db query "SELECT option_name, ROUND(LENGTH(option_value)/1024/1024, 2) AS 'Size MB' FROM ${prefix}options WHERE autoload IN ('yes', 'on') ORDER BY LENGTH(option_value) DESC LIMIT 25;" --skip-plugins --skip-themes
+}
+
+go_db_optimize() {
+    local wp_cmd myisam_queries
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    echo "Checking for MyISAM tables..."
+    myisam_queries=$("$wp_cmd" db query "SELECT CONCAT('ALTER TABLE `', TABLE_NAME, '` ENGINE=InnoDB;') FROM information_schema.TABLES WHERE ENGINE = 'MyISAM' AND TABLE_SCHEMA = DATABASE();" --skip-column-names --skip-plugins --skip-themes)
+    if [ -n "$myisam_queries" ]; then
+        echo "Converting MyISAM tables to InnoDB..."
+        echo "$myisam_queries" | "$wp_cmd" db query --skip-plugins --skip-themes
+    else
+        echo "All tables already use InnoDB."
+    fi
+
+    echo
+    echo "Top 10 tables larger than 1 MB:"
+    "$wp_cmd" db query "SELECT TABLE_NAME, CASE WHEN (data_length + index_length) >= 1073741824 THEN CONCAT(ROUND((data_length + index_length) / 1073741824, 2), ' GB') WHEN (data_length + index_length) >= 1048576 THEN CONCAT(ROUND((data_length + index_length) / 1048576, 2), ' MB') WHEN (data_length + index_length) >= 1024 THEN CONCAT(ROUND((data_length + index_length) / 1024, 2), ' KB') ELSE CONCAT((data_length + index_length), ' B') END AS Size FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND (data_length + index_length) > 1048576 ORDER BY (data_length + index_length) DESC LIMIT 10;" --skip-plugins --skip-themes
+
+    echo
+    echo "Deleting expired transients..."
+    "$wp_cmd" transient delete --expired
+    echo "Database optimization complete."
+}

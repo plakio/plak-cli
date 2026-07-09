@@ -1,0 +1,26 @@
+go_cron() {
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        list) crontab -l 2>/dev/null | grep 'plak.sh/go' || true ;;
+        add) go_cron_add "$@" ;;
+        delete) go_cron_delete "$@" ;;
+        run) go_main "$@" ;;
+        -h|--help|"") echo "Usage: _go cron <list|add|delete|run> [command] [schedule]" ;;
+        *) go_error "Unknown cron command: $action"; return 1 ;;
+    esac
+}
+
+go_cron_add() {
+    local command_string="${1:-}" schedule="${2:-0 4 * * *}"
+    [ -n "$command_string" ] || { go_error "Usage: _go cron add '<command>' ['0 4 * * *']"; return 1; }
+    local line="${schedule} cd $(pwd) && curl -sL https://plak.sh/go | bash -s ${command_string} # plak.sh/go"
+    (crontab -l 2>/dev/null; echo "$line") | crontab -
+    echo "Cron added: ${line}"
+}
+
+go_cron_delete() {
+    local match="${1:-plak.sh/go}"
+    crontab -l 2>/dev/null | grep -v "$match" | crontab -
+    echo "Cron entries matching '${match}' removed."
+}

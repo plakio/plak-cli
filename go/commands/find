@@ -1,0 +1,127 @@
+go_find_recent_files() {
+    local days="${1:-1}"
+    [[ "$days" =~ ^[0-9]+$ ]] || { go_error "Please provide a valid number of days."; return 1; }
+
+    echo "Files modified in the last ${days} day(s):"
+    if [ "$(uname)" = "Darwin" ]; then
+        find . -type f -mtime "-${days}" -exec stat -f "%Sm %N" -t "%Y-%m-%d %H:%M:%S" {} + | sort -r
+    else
+        find . -type f -mtime "-${days}" -printf "%TY-%Tm-%Td %TH:%M:%S %p\n" | sort -r
+    fi
+}
+
+go_find_slow_plugins() {
+    local page_to_check="${1:-}"
+    local wp_cmd
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    go_wp_execution_time() {
+        local output
+        output=$("$wp_cmd" "$@" --debug 2>&1 || true)
+        echo "$output" | perl -ne '/Debug \(bootstrap\): Running command: .+\(([^s]+s)/ && print $1' | tail -1
+    }
+
+    local base_command_args=("plugin" "list") skip_argument="--skip-plugins" description="wp plugin list --debug"
+    if [ -n "$page_to_check" ]; then
+        if ! "$wp_cmd" help render >/dev/null 2>&1; then
+            go_error "wp render is required for page checks. Run without a page path or install render-command."
+            return 1
+        fi
+        base_command_args=("render" "$page_to_check")
+        skip_argument="--without-plugin"
+        description="wp render ${page_to_check} --debug"
+    fi
+
+    echo "Measuring plugin impact for: ${description}"
+    local base_time_s
+    base_time_s=$(go_wp_execution_time "${base_command_args[@]}")
+    [ -n "$base_time_s" ] || { go_error "Could not measure base execution time."; return 1; }
+    echo "Base time: ${base_time_s}"
+
+    local active_plugins=() plugin results=()
+    while IFS= read -r plugin; do
+        [ -n "$plugin" ] && active_plugins+=("$plugin")
+    done < <("$wp_cmd" plugin list --field=name --status=active)
+
+    printf "%-40s | %-15s | %-15s\n" "Plugin Skipped" "Time w/ Skip" "Impact"
+    printf '%s\n' "---------------------------------------------------------------------------------"
+    for plugin in "${active_plugins[@]}"; do
+        local time_with_skip_s diff_s impact_sign=""
+        time_with_skip_s=$(go_wp_execution_time "${base_command_args[@]}" "${skip_argument}=${plugin}")
+        if [ -n "$time_with_skip_s" ]; then
+            diff_s=$(awk -v base="${base_time_s%s}" -v skip="${time_with_skip_s%s}" 'BEGIN { printf "%.3f", base - skip }')
+            if [ "$(awk -v diff="$diff_s" 'BEGIN { print (diff > 0) }')" -eq 1 ]; then impact_sign="+"; fi
+            results+=("$(printf "%.3f" "$diff_s")|$plugin|$time_with_skip_s|${impact_sign}${diff_s}s")
+        else
+            results+=("0.000|$plugin|Error|Error")
+        fi
+    done
+
+    printf "%s\n" "${results[@]}" | sort -t'|' -k1,1nr | while IFS='|' read -r _ plugin_name time_skip impact; do
+        printf "%-40s | %-15s | %-15s\n" "$plugin_name" "$time_skip" "$impact"
+    done
+}
+
+go_find_hidden_plugins() {
+    local wp_cmd active_plugins active_plugins_raw regular_count raw_count hidden_plugins
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    active_plugins=$("$wp_cmd" plugin list --field=name --status=active)
+    active_plugins_raw=$("$wp_cmd" plugin list --field=name --status=active --skip-themes --skip-plugins)
+    regular_count=$(printf "%s\n" "$active_plugins" | sed '/^$/d' | wc -l | tr -d ' ')
+    raw_count=$(printf "%s\n" "$active_plugins_raw" | sed '/^$/d' | wc -l | tr -d ' ')
+
+    if [ "$regular_count" = "$raw_count" ]; then
+        echo "No hidden plugins detected. Active plugin counts match (${regular_count})."
+        return 0
+    fi
+
+    echo "Plugin list discrepancy found. Standard: ${regular_count}; raw: ${raw_count}."
+    hidden_plugins=$(comm -13 <(printf "%s\n" "$active_plugins" | sort) <(printf "%s\n" "$active_plugins_raw" | sort))
+    if [ -n "$hidden_plugins" ]; then
+        echo "Hidden plugin candidates:"
+        echo "$hidden_plugins"
+    fi
+}
+
+go_find_malware() {
+    local wp_cmd combined_pattern search_results
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    combined_pattern='eval\(base64_decode\(|eval\(gzinflate\(|eval\(gzuncompress\(|eval\(str_rot13\(|preg_replace.*\/e|create_function|FilesMan|c99shell|r57shell|shell_exec\(|passthru\(|system\(|phpinfo\(|assert\('
+    search_results=$(grep -rn --include='*.php' -iE "$combined_pattern" . 2>/dev/null || true)
+    if [ -n "$search_results" ]; then
+        echo "Potentially suspicious PHP patterns found:"
+        echo "$search_results"
+    else
+        echo "No suspicious PHP patterns found."
+    fi
+
+    echo
+    echo "Verifying WordPress core checksums..."
+    "$wp_cmd" core verify-checksums --skip-plugins --skip-themes || true
+    echo
+    echo "Verifying wordpress.org plugin checksums..."
+    "$wp_cmd" plugin verify-checksums --all --skip-plugins --skip-themes || true
+}
+
+go_find_php_tags() {
+    local search_dir="${1:-.}"
+    [ -d "$search_dir" ] || { go_error "Directory not found: $search_dir"; return 1; }
+
+    local found_tags
+    found_tags=$(grep --include="*.php" --line-number --recursive '<?' "$search_dir" 2>/dev/null \
+        | grep -v -F -e '<?php' -e '<?=' -e '<?xml' \
+        | grep -v -F -e "strpos(" -e "str_replace(" \
+        | grep -v -E "^[^:]*:[^:]*:\s*(\*|//|#)|'\<\?'|\"\<\?\"" || true)
+
+    if [ -z "$found_tags" ]; then
+        echo "No outdated PHP tags found."
+    else
+        echo "Potential outdated PHP tags:"
+        echo "$found_tags"
+    fi
+}

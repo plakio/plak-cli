@@ -1,0 +1,54 @@
+go_wpcli_check() {
+    local wp_cmd
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+
+    echo "Checking for WP-CLI warnings..."
+
+    local base_warnings
+    base_warnings=$("$wp_cmd" plugin list --skip-themes --skip-plugins 2>&1 >/dev/null || true)
+    if [ -n "$base_warnings" ]; then
+        echo "Warnings appear even with plugins and themes skipped:"
+        echo "$base_warnings"
+        return 1
+    fi
+
+    local initial_warnings
+    initial_warnings=$("$wp_cmd" plugin list 2>&1 >/dev/null || true)
+    if [ -z "$initial_warnings" ]; then
+        echo "WP-CLI is running without warnings."
+        return 0
+    fi
+
+    echo "Initial warnings:"
+    echo "$initial_warnings"
+    echo
+
+    local warnings_without_theme
+    warnings_without_theme=$("$wp_cmd" plugin list --skip-themes 2>&1 >/dev/null || true)
+    if [ -z "$warnings_without_theme" ]; then
+        local active_theme
+        active_theme=$("$wp_cmd" theme list --status=active --field=name 2>/dev/null || true)
+        echo "Warnings disappear when skipping themes. Active theme is likely involved: ${active_theme:-unknown}"
+    fi
+
+    local active_plugins=() plugin warnings_without_plugin culprit_found=false
+    while IFS= read -r plugin; do
+        [ -n "$plugin" ] && active_plugins+=("$plugin")
+    done < <("$wp_cmd" plugin list --field=name --status=active)
+
+    for plugin in "${active_plugins[@]}"; do
+        printf "Testing without '%s'... " "$plugin"
+        warnings_without_plugin=$("$wp_cmd" plugin list --skip-plugins="$plugin" 2>&1 >/dev/null || true)
+        if [ -z "$warnings_without_plugin" ]; then
+            echo "likely culprit"
+            culprit_found=true
+        else
+            echo "warnings remain"
+        fi
+    done
+
+    if ! $culprit_found; then
+        echo "Could not isolate a single plugin as the source."
+    fi
+}

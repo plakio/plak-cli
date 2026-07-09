@@ -1,0 +1,24 @@
+go_update() {
+    local action="${1:-}"
+    case "$action" in
+        all) go_update_all ;;
+        list) go_checkpoint_list ;;
+        -h|--help|"") echo "Usage: _go update <all|list>" ;;
+        *) go_error "Unknown update command: $action"; return 1 ;;
+    esac
+}
+
+go_update_all() {
+    local wp_cmd before after
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || { go_error "This does not appear to be a WordPress installation."; return 1; }
+    echo "Creating before-update checkpoint..."
+    before=$(go_checkpoint_create || true)
+    "$wp_cmd" core update || true
+    "$wp_cmd" plugin update --all || true
+    "$wp_cmd" theme update --all || true
+    "$wp_cmd" core update-db || true
+    echo "Creating after-update checkpoint..."
+    after=$(go_checkpoint_create || true)
+    echo "Update complete. Before: ${before:-none}. After: ${after:-none}."
+}

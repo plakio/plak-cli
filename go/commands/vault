@@ -1,0 +1,43 @@
+go_vault() {
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        create) go_vault_create "$@" ;;
+        snapshots) go_vault_restic snapshots "$@" ;;
+        info) go_vault_restic stats "$@" ;;
+        prune) go_vault_prune "$@" ;;
+        -h|--help|"") echo "Usage: _go vault <create|snapshots|info|prune>" ;;
+        *) go_error "Unknown vault command: $action"; return 1 ;;
+    esac
+}
+
+go_vault_env() {
+    go_require_command restic || return 1
+    [ -n "${RESTIC_REPOSITORY:-}" ] || { go_error "RESTIC_REPOSITORY is required."; return 1; }
+    [ -n "${RESTIC_PASSWORD:-}" ] || { go_error "RESTIC_PASSWORD is required."; return 1; }
+}
+
+go_vault_restic() { go_vault_env || return 1; restic "$@"; }
+
+go_vault_create() {
+    go_vault_env || return 1
+    local private_dir db_file
+    private_dir=$(go_private_dir) || return 1
+    db_file="${private_dir}/vault-db-$(date +%Y-%m-%d-%H%M%S).sql"
+    local wp_cmd
+    wp_cmd=$(go_wp_cli 2>/dev/null || true)
+    if [ -n "$wp_cmd" ] && "$wp_cmd" db export "$db_file" --add-drop-table >/dev/null 2>&1; then
+        restic backup . "$db_file"
+        rm -f "$db_file"
+    else
+        restic backup .
+    fi
+}
+
+go_vault_prune() {
+    local yes=false
+    [ "${1:-}" = "--yes" ] && yes=true
+    $yes || { go_error "restic prune can be destructive. Re-run with --yes."; return 1; }
+    go_vault_env || return 1
+    restic forget --prune --keep-daily 7 --keep-weekly 4 --keep-monthly 6
+}

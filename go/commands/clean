@@ -1,0 +1,48 @@
+go_clean() {
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        plugins) go_clean_plugins "$@" ;;
+        themes) go_clean_themes "$@" ;;
+        disk) go_clean_disk "$@" ;;
+        -h|--help|"") echo "Usage: _go clean <plugins|themes|disk> [--yes]" ;;
+        *) go_error "Unknown clean command: $action"; return 1 ;;
+    esac
+}
+
+go_clean_plugins() {
+    local yes=false
+    [ "${1:-}" = "--yes" ] && yes=true
+    local wp_cmd plugins=() plugin
+    wp_cmd=$(go_wp_cli) || return 1
+    while IFS= read -r plugin; do [ -n "$plugin" ] && plugins+=("$plugin"); done < <("$wp_cmd" plugin list --status=inactive --field=name)
+    if [ "${#plugins[@]}" -eq 0 ]; then echo "No inactive plugins found."; return 0; fi
+    printf '%s\n' "${plugins[@]}"
+    $yes || { go_error "Re-run with --yes to delete inactive plugins."; return 1; }
+    "$wp_cmd" plugin delete "${plugins[@]}"
+}
+
+go_clean_themes() {
+    local yes=false
+    [ "${1:-}" = "--yes" ] && yes=true
+    local wp_cmd active template themes=() theme
+    wp_cmd=$(go_wp_cli) || return 1
+    active=$("$wp_cmd" option get stylesheet --skip-plugins --skip-themes 2>/dev/null || true)
+    template=$("$wp_cmd" option get template --skip-plugins --skip-themes 2>/dev/null || true)
+    while IFS= read -r theme; do
+        [ -n "$theme" ] || continue
+        [ "$theme" = "$active" ] && continue
+        [ "$theme" = "$template" ] && continue
+        themes+=("$theme")
+    done < <("$wp_cmd" theme list --field=name)
+    if [ "${#themes[@]}" -eq 0 ]; then echo "No inactive themes found."; return 0; fi
+    printf '%s\n' "${themes[@]}"
+    $yes || { go_error "Re-run with --yes to delete inactive themes."; return 1; }
+    "$wp_cmd" theme delete "${themes[@]}"
+}
+
+go_clean_disk() {
+    local path="${1:-.}"
+    [ -d "$path" ] || { go_error "Directory not found: $path"; return 1; }
+    du -sh "$path"/* 2>/dev/null | sort -hr | head -n 30
+}

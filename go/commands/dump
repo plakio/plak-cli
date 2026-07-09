@@ -1,0 +1,67 @@
+go_dump() {
+    local pattern="" output="" max_file_size=204800 max_total_size=2097152 exclude_patterns=()
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --output=*) output="${1#*=}" ;;
+            --exclude=*) exclude_patterns+=("${1#*=}") ;;
+            --max-file-size=*) max_file_size="${1#*=}" ;;
+            --max-total-size=*) max_total_size="${1#*=}" ;;
+            -x)
+                shift
+                [ "$#" -gt 0 ] || { go_error "Missing pattern after -x."; return 1; }
+                exclude_patterns+=("$1")
+                ;;
+            -h|--help)
+                echo "Usage: _go dump <pattern> [--output=<file>] [--exclude=<pattern>] [--max-file-size=<bytes>] [--max-total-size=<bytes>]"
+                return 0
+                ;;
+            -* ) go_error "Unknown dump flag: $1"; return 1 ;;
+            *)
+                [ -z "$pattern" ] || { go_error "Unexpected dump argument: $1"; return 1; }
+                pattern="$1"
+                ;;
+        esac
+        shift
+    done
+
+    [ -n "$pattern" ] || { go_error "Please provide a quoted file pattern."; return 1; }
+    [[ "$max_file_size" =~ ^[0-9]+$ ]] || { go_error "--max-file-size must be bytes."; return 1; }
+    [[ "$max_total_size" =~ ^[0-9]+$ ]] || { go_error "--max-total-size must be bytes."; return 1; }
+
+    local total=0 count=0 skipped=0 file size excluded
+    local tmp_output=""
+    if [ -n "$output" ]; then
+        tmp_output="${output}.tmp"
+        : > "$tmp_output"
+    fi
+
+    while IFS= read -r file; do
+        [ -f "$file" ] || continue
+        excluded=false
+        local ex
+        for ex in "${exclude_patterns[@]}"; do
+            case "$file" in $ex|./$ex) excluded=true ;; esac
+        done
+        if $excluded; then skipped=$((skipped + 1)); continue; fi
+
+        size=$(wc -c < "$file" | tr -d ' ')
+        if [ "$size" -gt "$max_file_size" ]; then skipped=$((skipped + 1)); continue; fi
+        if [ $((total + size)) -gt "$max_total_size" ]; then skipped=$((skipped + 1)); continue; fi
+
+        {
+            echo "===== ${file} ====="
+            sed -n '1,2000p' "$file"
+            echo
+        } | if [ -n "$tmp_output" ]; then tee -a "$tmp_output" >/dev/null; else cat; fi
+        total=$((total + size))
+        count=$((count + 1))
+    done < <(find . \( -path "./$pattern" -o -name "$pattern" \) -type f 2>/dev/null | sort)
+
+    if [ -n "$output" ]; then
+        mv "$tmp_output" "$output"
+        echo "Dump written to ${output}. Files: ${count}. Skipped: ${skipped}. Bytes: ${total}."
+    else
+        echo "Dump complete. Files: ${count}. Skipped: ${skipped}. Bytes: ${total}." >&2
+    fi
+}
