@@ -11,8 +11,6 @@ Example:
   ./scripts/release.sh 0.4.0
 
 Options:
-  --tap-dir PATH    Path to homebrew-tap (default: ../homebrew-tap)
-  --brew-test       Run brew install/test/uninstall against the generated formula
   --yes, -y         Skip confirmation prompt
   --help, -h        Show this help
 
@@ -21,8 +19,7 @@ What this does:
   2. Compiles plak.sh and go.sh, then runs smoke tests
   3. Commits "Release <version>"
   4. Pushes main, tags v<version>, and pushes the tag
-  5. Generates the Homebrew formula from the published tag
-  6. Commits and pushes the tap update
+  5. The tag triggers the automated Homebrew tap update
 USAGE
 }
 
@@ -70,28 +67,11 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 cd "$REPO_ROOT"
 
-# Parse options first to find --tap-dir (needed for auto-increment fallback)
-TAP_DIR=""
-RUN_BREW_TEST=false
-ASSUME_YES=false
-
-# Parse options first
-TAP_DIR=""
-RUN_BREW_TEST=false
 ASSUME_YES=false
 VERSION=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --tap-dir)
-            [ "$#" -ge 2 ] || die "--tap-dir requires a path."
-            TAP_DIR="$2"
-            shift 2
-            ;;
-        --brew-test)
-            RUN_BREW_TEST=true
-            shift
-            ;;
         --yes|-y)
             ASSUME_YES=true
             shift
@@ -133,26 +113,18 @@ if [ -z "$VERSION" ]; then
 fi
 
 VERSION="${VERSION#v}"
-
-TAP_DIR="${TAP_DIR:-$REPO_ROOT/../homebrew-tap}"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    die "Invalid version: $VERSION (expected X.Y.Z)."
+fi
 
 TAG="v$VERSION"
 
 require_cmd git
-require_cmd curl
-require_cmd shasum
-
-[ -d "$TAP_DIR/.git" ] || die "Tap repository not found at: $TAP_DIR"
-[ -f "$TAP_DIR/Formula/plak-cli.rb" ] || die "Tap formula not found at: $TAP_DIR/Formula/plak-cli.rb"
 
 BRANCH=$(git branch --show-current)
 [ "$BRANCH" = "main" ] || die "Run releases from main (current branch: $BRANCH)."
 
-TAP_BRANCH=$(git -C "$TAP_DIR" branch --show-current)
-[ "$TAP_BRANCH" = "main" ] || die "Tap repo must be on main (current branch: $TAP_BRANCH)."
-
 require_clean_repo "$REPO_ROOT" "plak-cli"
-require_clean_repo "$TAP_DIR" "homebrew-tap"
 
 git fetch origin --tags
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
@@ -178,7 +150,7 @@ else
 fi
 
 RELEASE_COMMIT=$(git rev-parse --short HEAD)
-confirm "Release $VERSION from commit $RELEASE_COMMIT and update Homebrew tap?"
+confirm "Release $VERSION from commit $RELEASE_COMMIT?"
 
 echo "==> Pushing main"
 git push origin main
@@ -187,41 +159,4 @@ echo "==> Creating and pushing tag $TAG"
 git tag "$TAG"
 git push origin "$TAG"
 
-echo "==> Generating Homebrew formula from published tag"
-TMP_FORMULA=$(mktemp)
-trap 'rm -f "$TMP_FORMULA"' EXIT
-
-generated=false
-for attempt in 1 2 3 4 5; do
-    if ./scripts/homebrew_formula.sh "$VERSION" > "$TMP_FORMULA"; then
-        generated=true
-        break
-    fi
-    echo "Formula generation failed; retrying in $((attempt * 2))s..."
-    sleep $((attempt * 2))
-done
-$generated || die "Failed to generate Homebrew formula for $TAG."
-
-cp "$TMP_FORMULA" "$TAP_DIR/Formula/plak-cli.rb"
-
-if [ "$RUN_BREW_TEST" = true ]; then
-    require_cmd brew
-    echo "==> Testing Homebrew formula"
-    (
-        cd "$TAP_DIR"
-        brew install --build-from-source ./Formula/plak-cli.rb
-        brew test ./Formula/plak-cli.rb
-        brew uninstall plak-cli
-    )
-fi
-
-if [ -n "$(git -C "$TAP_DIR" status --short)" ]; then
-    echo "==> Committing tap update"
-    git -C "$TAP_DIR" add Formula/plak-cli.rb
-    git -C "$TAP_DIR" commit -m "plak-cli $VERSION"
-    git -C "$TAP_DIR" push origin main
-else
-    echo "==> Tap formula already up to date."
-fi
-
-echo "==> Release $VERSION complete."
+echo "==> Release $VERSION complete; GitHub Actions will update the Homebrew tap."

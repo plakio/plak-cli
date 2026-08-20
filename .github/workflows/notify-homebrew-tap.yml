@@ -1,0 +1,32 @@
+name: Notify Homebrew Tap
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
+
+      - name: Notify Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          jq -n \
+            --arg version "$VERSION" \
+            '{event_type: "new-release", client_payload: {version: $version}}' \
+            | gh api --method POST repos/plakio/homebrew-tap/dispatches --input -

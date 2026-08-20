@@ -47,7 +47,7 @@ Use `scripts/release.sh` from the repository root. Commit functional changes fir
 ./scripts/release.sh --yes
 ```
 
-This auto-increments the patch version from `PLAK_VERSION`, compiles `plak.sh`, runs smoke tests, commits the release bump, pushes `main`, creates and pushes the GitHub tag, generates the Homebrew formula from that tag, and pushes the tap update.
+This auto-increments the patch version from `PLAK_VERSION`, compiles `plak.sh`, runs smoke tests, commits the release bump, pushes `main`, and creates and pushes the GitHub tag. The tag triggers the automated Homebrew tap update.
 
 For an explicit version:
 
@@ -55,13 +55,7 @@ For an explicit version:
 ./scripts/release.sh 0.4.31 --yes
 ```
 
-For local Homebrew formula testing during release:
-
-```bash
-./scripts/release.sh 0.4.31 --brew-test --yes
-```
-
-Both `plak-cli` and `../homebrew-tap` must be on `main` with clean working trees. Do not edit the Homebrew formula manually before the CLI release tag exists. See `docs/homebrew.md` for details and manual recovery steps.
+Only `plak-cli` needs to be cloned locally. It must be on `main` with a clean working tree. Do not edit the Homebrew formula manually before the CLI release tag exists. See `docs/homebrew.md` for automation and recovery details.
 
 ## Safety
 

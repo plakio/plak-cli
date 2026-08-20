@@ -180,7 +180,7 @@ bash -n main shared/* shared/site/* commands/* commands/site/* compile.sh instal
 ./tests/smoke.sh
 ```
 
-5. Do not modify `homebrew-tap/` unless the user is doing a release and the CLI artifact already exists.
+5. Release tags trigger the automated `homebrew-tap` update; do not edit the formula manually before the tag exists.
 
 ## Troubleshooting
 
