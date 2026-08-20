@@ -36,11 +36,11 @@ The `plak-cli` repository requires an Actions secret named `TAP_DISPATCH_TOKEN`.
 
 ## Recovery
 
-If the tag exists but the tap workflow did not complete, rerun it without creating another release:
+If the tag exists but the tap workflow did not start, resend the notification without creating another release:
 
 ```bash
-gh workflow run update-plak-cli.yml \
-  --repo plakio/homebrew-tap \
+gh workflow run notify-homebrew-tap.yml \
+  --repo plakio/plak-cli \
   --field version=v0.4.54
 ```
 
