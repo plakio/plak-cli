@@ -844,8 +844,8 @@ port_url_for() {
 # preview replacement counts without committing.
 #
 # No-op if OLD_HTTPS == NEW_HTTPS or if $SITES_DIR has no WordPress sites.
-# Returns 0 even if individual sites fail — per-site errors are reported
-# in the output and summarised at the end.
+# Returns non-zero if any hostname migration fails. Per-host errors include
+# the original WP-CLI output and are summarised at the end.
 update_wp_site_urls_for_port_change() {
     local old_https="$1" new_https="$2" dry_run_flag="${3:-}"
     local dry_run=false
@@ -898,6 +898,11 @@ update_wp_site_urls_for_port_change() {
                 any_updated=true
             else
                 gum style --foreground red "   ❌ ${hostname}: search-replace failed"
+                if [ -n "$output" ]; then
+                    while IFS= read -r error_line || [ -n "$error_line" ]; do
+                        printf '      %s\n' "$error_line" >&2
+                    done <<< "$output"
+                fi
                 failed_hosts=$((failed_hosts + 1))
             fi
         done
@@ -912,6 +917,7 @@ update_wp_site_urls_for_port_change() {
     fi
     if [ $failed_hosts -gt 0 ]; then
         gum style --foreground yellow "⚠️  $failed_hosts hostname replacement(s) failed."
+        return 1
     fi
     return 0
 }
@@ -1131,7 +1137,8 @@ add_filter( 'auto_theme_update_send_email', '__return_false' );
  * When accessed via a non-localhost domain, override home and siteurl
  * to use the current host so CSS/JS/images load correctly.
  */
-function plak_site_maybe_override_site_url( $value ) {
+if ( ! function_exists( 'plak_cli_maybe_override_site_url' ) ) {
+function plak_cli_maybe_override_site_url( $value ) {
     // Only run in front-end context with a valid HTTP_HOST
     if ( defined( 'WP_CLI' ) && WP_CLI ) {
         return $value;
@@ -1148,8 +1155,9 @@ function plak_site_maybe_override_site_url( $value ) {
     $scheme = ( ! empty( $_SERVER['HTTPS'] ) && $_SERVER['HTTPS'] !== 'off' ) ? 'https' : 'http';
     return $scheme . '://' . $host;
 }
-add_filter( 'option_home', 'plak_site_maybe_override_site_url' );
-add_filter( 'option_siteurl', 'plak_site_maybe_override_site_url' );
+}
+add_filter( 'option_home', 'plak_cli_maybe_override_site_url' );
+add_filter( 'option_siteurl', 'plak_cli_maybe_override_site_url' );
 heredoc
 
     local mu_plugins_dir="$public_dir/wp-content/mu-plugins"
@@ -5260,6 +5268,7 @@ install_dependency() {
 
 plak_site_install() {
     local auto_yes=false
+    local url_migration_failed=false
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes|-y|--force)
@@ -5807,14 +5816,15 @@ INI
     echo ""
     plak_site_trust
 
-    # If the user changed HTTPS ports during install AND there are pre-existing
-    # WordPress sites in $SITES_DIR, migrate their stored URLs to the new port.
-    # On a fresh install with no sites, this is a silent no-op.
+    # Let the central helper discover existing WordPress sites. With no sites,
+    # this is a silent no-op and avoids duplicating site detection here.
     if [ "$original_https" != "$HTTPS_PORT" ]; then
-        if [ -d "$SITES_DIR" ] && [ -n "$(find "$SITES_DIR" -maxdepth 2 -name wp-config.php -print -quit 2>/dev/null)" ]; then
-            echo ""
-            echo "🔄 Updating WordPress site URLs to new HTTPS port..."
-            update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"
+        echo ""
+        echo "🔄 Updating WordPress site URLs to new HTTPS port..."
+        if ! update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"; then
+            url_migration_failed=true
+            gum style --foreground yellow \
+                "⚠️  Ports changed, but some WordPress URLs could not be migrated."
         fi
     fi
 
@@ -5854,6 +5864,10 @@ INI
     if [ "$IS_WSL" = true ]; then
         echo ""
         gum style --foreground yellow "  WSL: Run 'plak wsl-hosts' for Windows hosts file setup instructions."
+    fi
+
+    if $url_migration_failed; then
+        return 1
     fi
 }
 
@@ -6943,6 +6957,7 @@ plak_site_ports() {
     local skip_urls=false
     local dry_run=false
     local auto_yes=false
+    local url_migration_failed=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -7115,13 +7130,20 @@ plak_site_ports() {
         echo "🔍 Dry run: running wp search-replace --dry-run..."
         echo ""
         if ! $skip_urls; then
-            update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT" --dry-run
+            if ! update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT" --dry-run; then
+                url_migration_failed=true
+            fi
         fi
         # Revert globals so nothing leaks to the caller
         HTTP_PORT="$original_http"
         HTTPS_PORT="$original_https"
         echo ""
         gum style --faint "Dry run complete. No changes committed."
+        if $url_migration_failed; then
+            gum style --foreground yellow \
+                "⚠️  Dry run completed, but some WordPress URLs could not be checked."
+            exit 1
+        fi
         exit 0
     fi
 
@@ -7146,7 +7168,9 @@ plak_site_ports() {
     if ! $skip_urls && [ "$original_https" != "$HTTPS_PORT" ]; then
         echo ""
         echo "🔄 Updating WordPress site URLs..."
-        update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"
+        if ! update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"; then
+            url_migration_failed=true
+        fi
     fi
 
     echo ""
@@ -7159,6 +7183,11 @@ plak_site_ports() {
     gum style --foreground green "✅ Plak is now on ports ${HTTP_PORT} / ${HTTPS_PORT}"
     if [ "$HTTPS_PORT" != "443" ]; then
         gum style --faint "   Dashboard: $(display_url_for plak.localhost)"
+    fi
+    if $url_migration_failed; then
+        gum style --foreground yellow \
+            "⚠️  Ports changed, but some WordPress URLs could not be migrated."
+        return 1
     fi
 }
 

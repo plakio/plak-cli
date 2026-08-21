@@ -132,6 +132,7 @@ install_dependency() {
 
 plak_site_install() {
     local auto_yes=false
+    local url_migration_failed=false
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes|-y|--force)
@@ -679,14 +680,15 @@ INI
     echo ""
     plak_site_trust
 
-    # If the user changed HTTPS ports during install AND there are pre-existing
-    # WordPress sites in $SITES_DIR, migrate their stored URLs to the new port.
-    # On a fresh install with no sites, this is a silent no-op.
+    # Let the central helper discover existing WordPress sites. With no sites,
+    # this is a silent no-op and avoids duplicating site detection here.
     if [ "$original_https" != "$HTTPS_PORT" ]; then
-        if [ -d "$SITES_DIR" ] && [ -n "$(find "$SITES_DIR" -maxdepth 2 -name wp-config.php -print -quit 2>/dev/null)" ]; then
-            echo ""
-            echo "🔄 Updating WordPress site URLs to new HTTPS port..."
-            update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"
+        echo ""
+        echo "🔄 Updating WordPress site URLs to new HTTPS port..."
+        if ! update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"; then
+            url_migration_failed=true
+            gum style --foreground yellow \
+                "⚠️  Ports changed, but some WordPress URLs could not be migrated."
         fi
     fi
 
@@ -726,5 +728,9 @@ INI
     if [ "$IS_WSL" = true ]; then
         echo ""
         gum style --foreground yellow "  WSL: Run 'plak wsl-hosts' for Windows hosts file setup instructions."
+    fi
+
+    if $url_migration_failed; then
+        return 1
     fi
 }

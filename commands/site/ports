@@ -18,6 +18,7 @@ plak_site_ports() {
     local skip_urls=false
     local dry_run=false
     local auto_yes=false
+    local url_migration_failed=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -190,13 +191,20 @@ plak_site_ports() {
         echo "🔍 Dry run: running wp search-replace --dry-run..."
         echo ""
         if ! $skip_urls; then
-            update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT" --dry-run
+            if ! update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT" --dry-run; then
+                url_migration_failed=true
+            fi
         fi
         # Revert globals so nothing leaks to the caller
         HTTP_PORT="$original_http"
         HTTPS_PORT="$original_https"
         echo ""
         gum style --faint "Dry run complete. No changes committed."
+        if $url_migration_failed; then
+            gum style --foreground yellow \
+                "⚠️  Dry run completed, but some WordPress URLs could not be checked."
+            exit 1
+        fi
         exit 0
     fi
 
@@ -221,7 +229,9 @@ plak_site_ports() {
     if ! $skip_urls && [ "$original_https" != "$HTTPS_PORT" ]; then
         echo ""
         echo "🔄 Updating WordPress site URLs..."
-        update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"
+        if ! update_wp_site_urls_for_port_change "$original_https" "$HTTPS_PORT"; then
+            url_migration_failed=true
+        fi
     fi
 
     echo ""
@@ -234,5 +244,10 @@ plak_site_ports() {
     gum style --foreground green "✅ Plak is now on ports ${HTTP_PORT} / ${HTTPS_PORT}"
     if [ "$HTTPS_PORT" != "443" ]; then
         gum style --faint "   Dashboard: $(display_url_for plak.localhost)"
+    fi
+    if $url_migration_failed; then
+        gum style --foreground yellow \
+            "⚠️  Ports changed, but some WordPress URLs could not be migrated."
+        return 1
     fi
 }
