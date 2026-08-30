@@ -94,7 +94,7 @@ go_command_help() {
             echo "Usage: _go login <user-id|user-login|email> [--expires=<seconds>] [--raw]"
             ;;
         migrate)
-            echo "Usage: _go migrate --url=<backup.zip> [--update-urls]"
+            echo "Usage: _go migrate --url=<backup.zip> [--update-urls] [--source-home=<url>] [--source-siteurl=<url>] [--destination-home=<url>] [--destination-siteurl=<url>]"
             ;;
         monitor)
             echo "Usage: _go monitor <errors|access.log|error.log|traffic> [--now] [--top=<n>]"

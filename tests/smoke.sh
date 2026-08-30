@@ -94,4 +94,6 @@ if grep -q 'maxdepth 2.*wp-config.php' commands/site/install; then
     exit 1
 fi
 
+./tests/migration.sh
+
 echo "Smoke tests passed."

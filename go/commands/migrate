@@ -1,6 +1,10 @@
 go_migrate() {
     local backup_url=""
     local update_urls_flag="false"
+    local source_home=""
+    local source_siteurl=""
+    local destination_home=""
+    local destination_siteurl=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -10,6 +14,22 @@ go_migrate() {
                 ;;
             --update-urls)
                 update_urls_flag="true"
+                shift
+                ;;
+            --source-home=*)
+                source_home="${1#*=}"
+                shift
+                ;;
+            --source-siteurl=*)
+                source_siteurl="${1#*=}"
+                shift
+                ;;
+            --destination-home=*)
+                destination_home="${1#*=}"
+                shift
+                ;;
+            --destination-siteurl=*)
+                destination_siteurl="${1#*=}"
                 shift
                 ;;
             -*)
@@ -25,7 +45,7 @@ go_migrate() {
 
     if [ -z "$backup_url" ]; then
         go_error "Please provide a backup URL or filename."
-        go_error "Usage: _go migrate --url=<backup.zip> [--update-urls]"
+        go_error "Usage: _go migrate --url=<backup.zip> [--update-urls] [--source-home=<url>] [--source-siteurl=<url>] [--destination-home=<url>] [--destination-siteurl=<url>]"
         return 1
     fi
 
@@ -39,10 +59,17 @@ go_migrate() {
 
     local home_directory
     home_directory=$(pwd)
-    local wp_home
-    wp_home=$("$wp_cmd" option get home --skip-themes --skip-plugins 2> >(go_filter_insecure_mysql_warning >&2))
-    if [[ "$wp_home" != http* ]]; then
-        go_error "WordPress not found in current directory. Migration cancelled."
+    # Callers that are about to replace a database can capture these values
+    # beforehand and pass them explicitly. The fallback preserves standalone
+    # `_go migrate` usage, and still runs before this function resets the DB.
+    if [ -z "$destination_home" ]; then
+        destination_home=$("$wp_cmd" option get home --skip-themes --skip-plugins 2> >(go_filter_insecure_mysql_warning >&2))
+    fi
+    if [ -z "$destination_siteurl" ]; then
+        destination_siteurl=$("$wp_cmd" option get siteurl --skip-themes --skip-plugins 2> >(go_filter_insecure_mysql_warning >&2))
+    fi
+    if [ "$update_urls_flag" = "true" ] && { [[ "$destination_home" != http* ]] || [[ "$destination_siteurl" != http* ]]; }; then
+        go_error "Valid destination home and siteurl values are required when updating URLs. Migration cancelled."
         return 1
     fi
 
@@ -58,7 +85,9 @@ go_migrate() {
 
     local local_file_name
     local_file_name=$(basename "$backup_url")
-    if [ -f "${home_directory}/${local_file_name}" ]; then
+    if [ -f "$backup_url" ]; then
+        mv "$backup_url" "${private_dir}/${local_file_name}"
+    elif [ -f "${home_directory}/${local_file_name}" ]; then
         mv "${home_directory}/${local_file_name}" "${private_dir}/${local_file_name}"
     fi
 
@@ -75,7 +104,7 @@ go_migrate() {
         echo "Downloading from $backup_url..."
         if ! go_download_file "$backup_url" "backup_file"; then
             go_error "Download failed."
-            cd "$home_directory"
+            cd "$home_directory" || return 1
             return 1
         fi
     else
@@ -100,7 +129,22 @@ go_migrate() {
     wordpresspath=$(find . -type d -name 'wp-content' -print -quit)
     if [ -z "$wordpresspath" ]; then
         go_error "Cannot find wp-content/ in backup. Migration cancelled."
-        cd "$home_directory"
+        cd "$home_directory" || return 1
+        return 1
+    fi
+
+    # Resolve the SQL payload before changing either files or the database.
+    # A missing/empty SQL file remains a supported file-only migration, but a
+    # database reset is never attempted unless there is an importable payload.
+    local database=""
+    if [ "$(uname)" = "Darwin" ]; then
+        database=$(find "$restore_dir" -type f -name '*.sql' -print0 | xargs -0 stat -f '%m %N' 2>/dev/null | sort -n | tail -1 | cut -f2- -d" " || true)
+    else
+        database=$(find "$restore_dir" -type f -name '*.sql' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2- || true)
+    fi
+    if [ -n "$database" ] && [ ! -s "$database" ]; then
+        go_error "The SQL file in the backup is empty. Migration cancelled."
+        cd "$home_directory" || return 1
         return 1
     fi
 
@@ -148,6 +192,9 @@ go_migrate() {
     local item
     for item in *; do
         [ -e "$item" ] || continue
+        # Keep database exports inside the private restore directory until the
+        # import completes; they are migration payloads, not public root files.
+        [[ "$item" == *.sql ]] && continue
         local is_default="false"
         local default
         for default in "${default_files[@]}"; do
@@ -161,14 +208,7 @@ go_migrate() {
             mv -f "$item" "$home_directory/"
         fi
     done
-    cd "$home_directory"
-
-    local database=""
-    if [ "$(uname)" = "Darwin" ]; then
-        database=$(find "$restore_dir" "$home_directory" -type f -name '*.sql' -print0 | xargs -0 stat -f '%m %N' 2>/dev/null | sort -n | tail -1 | cut -f2- -d" " || true)
-    else
-        database=$(find "$restore_dir" "$home_directory" -type f -name '*.sql' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2- || true)
-    fi
+    cd "$home_directory" || return 1
 
     if [ -z "$database" ] || [ ! -f "$database" ]; then
         echo "Warning: No .sql file found in backup. Skipping database import."
@@ -192,18 +232,38 @@ go_migrate() {
         "$wp_cmd" db reset --yes --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
         if ! "$wp_cmd" db import "$database" 2> >(go_filter_insecure_mysql_warning >&2); then
             go_error "Database import failed."
-            cd "$home_directory"
+            cd "$home_directory" || return 1
             return 1
         fi
 
         "$wp_cmd" cache flush --skip-plugins --skip-themes
         "$wp_cmd" option update blog_public "$search_privacy" --skip-plugins --skip-themes
 
-        local wp_home_imported
-        wp_home_imported=$("$wp_cmd" option get home --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
-        if [ "$update_urls_flag" = "true" ] && [ "$wp_home_imported" != "$wp_home" ]; then
-            echo "Updating URLs from $wp_home_imported to $wp_home..."
-            "$wp_cmd" search-replace "$wp_home_imported" "$wp_home" --all-tables --report-changed-only --skip-plugins --skip-themes
+        if [ "$update_urls_flag" = "true" ]; then
+            # Standalone callers may omit source values; after import is the
+            # safe point to discover them from the newly restored database.
+            if [ -z "$source_home" ]; then
+                source_home=$("$wp_cmd" option get home --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
+            fi
+            if [ -z "$source_siteurl" ]; then
+                source_siteurl=$("$wp_cmd" option get siteurl --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
+            fi
+
+            # Replace the more specific siteurl first so a site installed in
+            # a subdirectory is not partially rewritten by the home mapping.
+            if [ "$source_siteurl" != "$destination_siteurl" ]; then
+                echo "Updating siteurl references from $source_siteurl to $destination_siteurl..."
+                "$wp_cmd" search-replace "$source_siteurl" "$destination_siteurl" --all-tables --report-changed-only --skip-plugins --skip-themes
+            fi
+            if [ "$source_home" != "$destination_home" ] && [ "$source_home|$destination_home" != "$source_siteurl|$destination_siteurl" ]; then
+                echo "Updating home references from $source_home to $destination_home..."
+                "$wp_cmd" search-replace "$source_home" "$destination_home" --all-tables --report-changed-only --skip-plugins --skip-themes
+            fi
+
+            # Ensure the two canonical options remain distinct even when the
+            # source values were equal and could not be mapped independently.
+            "$wp_cmd" option update home "$destination_home" --skip-plugins --skip-themes
+            "$wp_cmd" option update siteurl "$destination_siteurl" --skip-plugins --skip-themes
         fi
     fi
 

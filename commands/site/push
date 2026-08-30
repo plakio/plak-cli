@@ -18,8 +18,7 @@ plak_site_push() {
         gum style --foreground "green" "✅ $1"
     }
     log_error() {
-        gum style --foreground "red" "❌ ERROR: $1"
-        >&2
+        gum style --foreground "red" "❌ ERROR: $1" >&2
         exit 1
     }
 
@@ -29,9 +28,11 @@ plak_site_push() {
     # password or unlocks their key once instead of four times.
     local ssh_ctl
     ssh_ctl=$(mktemp -u "${TMPDIR:-/tmp}/plak-ssh-XXXXXXXX")
+    local ssh_ctl_q
+    ssh_ctl_q=$(shell_quote "$ssh_ctl")
     local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ControlMaster=auto -o ControlPath=$ssh_ctl -o ControlPersist=5m"
     # shellcheck disable=SC2064 # we want $ssh_ctl expanded at trap-set time
-    trap "rm -f '$ssh_ctl'" EXIT
+    trap "rm -f $ssh_ctl_q" EXIT
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pushing a local Plak site to a remote server."
 
@@ -62,6 +63,13 @@ plak_site_push() {
     fi
 
     local local_path="$SITES_DIR/$site_name.localhost/public"
+    local local_home local_siteurl wp_cmd
+    wp_cmd=$(get_wp_cmd)
+    local_home=$( (cd "$local_path" && $wp_cmd option get home --skip-plugins --skip-themes 2>/dev/null) || true)
+    local_siteurl=$( (cd "$local_path" && $wp_cmd option get siteurl --skip-plugins --skip-themes 2>/dev/null) || true)
+    if [[ "$local_home" != http* ]] || [[ "$local_siteurl" != http* ]]; then
+        log_error "Could not read valid home and siteurl values from the local WordPress site."
+    fi
 
     # --- 2. Gather Remote Info ---
     local remote_ssh remote_path remote_path_q binding
@@ -88,20 +96,21 @@ plak_site_push() {
     fi
     remote_path_q=$(shell_quote "$remote_path")
 
-    # --- 3. Validate Remote Site ---
+    # --- 3. Validate Remote Site and capture destination URLs ---
     log_step "Validating remote WordPress site..."
-    local remote_url
-    remote_url=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home 2>/dev/null")
+    local remote_home remote_siteurl
+    remote_home=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get home --skip-plugins --skip-themes 2>/dev/null")
+    remote_siteurl=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && wp option get siteurl --skip-plugins --skip-themes 2>/dev/null")
 
-    if [ -z "$remote_url" ] || [[ ! "$remote_url" == http* ]]; then
+    if [[ "$remote_home" != http* ]] || [[ "$remote_siteurl" != http* ]]; then
         log_error "Could not find a valid WordPress site at the specified path. Check your connection details and path."
     fi
-    log_success "Found remote site to overwrite: $remote_url"
+    log_success "Found remote site to overwrite: $remote_home"
 
     # --- 4. Confirmation ---
     if [ "$yes" -eq 0 ]; then
         if [ -t 0 ] && plak_command_exists gum; then
-            if ! gum confirm "🚨 Are you sure you want to push '${site_name}' to '${remote_url}'? This will completely overwrite the remote site's files and database."; then
+            if ! gum confirm "🚨 Are you sure you want to push '${site_name}' to '${remote_home}'? This will completely overwrite the remote site's files and database."; then
                 echo "🚫 Push cancelled."
                 exit 0
             fi
@@ -121,6 +130,7 @@ plak_site_push() {
         log_error "Failed to generate local backup. The go script might have failed."
     fi
     
+    local size
     size=$(ls -lh "$local_backup_path" | awk '{print $5}')
     log_success "Local backup created: ${backup_filename} ($size)"
 
@@ -140,7 +150,12 @@ plak_site_push() {
 
     # --- 7. Remote Restore ---
     log_step "Restoring backup on remote server..."
-    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://plak.sh/go | bash -s -- migrate --url=$backup_filename_q --update-urls"; then
+    local source_home_q source_siteurl_q destination_home_q destination_siteurl_q
+    source_home_q=$(shell_quote "--source-home=$local_home")
+    source_siteurl_q=$(shell_quote "--source-siteurl=$local_siteurl")
+    destination_home_q=$(shell_quote "--destination-home=$remote_home")
+    destination_siteurl_q=$(shell_quote "--destination-siteurl=$remote_siteurl")
+    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://plak.sh/go | bash -s -- migrate --url=$backup_filename_q --update-urls $source_home_q $source_siteurl_q $destination_home_q $destination_siteurl_q"; then
         log_error "The remote migration script failed to execute correctly."
     fi
     log_success "Remote restore complete."
@@ -152,5 +167,5 @@ plak_site_push() {
     log_success "Cleanup complete."
 
     # --- 9. Finalize ---
-    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site has been pushed successfully." "Remote URL: ${remote_url}"
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site has been pushed successfully." "Remote URL: ${remote_home}"
 }
