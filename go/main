@@ -95,6 +95,7 @@ go_command_help() {
             ;;
         migrate)
             echo "Usage: _go migrate --url=<backup.zip> [--update-urls] [--source-home=<url>] [--source-siteurl=<url>] [--destination-home=<url>] [--destination-siteurl=<url>]"
+            echo "       _go migrate --recover"
             ;;
         monitor)
             echo "Usage: _go monitor <errors|access.log|error.log|traffic> [--now] [--top=<n>]"

@@ -1,0 +1,130 @@
+# Recoverable database replacement contract.
+#
+# Strategy: a portable pre-reset snapshot plus automatic rollback. Importing
+# into a temporary database and swapping is not viable on every supported
+# platform because shared hosts frequently withhold CREATE DATABASE, so the
+# engine snapshots the destination database before the first destructive step
+# and restores it when the import fails or the process is interrupted.
+#
+# The snapshot and a small state file live in a fixed directory inside the
+# private directory so a later run can find the recovery material even after an
+# abrupt interruption. Nothing is discarded until the replacement is confirmed.
+
+go_restore_state_dir() {
+    local private_dir="$1"
+    echo "${private_dir}/restore_recovery"
+}
+
+go_restore_state_write() {
+    local dir="$1"
+    shift
+    mkdir -p "$dir"
+    : > "${dir}/state"
+    local pair
+    for pair in "$@"; do
+        printf '%s\n' "$pair" >> "${dir}/state"
+    done
+}
+
+go_restore_state_set() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local tmp="${file}.tmp"
+    if [ -f "$file" ]; then
+        grep -v "^${key}=" "$file" > "$tmp" 2>/dev/null || true
+    else
+        : > "$tmp"
+    fi
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$file"
+}
+
+go_restore_state_get() {
+    local file="$1"
+    local key="$2"
+    [ -f "$file" ] || return 1
+    local line
+    line=$(grep -m1 "^${key}=" "$file" 2>/dev/null || true)
+    [ -n "$line" ] || return 1
+    printf '%s' "${line#*=}"
+}
+
+go_db_snapshot() {
+    local wp_cmd="$1"
+    local output="$2"
+    rm -f "$output"
+    if ! "$wp_cmd" db export "$output" --add-drop-table --default-character-set=utf8mb4 --skip-plugins --skip-themes >/dev/null 2> >(go_filter_insecure_mysql_warning >&2); then
+        rm -f "$output"
+        return 1
+    fi
+    [ -s "$output" ]
+}
+
+go_db_reset() {
+    local wp_cmd="$1"
+    "$wp_cmd" db reset --yes --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
+}
+
+go_db_import() {
+    local wp_cmd="$1"
+    local input="$2"
+    "$wp_cmd" db import "$input" --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
+}
+
+# Restore the destination database after a failed replacement, reporting the
+# outcome. On success the recovery material is confirmed and removed; on
+# failure it is preserved and the operator is told how to retry.
+go_db_attempt_recovery() {
+    local wp_cmd="$1"
+    local state="$2"
+    local dir="$3"
+
+    if go_db_recover_from_state "$wp_cmd" "$state"; then
+        rm -rf "$dir"
+        go_error "The destination database was restored to its pre-migration state."
+        return 0
+    fi
+
+    go_error "Automatic recovery failed."
+    go_error "Recovery material preserved at: $dir"
+    go_error "Recover manually with: _go migrate --recover"
+    return 1
+}
+
+# Restore the destination database from the snapshot recorded in the state
+# file. Callers decide whether to discard the recovery material afterwards:
+# keep it whenever this returns non-zero so the operator can retry.
+go_db_recover_from_state() {
+    local wp_cmd="$1"
+    local state="$2"
+    local recovery_dump
+    recovery_dump=$(go_restore_state_get "$state" recovery_dump || true)
+
+    if [ -z "$recovery_dump" ] || [ ! -s "$recovery_dump" ]; then
+        go_error "Recovery snapshot is missing or empty: ${recovery_dump:-<unset>}"
+        return 1
+    fi
+
+    go_restore_state_set "$state" stage recovering
+
+    if ! go_db_reset "$wp_cmd"; then
+        go_error "Recovery reset failed. Snapshot preserved at: $recovery_dump"
+        return 1
+    fi
+    if ! go_db_import "$wp_cmd" "$recovery_dump"; then
+        go_error "Recovery import failed. Snapshot preserved at: $recovery_dump"
+        return 1
+    fi
+
+    # Restore the table prefix the destination used before the migration so the
+    # snapshot's tables line up with wp-config.php again.
+    local table_prefix current_table_prefix
+    table_prefix=$(go_restore_state_get "$state" table_prefix || true)
+    current_table_prefix=$(go_restore_state_get "$state" current_table_prefix || true)
+    if [ -n "$table_prefix" ] && [ "$table_prefix" != "$current_table_prefix" ]; then
+        "$wp_cmd" config set table_prefix "$current_table_prefix" --skip-plugins --skip-themes
+    fi
+
+    return 0
+}

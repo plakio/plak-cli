@@ -29,6 +29,7 @@ assert_before() {
 source go/shared/logging
 source go/shared/archive
 source go/shared/private-dir
+source go/shared/database
 source go/shared/wp-cli
 source go/commands/migrate
 
@@ -40,6 +41,12 @@ printf '%s\n' "$*" >> "$WP_TEST_LOG"
 case "$*" in
     "option get blog_public"*) echo 1 ;;
     "config get table_prefix"*) echo wp_ ;;
+    "db export"*)
+        output="${3:-}"
+        [ -n "$output" ] && cat > "$output" <<'SQL'
+CREATE TABLE `wp_options` (`option_id` bigint NOT NULL);
+SQL
+        ;;
     "plugin is-installed"*|"plugin is-active"*) exit 1 ;;
 esac
 exit 0
@@ -55,6 +62,9 @@ CREATE TABLE `wp_options` (`option_id` bigint NOT NULL);
 INSERT INTO `wp_options` VALUES (1);
 SQL
 (cd "$tmpdir/archive" && zip -qr "$tmpdir/migration.zip" source)
+# The engine moves a local backup into its private directory, so keep a
+# pristine copy to seed each recoverable-replacement scenario.
+cp "$tmpdir/migration.zip" "$tmpdir/migration-scenarios.zip"
 
 destination="$tmpdir/destination"
 mkdir -p "$destination/wp-content"
@@ -81,6 +91,150 @@ grep -Fq 'search-replace https://source.example https://local.localhost' "$wp_lo
 grep -Fq 'option update home https://local.localhost' "$wp_log" || fail "destination home was not finalized"
 grep -Fq 'option update siteurl https://local.localhost/wordpress' "$wp_log" || fail "destination siteurl was not finalized"
 assert_before 'db reset' 'db import' "$wp_log"
+assert_before 'db export' 'db reset' "$wp_log"
+[ ! -d "$RUNNER_PRIVATE_DIR/restore_recovery" ] || fail "confirmed migration kept recovery material"
+
+# --- Recoverable database replacement regression tests ---
+# A fake WP-CLI lets each destructive step fail on demand so the engine's
+# snapshot-before-reset and automatic rollback can be verified independently.
+make_recover_wp() {
+    cat > "$1" <<'RECOVER_WP'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$WP_TEST_LOG"
+case "$*" in
+    "option get blog_public"*) echo 1 ;;
+    "config get table_prefix"*) echo wp_ ;;
+    "db export"*)
+        output="${3:-}"
+        [ "${RECOVER_EXPORT_FAIL:-0}" = 1 ] && exit 1
+        [ -n "$output" ] && cat > "$output" <<'SQL'
+CREATE TABLE `wp_options` (`option_id` bigint NOT NULL);
+SQL
+        ;;
+    "db import"*)
+        target="${3:-}"
+        case "$target" in
+            *pre-reset-backup.sql) [ "${RECOVER_ROLLBACK_FAIL:-0}" = 1 ] && exit 1 ;;
+            *) [ "${RECOVER_IMPORT_FAIL:-0}" = 1 ] && exit 1 ;;
+        esac
+        ;;
+    "core is-installed"*) [ "${RECOVER_VERIFY_FAIL:-0}" = 1 ] && exit 1 ;;
+    "plugin is-installed"*|"plugin is-active"*) exit 1 ;;
+esac
+exit 0
+RECOVER_WP
+    chmod +x "$1"
+}
+
+recover_fake_wp="$tmpdir/recover-fake-wp"
+make_recover_wp "$recover_fake_wp"
+
+run_recoverable_migrate() (
+    local scenario_dir="$tmpdir/recover-$1"
+    mkdir -p "$scenario_dir/destination/wp-content" "$scenario_dir/private"
+    cp "$tmpdir/migration-scenarios.zip" "$scenario_dir/migration.zip"
+    export RUNNER_PRIVATE_DIR="$scenario_dir/private"
+    export RUNNER_WP_CLI_CMD="$recover_fake_wp"
+    export WP_TEST_LOG="$scenario_dir/wp.log"
+    cd "$scenario_dir/destination" || exit 1
+    go_migrate \
+        --url="$scenario_dir/migration.zip" \
+        --update-urls \
+        --source-home="https://source.example" \
+        --source-siteurl="https://source.example/wordpress" \
+        --destination-home="https://local.localhost" \
+        --destination-siteurl="https://local.localhost/wordpress"
+)
+
+# Failure before the reset: the snapshot itself fails, so nothing destructive
+# may run and no recovery material is left behind.
+scenario_dir="$tmpdir/recover-snapshot-fail"
+export RECOVER_EXPORT_FAIL=1
+rc=0
+run_recoverable_migrate snapshot-fail >"$tmpdir/recover-snapshot-fail.out" 2>&1 || rc=$?
+unset RECOVER_EXPORT_FAIL
+[ "$rc" -ne 0 ] || fail "migration continued despite a failed pre-reset snapshot"
+grep -q 'db export' "$scenario_dir/wp.log" || fail "engine did not attempt a pre-reset snapshot"
+if grep -Eq 'db reset|db import' "$scenario_dir/wp.log"; then
+    fail "a failed snapshot still reached a destructive step"
+fi
+[ ! -d "$scenario_dir/private/restore_recovery" ] || fail "failed snapshot left recovery material behind"
+
+# Import failure: the engine must roll back to the pre-reset snapshot and then
+# discard the recovery material once the rollback is confirmed.
+scenario_dir="$tmpdir/recover-import-fail"
+export RECOVER_IMPORT_FAIL=1
+rc=0
+run_recoverable_migrate import-fail >"$tmpdir/recover-import-fail.out" 2>&1 || rc=$?
+unset RECOVER_IMPORT_FAIL
+[ "$rc" -ne 0 ] || fail "migration succeeded despite a failed import"
+grep -Fq 'Database import failed.' "$tmpdir/recover-import-fail.out" || fail "import failure was not reported"
+grep -Fq 'pre-reset-backup.sql' "$scenario_dir/wp.log" || fail "rollback did not import the pre-reset snapshot"
+grep -q 'restored to its pre-migration state' "$tmpdir/recover-import-fail.out" || fail "successful rollback was not reported"
+[ ! -d "$scenario_dir/private/restore_recovery" ] || fail "confirmed rollback kept recovery material"
+
+# Rollback failure: the snapshot and state must survive and the operator must
+# be told where they are and how to recover.
+scenario_dir="$tmpdir/recover-rollback-fail"
+export RECOVER_IMPORT_FAIL=1 RECOVER_ROLLBACK_FAIL=1
+rc=0
+run_recoverable_migrate rollback-fail >"$tmpdir/recover-rollback-fail.out" 2>&1 || rc=$?
+unset RECOVER_IMPORT_FAIL RECOVER_ROLLBACK_FAIL
+[ "$rc" -ne 0 ] || fail "migration succeeded despite a failed import"
+grep -q 'Automatic recovery failed' "$tmpdir/recover-rollback-fail.out" || fail "failed rollback was not reported"
+[ -s "$scenario_dir/private/restore_recovery/pre-reset-backup.sql" ] || fail "failed rollback discarded the recovery snapshot"
+[ -f "$scenario_dir/private/restore_recovery/state" ] || fail "failed rollback discarded the recovery state"
+grep -q '_go migrate --recover' "$tmpdir/recover-rollback-fail.out" || fail "failed rollback did not point at the recover command"
+
+# Verification failure after a successful import must also roll back.
+scenario_dir="$tmpdir/recover-verify-fail"
+export RECOVER_VERIFY_FAIL=1
+rc=0
+run_recoverable_migrate verify-fail >"$tmpdir/recover-verify-fail.out" 2>&1 || rc=$?
+unset RECOVER_VERIFY_FAIL
+[ "$rc" -ne 0 ] || fail "migration succeeded despite a failed verification"
+grep -q 'could not be verified' "$tmpdir/recover-verify-fail.out" || fail "verification failure was not reported"
+grep -Fq 'pre-reset-backup.sql' "$scenario_dir/wp.log" || fail "verification failure did not trigger a rollback"
+[ ! -d "$scenario_dir/private/restore_recovery" ] || fail "confirmed rollback kept recovery material"
+
+# An interrupted restore must block a new run and be recoverable explicitly.
+scenario_dir="$tmpdir/recover-interrupted"
+mkdir -p "$scenario_dir/destination/wp-content" "$scenario_dir/private/restore_recovery"
+cp "$tmpdir/migration-scenarios.zip" "$scenario_dir/migration.zip"
+printf 'CREATE TABLE `wp_options` (`option_id` bigint NOT NULL);\n' > "$scenario_dir/private/restore_recovery/pre-reset-backup.sql"
+cat > "$scenario_dir/private/restore_recovery/state" <<EOF
+stage=importing
+recovery_dump=$scenario_dir/private/restore_recovery/pre-reset-backup.sql
+table_prefix=
+current_table_prefix=wp_
+EOF
+rc=0
+(
+    export RUNNER_PRIVATE_DIR="$scenario_dir/private"
+    export RUNNER_WP_CLI_CMD="$recover_fake_wp"
+    export WP_TEST_LOG="$scenario_dir/wp.log"
+    cd "$scenario_dir/destination" || exit 1
+    go_migrate --url="$scenario_dir/migration.zip"
+) >"$tmpdir/recover-interrupted.out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a new migration proceeded over an interrupted restore"
+grep -q 'interrupted' "$tmpdir/recover-interrupted.out" || fail "interrupted restore was not reported"
+if grep -Eq 'db reset|db import|db export' "$scenario_dir/wp.log" 2>/dev/null; then
+    fail "interrupted restore was not detected before destructive steps"
+fi
+[ -f "$scenario_dir/private/restore_recovery/state" ] || fail "interrupted restore lost its state"
+
+rc=0
+(
+    export RUNNER_PRIVATE_DIR="$scenario_dir/private"
+    export RUNNER_WP_CLI_CMD="$recover_fake_wp"
+    export WP_TEST_LOG="$scenario_dir/recover.log"
+    cd "$scenario_dir/destination" || exit 1
+    go_migrate --recover
+) >"$tmpdir/recover-run.out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "explicit recovery failed"
+grep -Fq 'pre-reset-backup.sql' "$scenario_dir/recover.log" || fail "recovery did not import the preserved snapshot"
+[ ! -d "$scenario_dir/private/restore_recovery" ] || fail "successful recovery kept its material"
+grep -q 'Database recovery complete' "$tmpdir/recover-run.out" || fail "successful recovery was not reported"
 
 # Verify the backup primitive used by pull keeps uploads normally and excludes
 # only that directory when --proxy-uploads translates to --exclude.

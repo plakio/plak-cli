@@ -78,6 +78,23 @@ Plak CLI Go avoids provider-specific behavior and does not install global
 services. Optional tools such as `cwebp` are installed locally only when an
 explicit install flag is passed.
 
+## Recoverable migrations
+
+`migrate` never leaves the destination database empty or half-imported. Before
+the first destructive step it snapshots the existing database and records a
+state file in the site's private directory, then resets and imports. If the
+import fails, or the imported database cannot be verified, the snapshot is
+restored automatically. If the process is interrupted, the next run refuses to
+start and points at the recovery material; restore it with:
+
+```bash
+_go migrate --recover
+```
+
+A temporary-database swap is not used because shared hosts frequently withhold
+`CREATE DATABASE`, so the pre-reset snapshot is the portable contract. Recovery
+material is only discarded once the replacement is confirmed.
+
 ## Build
 
 Run from this directory:

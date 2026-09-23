@@ -95,6 +95,7 @@ go_command_help() {
             ;;
         migrate)
             echo "Usage: _go migrate --url=<backup.zip> [--update-urls] [--source-home=<url>] [--source-siteurl=<url>] [--destination-home=<url>] [--destination-siteurl=<url>]"
+            echo "       _go migrate --recover"
             ;;
         monitor)
             echo "Usage: _go monitor <errors|access.log|error.log|traffic> [--now] [--top=<n>]"
@@ -292,6 +293,138 @@ go_download_file() {
 
     go_error "Either wget or curl is required to download backups."
     return 1
+}
+
+# Source: shared/database
+# Recoverable database replacement contract.
+#
+# Strategy: a portable pre-reset snapshot plus automatic rollback. Importing
+# into a temporary database and swapping is not viable on every supported
+# platform because shared hosts frequently withhold CREATE DATABASE, so the
+# engine snapshots the destination database before the first destructive step
+# and restores it when the import fails or the process is interrupted.
+#
+# The snapshot and a small state file live in a fixed directory inside the
+# private directory so a later run can find the recovery material even after an
+# abrupt interruption. Nothing is discarded until the replacement is confirmed.
+
+go_restore_state_dir() {
+    local private_dir="$1"
+    echo "${private_dir}/restore_recovery"
+}
+
+go_restore_state_write() {
+    local dir="$1"
+    shift
+    mkdir -p "$dir"
+    : > "${dir}/state"
+    local pair
+    for pair in "$@"; do
+        printf '%s\n' "$pair" >> "${dir}/state"
+    done
+}
+
+go_restore_state_set() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local tmp="${file}.tmp"
+    if [ -f "$file" ]; then
+        grep -v "^${key}=" "$file" > "$tmp" 2>/dev/null || true
+    else
+        : > "$tmp"
+    fi
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$file"
+}
+
+go_restore_state_get() {
+    local file="$1"
+    local key="$2"
+    [ -f "$file" ] || return 1
+    local line
+    line=$(grep -m1 "^${key}=" "$file" 2>/dev/null || true)
+    [ -n "$line" ] || return 1
+    printf '%s' "${line#*=}"
+}
+
+go_db_snapshot() {
+    local wp_cmd="$1"
+    local output="$2"
+    rm -f "$output"
+    if ! "$wp_cmd" db export "$output" --add-drop-table --default-character-set=utf8mb4 --skip-plugins --skip-themes >/dev/null 2> >(go_filter_insecure_mysql_warning >&2); then
+        rm -f "$output"
+        return 1
+    fi
+    [ -s "$output" ]
+}
+
+go_db_reset() {
+    local wp_cmd="$1"
+    "$wp_cmd" db reset --yes --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
+}
+
+go_db_import() {
+    local wp_cmd="$1"
+    local input="$2"
+    "$wp_cmd" db import "$input" --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
+}
+
+# Restore the destination database after a failed replacement, reporting the
+# outcome. On success the recovery material is confirmed and removed; on
+# failure it is preserved and the operator is told how to retry.
+go_db_attempt_recovery() {
+    local wp_cmd="$1"
+    local state="$2"
+    local dir="$3"
+
+    if go_db_recover_from_state "$wp_cmd" "$state"; then
+        rm -rf "$dir"
+        go_error "The destination database was restored to its pre-migration state."
+        return 0
+    fi
+
+    go_error "Automatic recovery failed."
+    go_error "Recovery material preserved at: $dir"
+    go_error "Recover manually with: _go migrate --recover"
+    return 1
+}
+
+# Restore the destination database from the snapshot recorded in the state
+# file. Callers decide whether to discard the recovery material afterwards:
+# keep it whenever this returns non-zero so the operator can retry.
+go_db_recover_from_state() {
+    local wp_cmd="$1"
+    local state="$2"
+    local recovery_dump
+    recovery_dump=$(go_restore_state_get "$state" recovery_dump || true)
+
+    if [ -z "$recovery_dump" ] || [ ! -s "$recovery_dump" ]; then
+        go_error "Recovery snapshot is missing or empty: ${recovery_dump:-<unset>}"
+        return 1
+    fi
+
+    go_restore_state_set "$state" stage recovering
+
+    if ! go_db_reset "$wp_cmd"; then
+        go_error "Recovery reset failed. Snapshot preserved at: $recovery_dump"
+        return 1
+    fi
+    if ! go_db_import "$wp_cmd" "$recovery_dump"; then
+        go_error "Recovery import failed. Snapshot preserved at: $recovery_dump"
+        return 1
+    fi
+
+    # Restore the table prefix the destination used before the migration so the
+    # snapshot's tables line up with wp-config.php again.
+    local table_prefix current_table_prefix
+    table_prefix=$(go_restore_state_get "$state" table_prefix || true)
+    current_table_prefix=$(go_restore_state_get "$state" current_table_prefix || true)
+    if [ -n "$table_prefix" ] && [ "$table_prefix" != "$current_table_prefix" ]; then
+        "$wp_cmd" config set table_prefix "$current_table_prefix" --skip-plugins --skip-themes
+    fi
+
+    return 0
 }
 
 # Source: shared/logging
@@ -1409,6 +1542,7 @@ PHP
 go_migrate() {
     local backup_url=""
     local update_urls_flag="false"
+    local recover_flag="false"
     local source_home=""
     local source_siteurl=""
     local destination_home=""
@@ -1418,6 +1552,10 @@ go_migrate() {
         case "$1" in
             --url=*)
                 backup_url="${1#*=}"
+                shift
+                ;;
+            --recover)
+                recover_flag="true"
                 shift
                 ;;
             --update-urls)
@@ -1451,9 +1589,17 @@ go_migrate() {
         esac
     done
 
+    if [ "$recover_flag" = "true" ]; then
+        local recover_wp_cmd
+        recover_wp_cmd=$(go_wp_cli) || return 1
+        go_migrate_recover "$recover_wp_cmd"
+        return $?
+    fi
+
     if [ -z "$backup_url" ]; then
         go_error "Please provide a backup URL or filename."
         go_error "Usage: _go migrate --url=<backup.zip> [--update-urls] [--source-home=<url>] [--source-siteurl=<url>] [--destination-home=<url>] [--destination-siteurl=<url>]"
+        go_error "       _go migrate --recover"
         return 1
     fi
 
@@ -1483,6 +1629,20 @@ go_migrate() {
 
     local private_dir
     private_dir=$(go_private_dir) || return 1
+
+    # A previous replacement that was never confirmed leaves recovery material
+    # behind. Refuse to start over so it cannot be overwritten before it is
+    # either recovered or explicitly discarded.
+    local recovery_dir recovery_state recovery_dump
+    recovery_dir=$(go_restore_state_dir "$private_dir")
+    recovery_state="${recovery_dir}/state"
+    recovery_dump="${recovery_dir}/pre-reset-backup.sql"
+    if [ -f "$recovery_state" ]; then
+        go_error "A previous restore for this site was interrupted."
+        go_error "Recover it before starting a new migration: _go migrate --recover"
+        go_error "Recovery material: $recovery_dir"
+        return 1
+    fi
 
     local timedate
     local restore_dir
@@ -1632,17 +1792,64 @@ go_migrate() {
         fi
 
         current_table_prefix=$("$wp_cmd" config get table_prefix --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2))
+
+        # Recoverable replacement: snapshot the destination database before the
+        # first destructive step and record a state file so a later run can
+        # recover even after an abrupt interruption. See go/shared/database.
+        mkdir -p "$recovery_dir"
+        echo "Snapshotting destination database before replacement..."
+        if ! go_db_snapshot "$wp_cmd" "$recovery_dump"; then
+            rm -rf "$recovery_dir"
+            go_error "Could not snapshot the destination database. Migration cancelled before any change."
+            cd "$home_directory" || return 1
+            return 1
+        fi
+        go_restore_state_write "$recovery_dir" \
+            "stage=prepared" \
+            "timestamp=$timedate" \
+            "home_directory=$home_directory" \
+            "restore_dir=$restore_dir" \
+            "recovery_dump=$recovery_dump" \
+            "database=$database" \
+            "table_prefix=$table_prefix" \
+            "current_table_prefix=$current_table_prefix" \
+            "source_home=$source_home" \
+            "source_siteurl=$source_siteurl" \
+            "destination_home=$destination_home" \
+            "destination_siteurl=$destination_siteurl"
+
         if [ -n "$table_prefix" ] && [ "$table_prefix" != "$current_table_prefix" ]; then
             echo "Updating table prefix from $current_table_prefix to $table_prefix"
             "$wp_cmd" config set table_prefix "$table_prefix" --skip-plugins --skip-themes
         fi
 
-        "$wp_cmd" db reset --yes --skip-plugins --skip-themes 2> >(go_filter_insecure_mysql_warning >&2)
-        if ! "$wp_cmd" db import "$database" 2> >(go_filter_insecure_mysql_warning >&2); then
-            go_error "Database import failed."
+        go_restore_state_set "$recovery_state" stage resetting
+        if ! go_db_reset "$wp_cmd"; then
+            go_error "Database reset failed."
+            go_error "Recovery material preserved at: $recovery_dir"
+            go_error "Recover with: _go migrate --recover"
             cd "$home_directory" || return 1
             return 1
         fi
+
+        go_restore_state_set "$recovery_state" stage importing
+        if ! go_db_import "$wp_cmd" "$database"; then
+            go_error "Database import failed."
+            go_db_attempt_recovery "$wp_cmd" "$recovery_state" "$recovery_dir" || true
+            cd "$home_directory" || return 1
+            return 1
+        fi
+
+        # Confirm the replacement landed before discarding the recovery
+        # material; a database that does not answer as WordPress is rolled back.
+        go_restore_state_set "$recovery_state" stage verifying
+        if ! "$wp_cmd" core is-installed --skip-plugins --skip-themes 2>/dev/null; then
+            go_error "The imported database could not be verified."
+            go_db_attempt_recovery "$wp_cmd" "$recovery_state" "$recovery_dir" || true
+            cd "$home_directory" || return 1
+            return 1
+        fi
+        rm -rf "$recovery_dir"
 
         "$wp_cmd" cache flush --skip-plugins --skip-themes
         "$wp_cmd" option update blog_public "$search_privacy" --skip-plugins --skip-themes
@@ -1702,6 +1909,31 @@ go_migrate() {
     rm -rf "$restore_dir"
 
     echo "Site migration complete."
+}
+
+# Recover a database replacement that was interrupted before confirmation.
+# Intended to run from the same WordPress root as the interrupted migration.
+go_migrate_recover() {
+    local wp_cmd="$1"
+
+    local private_dir
+    private_dir=$(go_private_dir) || return 1
+
+    local recovery_dir recovery_state
+    recovery_dir=$(go_restore_state_dir "$private_dir")
+    recovery_state="${recovery_dir}/state"
+
+    if [ ! -f "$recovery_state" ]; then
+        go_error "No interrupted restore was found for this site."
+        return 1
+    fi
+
+    echo "Recovering the destination database from the preserved snapshot..."
+    if ! go_db_attempt_recovery "$wp_cmd" "$recovery_state" "$recovery_dir"; then
+        return 1
+    fi
+
+    echo "Database recovery complete. The pre-migration database was restored."
 }
 
 # Source: commands/monitor
