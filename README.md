@@ -142,10 +142,34 @@ plak delete <name> [--force]
 plak rename <old-name> <new-name>
 plak list [--totals]
 plak login <site> [<user>]
+plak wp <site> <wp-cli arguments...>
 plak path <name>
 plak url <name>
 plak log [site] [-f]
 ```
+
+Run WP-CLI from any directory using the site's FrankenPHP runtime:
+
+```bash
+plak wp my-site plugin list --format=json
+plak wp my-site option get siteurl
+plak wp my-site core --help
+```
+
+Arguments after the site name, including `--quiet`, `--json`, and `--help`,
+are forwarded unchanged. Standard input/output, errors and the exit status
+are passed through; `plak wp --help` shows Plak's wrapper help. No TTY is needed.
+
+Plak resolves the `wp` executable through symlinks and common shell wrappers
+referencing a literal PHAR path (including quoted paths with spaces and `$HOME`).
+Wrappers with computed paths that cannot be resolved are rejected with guidance
+to put the official WP-CLI PHAR on PATH. This keeps CLI and web on the same PHP.
+
+New WordPress sites use `WP_ENVIRONMENT_TYPE=local` and keep debug logging enabled.
+Creation checks every installation stage and cleans up only the directory and
+database created by that invocation if provisioning fails. An existing database
+is never reused. If only the server reload fails, the completed site is kept and
+Plak reports how to retry the reload.
 
 ### Migration
 

@@ -729,8 +729,8 @@ add_filter( 'option_siteurl', 'plak_cli_maybe_override_site_url' );
 heredoc
 
     local mu_plugins_dir="$public_dir/wp-content/mu-plugins"
-    mkdir -p "$mu_plugins_dir"
-    echo "$build_mu_plugin" > "$mu_plugins_dir/plak-cli-helper.php"
+    mkdir -p "$mu_plugins_dir" || return 1
+    printf '%s\n' "$build_mu_plugin" > "$mu_plugins_dir/plak-cli-helper.php" || return 1
     echo "   - ✅ Injected one-time login MU-plugin."
 }
 
@@ -864,7 +864,7 @@ footer a:hover { color: var(--text); }
 </html>
 LANDING_EOF
 
-    echo "$build_landing" > "$public_dir/index.php"
+    printf '%s\n' "$build_landing" > "$public_dir/index.php" || return 1
     echo "   - ✅ Wrote Plak landing page."
 }
 
@@ -902,27 +902,11 @@ check_dependencies() {
 
 # --- Helper Functions ---
 
-# Helper function to get WP-CLI command. Routes wp-cli through FrankenPHP's
-# bundled PHP via frankenphp php-cli so that we use one PHP runtime for both
-# web (Caddy) and CLI — no separate brew php install needed. PHP settings
-# (memory_limit, display_errors, error_reporting) come from $PHP_INI_FILE,
-# which plak install writes alongside ~/Plak/config. PHPRC is exported once
-# at script init below so every PHP invocation in any subshell picks it up.
-#
-# frankenphp php-cli does NOT support PHP CLI flags like -d or -c. PHPRC
-# is the only mechanism for setting ini values, hence the dedicated ini file.
-#
-# --allow-root is needed in WSL/Docker where the script runs as root.
+# Compatibility for existing shell callers that expand the result as a
+# command. Return a function name, never a space-delimited executable path:
+# the function resolves/executes an argv array and preserves paths with spaces.
 get_wp_cmd() {
-    local wp_path
-    wp_path=$(command -v wp)
-    local frank
-    frank=$(command -v frankenphp)
-    if [ "$(id -u)" -eq 0 ]; then
-        echo "$frank php-cli $wp_path --allow-root"
-    else
-        echo "$frank php-cli $wp_path"
-    fi
+    echo plak_wp_cli
 }
 
 # Safely single-quote a value for interpolation into a remote shell command.

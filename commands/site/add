@@ -1,134 +1,139 @@
-plak_site_add() {
-    cd ~/
-    local site_name="$1"
-    local site_type="wordpress"
-    local no_reload_flag=false
-
-    if [ -z "$site_name" ]; then
-        gum style --foreground red "❌ Error: A site name is required."
-        echo "Usage: plak add <name> [--plain]"
-        exit 1
+# Runs only inside plak_site_add's subshell. The directory and database flags
+# are set after exclusive creation succeeds; an existing resource is never ours.
+plak_site_add_cleanup() {
+    local rc="$1" site_dir="$2" db_name="$3" db_created="$4"
+    if [ "$db_created" = true ]; then
+        if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            -e "DROP DATABASE \`$db_name\`;"; then
+            echo "Error: could not clean up newly created database '$db_name'; remove it manually before retrying." >&2
+        fi
     fi
-
-    # Check for invalid characters.
-    if [[ "$site_name" =~ [^a-z0-9-] ]]; then
-        gum style --foreground red "❌ Error: Invalid site name '$site_name'." "Site names can only contain lowercase letters, numbers, and hyphens."
-        exit 1
+    if ! rm -rf -- "$site_dir"; then
+        echo "Error: could not clean up newly created directory '$site_dir'." >&2
     fi
+    return "$rc"
+}
 
-    # Check if the name starts or ends with a hyphen.
-    if [[ "$site_name" == -* || "$site_name" == *- ]]; then
-        gum style --foreground red "❌ Error: Invalid site name '$site_name'." "Site names cannot begin or end with a hyphen."
-        exit 1
-    fi
-
-    # Check all arguments passed to the function for our flags
+plak_site_add() (
+    # Isolate cwd and cleanup traps from callers such as pull and the dashboard.
+    # Every mandatory step is checked explicitly: main disables errexit for
+    # legacy site commands, and an outer conditional can disable it too.
+    local site_name="" site_type="wordpress" no_reload_flag=false arg
     for arg in "$@"; do
-        if [ "$arg" == "--plain" ]; then
-            site_type="plain"
-        fi
-        if [ "$arg" == "--no-reload" ]; then
-            no_reload_flag=true
-        fi
+        case "$arg" in
+            --plain) site_type="plain" ;;
+            --no-reload) no_reload_flag=true ;;
+            --help|-h) plak_display_command_help add; exit 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; exit 1 ;;
+            *)
+                if [ -n "$site_name" ]; then
+                    echo "Error: unexpected argument '$arg'." >&2
+                    exit 1
+                fi
+                site_name="$arg"
+                ;;
+        esac
     done
-
+    if ! plak_validate_site_name "$site_name"; then
+        echo "Error: a site name of 1–63 lowercase letters, numbers or hyphens is required; it cannot start or end with a hyphen." >&2
+        plak_display_command_help add >&2
+        exit 1
+    fi
+    local protected_name
     for protected_name in $PROTECTED_NAMES; do
-        if [ "$site_name" == "$protected_name" ]; then
-            gum style --foreground red "❌ Error: '$site_name' is a reserved name. Choose another."
+        if [ "$site_name" = "$protected_name" ]; then
+            echo "Error: '$site_name' is a reserved name." >&2
             exit 1
         fi
     done
 
     local site_dir="$SITES_DIR/$site_name.localhost"
-    local full_hostname
-    full_hostname=$(basename "$site_dir")
+    local full_hostname="$site_name.localhost"
+    local db_name="" db_created=false
+    local admin_user="admin" admin_pass="" one_time_login_url=""
+    local PLAK_WP_COMMAND=()
 
-    if [ -d "$site_dir" ]; then
-        echo "⚠️ Site '$full_hostname' already exists."
+    if [ -e "$site_dir" ] || [ -L "$site_dir" ]; then
+        echo "Error: site '$full_hostname' already exists." >&2
         exit 1
     fi
-
-    echo "➕ Creating $site_type site: $full_hostname"
-    mkdir -p "$site_dir/public" "$site_dir/logs"
-
-    if [ "$site_type" == "plain" ]; then
-        write_plain_site_landing "$site_dir/public"
+    if [ "$site_type" = wordpress ]; then
+        source_config
+        plak_wp_resolve_command || exit 1
+        admin_pass=$(plak_site_random_password 12) || exit 1
+        [ -n "$admin_pass" ] || { echo "Error: could not generate an admin password." >&2; exit 1; }
+        # Preserve the established database naming convention, including its
+        # trailing underscore, but never reuse an existing database.
+        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+        if [ "${#db_name}" -gt 64 ]; then
+            echo "Error: site name is too long for its WordPress database name." >&2
+            exit 1
+        fi
     fi
 
-    local admin_user="admin"
-    local admin_pass
-    local one_time_login_url=""
+    mkdir -p "$SITES_DIR" || exit 1
+    # mkdir without -p claims this directory exclusively, including races.
+    mkdir "$site_dir" || exit 1
+    trap 'plak_site_add_cleanup "$?" "$site_dir" "$db_name" "$db_created"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    mkdir "$site_dir/public" "$site_dir/logs" || exit 1
+    echo "➕ Creating $site_type site: $full_hostname"
 
-    if [ "$site_type" == "wordpress" ]; then
-        source_config
-        local db_name
-        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
-        
+    if [ "$site_type" = plain ]; then
+        write_plain_site_landing "$site_dir/public" || exit 1
+    else
         echo "🗄️ Creating database: $db_name"
-        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
+        if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            -e "CREATE DATABASE \`$db_name\`;"; then
+            echo "Error: could not create database '$db_name'; an existing database is never reused or deleted." >&2
+            exit 1
+        fi
+        db_created=true
         echo "Installing WordPress..."
-        admin_pass=$(plak_site_random_password 12)
-        
-        # get_wp_cmd routes wp-cli through frankenphp php-cli and PHPRC
-        # (exported in main) sets display_errors=0 + error_reporting=6143.
-        # That handles parse-time and pre-bootstrap warnings, but wp-cli's
-        # own bootstrap calls ini_set('display_errors', 'stderr') to keep
-        # its status messages on stdout, which re-routes PHP deprecation
-        # warnings to stderr from wp-cli's bundled vendor code (Colors.php
-        # on PHP 8.5+). The stderr filter on the subshell strips those
-        # leaked Deprecated lines while still passing through real wp-cli
-        # error output (which doesn't carry the "Deprecated:" prefix).
-        local wp_cmd
-        wp_cmd=$(get_wp_cmd)
 
-        (
+        # Filter known vendor deprecations only for provisioning. plak wp
+        # itself passes stderr through unchanged. Explicit checks preserve
+        # each failure instead of returning only the last command's status.
+        if ! (
             cd "$site_dir/public" || exit 1
-
-            # 1. Download WordPress with a higher memory limit
-            if ! $wp_cmd core download --quiet; then
-                echo "❌ Error: Failed to download WordPress core. This might be a network issue or a permissions problem."
-                exit 1 # Exit the subshell with an error
+            "${PLAK_WP_COMMAND[@]}" core download --quiet || exit 1
+            if [ ! -s wp-includes/version.php ] || [ ! -s wp-settings.php ]; then
+                echo "Error: WP-CLI reported a download but WordPress core files are missing." >&2
+                exit 1
             fi
-
-            # 2. Create the config file
-            $wp_cmd config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<PHP
+            "${PLAK_WP_COMMAND[@]}" config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<'PHP' || exit 1
+define( 'WP_ENVIRONMENT_TYPE', 'local' );
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
 PHP
-
-            # 3. Install WordPress
-            $wp_cmd core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email
-
-            # 4. Delete default plugins
+            [ -s wp-config.php ] || { echo "Error: WP-CLI did not create wp-config.php." >&2; exit 1; }
+            "${PLAK_WP_COMMAND[@]}" core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email || exit 1
+            "${PLAK_WP_COMMAND[@]}" core is-installed --skip-plugins --skip-themes || exit 1
             echo "   - Deleting default plugins (Hello Dolly, Akismet)..."
-            $wp_cmd plugin delete hello akismet --quiet
-        ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2)
-
-        # Check the exit code of the subshell. If it's not 0, something failed.
-        if [ $? -ne 0 ]; then
-            gum style --foreground red "❌ WordPress installation failed. Please review the errors above."
-            # Clean up the failed site directory and database
-            echo "   - Cleaning up failed installation..."
-            mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
-            rm -rf "$site_dir"
+            "${PLAK_WP_COMMAND[@]}" plugin delete hello akismet --quiet || exit 1
+        ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2); then
+            echo "Error: WordPress installation failed; cleaning up the new site and database." >&2
             exit 1
         fi
-        
-        # Generate must-use plugin
-        inject_mu_plugin "$site_dir/public"
-        one_time_login_url=$($wp_cmd user login "$admin_user" --path="$site_dir/public/")
+
+        inject_mu_plugin "$site_dir/public" || exit 1
+        one_time_login_url=$("${PLAK_WP_COMMAND[@]}" user login "$admin_user" --path="$site_dir/public/") || exit 1
+        if [[ "$one_time_login_url" != https://* ]]; then
+            echo "Error: WP-CLI did not return a one-time login URL." >&2
+            exit 1
+        fi
     fi
 
-    # Only run the reload if the --no-reload flag was NOT passed.
+    # Provisioning is complete. A server reload failure keeps the valid site
+    # for retry rather than dropping data after Caddy may have begun serving it.
+    trap - EXIT INT TERM
     if [ "$no_reload_flag" = false ]; then
-        regenerate_caddyfile
-
-        # Caddy's reload admin API returns as soon as the new config is live,
-        # but its internal CA issues the TLS cert for the new hostname
-        # asynchronously after that. Racing a request in that window surfaces
-        # as "tlsv1 alert internal error". Poll HTTPS briefly so we only return
-        # once Caddy can actually complete a handshake for the new domain.
+        if ! regenerate_caddyfile; then
+            echo "Error: site '$full_hostname' was created, but server reload failed. Run 'plak reload' to retry." >&2
+            exit 1
+        fi
         local warm_url
         warm_url=$(url_for "$full_hostname")
         for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -140,10 +145,9 @@ PHP
     fi
 
     echo "✅ Site '$full_hostname' created successfully!"
-    
-    if [ "$site_type" == "wordpress" ]; then
+    if [ "$site_type" = wordpress ]; then
         local admin_url
         admin_url="$(url_for "$full_hostname")/wp-admin"
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(plak_terminal_link "$admin_url")" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $(plak_terminal_link "$one_time_login_url")"
     fi
-}
+)

@@ -52,6 +52,10 @@ The CLI is designed for non-interactive use by AI agents. No TTY is required whe
 - `--json` — force JSON output for commands that support it.
 - `--help` / `-h` — show help. Must come after the command name.
 
+Exception: `plak wp <site> <args...>` passes everything after the site name
+unchanged to WP-CLI, including its flags. It preserves stdin, stdout, stderr and
+WP-CLI's exit code. Use `plak wp --help` for Plak's wrapper help.
+
 **Error handling**:
 
 - Exit codes: `0` = success, `1` = usage/config error, `2` = not found, `3` = binding/integrity error.
@@ -85,10 +89,16 @@ plak delete <name> [--force|--yes] [--no-reload]
 plak rename <old-name> <new-name>
 plak list [--totals] [--json]
 plak login <site> [<user>] [--raw]    # --raw prints only the URL
+plak wp <site> <wp-cli arguments...> # uses the same PHP runtime as the web
 plak path <site>
 plak url <site>
 plak log [site] [-f]
 ```
+
+Use `plak wp <site> plugin list --format=json` or
+`plak wp <site> option get siteurl` from any directory. New WordPress sites are
+marked `WP_ENVIRONMENT_TYPE=local`; failed provisioning removes only resources
+created by that attempt. A reload-only failure keeps the completed site for retry.
 
 ## Databases and migration
 

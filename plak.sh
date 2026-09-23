@@ -76,6 +76,7 @@ Commands:
   delete      Delete a local site
   list        List local sites
   login       Generate a one-time WordPress admin login link
+  wp          Run WP-CLI inside a local WordPress site
   db          Manage local site databases
   pull        Pull a remote WordPress site into Plak
   push        Push a local Plak site to a remote WordPress site
@@ -182,6 +183,10 @@ HELP
         login)
             echo "Usage: plak login <site> [<user>] [--raw]"
             ;;
+        wp)
+            echo "Usage: plak wp <site> <wp-cli arguments...>"
+            echo "Arguments after <site> are passed unchanged to WP-CLI."
+            ;;
         db)
             echo "Usage: plak db <backup|list>"
             ;;
@@ -212,8 +217,13 @@ main() {
     PLAK_QUIET=0
     PLAK_JSON=0
     local new_args=()
+    local wp_passthrough=false
     for arg in "$@"; do
-        if [[ "$arg" == "--quiet" || "$arg" == "-q" ]]; then
+        # Once the top-level wp command is seen, its site and every remaining
+        # argument belong to it, including --help, --quiet and --json.
+        if [ "$wp_passthrough" = true ]; then
+            new_args+=("$arg")
+        elif [[ "$arg" == "--quiet" || "$arg" == "-q" ]]; then
             PLAK_QUIET=1
         elif [[ "$arg" == "--json" ]]; then
             PLAK_JSON=1
@@ -222,11 +232,14 @@ main() {
             exit 0
         else
             new_args+=("$arg")
+            if [ "${#new_args[@]}" -eq 1 ] && [ "$arg" = wp ]; then
+                wp_passthrough=true
+            fi
         fi
     done
     export PLAK_QUIET
     export PLAK_JSON
-    if [ "$PLAK_JSON" = "1" ]; then
+    if [ "$PLAK_JSON" = "1" ] && [ "$wp_passthrough" = false ]; then
         new_args+=("--json")
     fi
     set -- "${new_args[@]}"
@@ -243,6 +256,9 @@ main() {
     esac
 
     case "$command" in
+        wp)
+            plak_site_wp "$@"
+            ;;
         remote)
             plak_remote "$@"
             ;;
@@ -1161,8 +1177,8 @@ add_filter( 'option_siteurl', 'plak_cli_maybe_override_site_url' );
 heredoc
 
     local mu_plugins_dir="$public_dir/wp-content/mu-plugins"
-    mkdir -p "$mu_plugins_dir"
-    echo "$build_mu_plugin" > "$mu_plugins_dir/plak-cli-helper.php"
+    mkdir -p "$mu_plugins_dir" || return 1
+    printf '%s\n' "$build_mu_plugin" > "$mu_plugins_dir/plak-cli-helper.php" || return 1
     echo "   - ✅ Injected one-time login MU-plugin."
 }
 
@@ -1296,7 +1312,7 @@ footer a:hover { color: var(--text); }
 </html>
 LANDING_EOF
 
-    echo "$build_landing" > "$public_dir/index.php"
+    printf '%s\n' "$build_landing" > "$public_dir/index.php" || return 1
     echo "   - ✅ Wrote Plak landing page."
 }
 
@@ -1334,27 +1350,11 @@ check_dependencies() {
 
 # --- Helper Functions ---
 
-# Helper function to get WP-CLI command. Routes wp-cli through FrankenPHP's
-# bundled PHP via frankenphp php-cli so that we use one PHP runtime for both
-# web (Caddy) and CLI — no separate brew php install needed. PHP settings
-# (memory_limit, display_errors, error_reporting) come from $PHP_INI_FILE,
-# which plak install writes alongside ~/Plak/config. PHPRC is exported once
-# at script init below so every PHP invocation in any subshell picks it up.
-#
-# frankenphp php-cli does NOT support PHP CLI flags like -d or -c. PHPRC
-# is the only mechanism for setting ini values, hence the dedicated ini file.
-#
-# --allow-root is needed in WSL/Docker where the script runs as root.
+# Compatibility for existing shell callers that expand the result as a
+# command. Return a function name, never a space-delimited executable path:
+# the function resolves/executes an argv array and preserves paths with spaces.
 get_wp_cmd() {
-    local wp_path
-    wp_path=$(command -v wp)
-    local frank
-    frank=$(command -v frankenphp)
-    if [ "$(id -u)" -eq 0 ]; then
-        echo "$frank php-cli $wp_path --allow-root"
-    else
-        echo "$frank php-cli $wp_path"
-    fi
+    echo plak_wp_cli
 }
 
 # Safely single-quote a value for interpolation into a remote shell command.
@@ -3018,6 +3018,117 @@ EOM
     rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"
 }
 
+# Source: shared/site/wp-cli
+# Run the PHP entry point behind `wp` with FrankenPHP and Plak's PHPRC.
+# No eval or shell execution is used to inspect wrappers.
+
+plak_wp_realpath() {
+    local path="$1" target hops=0
+    while [ -L "$path" ]; do
+        if [ "$hops" -ge 40 ]; then
+            echo "Error: too many symlinks resolving WP-CLI: $1" >&2
+            return 1
+        fi
+        target=$(readlink "$path") || return 1
+        case "$target" in
+            /*) path="$target" ;;
+            *) path="$(dirname "$path")/$target" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    [ -f "$path" ] && [ -r "$path" ] || return 1
+    local dir
+    dir=$(cd "$(dirname "$path")" && pwd -P) || return 1
+    printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+plak_wp_file_is_php() {
+    local first="" second=""
+    # The official PHAR has a PHP shebang followed by <?php. Checking the
+    # opening tag also avoids mistaking a shell path containing 'php' for PHP.
+    {
+        IFS= read -r first || true
+        IFS= read -r second || true
+    } < "$1"
+    case "$first" in
+        '<?php'*) return 0 ;;
+        '#!'*) [[ "$second" == '<?php'* ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_wp_resolve_phar() {
+    local path
+    path=$(type -P wp) || {
+        echo "Error: WP-CLI not found. Run 'plak install'." >&2
+        return 1
+    }
+    path=$(plak_wp_realpath "$path") || {
+        echo "Error: WP-CLI is not a readable file or has broken symlinks." >&2
+        return 1
+    }
+    if plak_wp_file_is_php "$path"; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    # Recognize literal PHAR paths in common shell wrappers (including
+    # Homebrew), quoted paths with spaces, and paths rooted at HOME.
+    # Complex computed wrappers are rejected rather than executed using a
+    # different PHP, or printed by PHP as a bogus successful invocation.
+    local token candidate resolved
+    while IFS= read -r token; do
+        case "$token" in
+            \"*\") candidate="${token:1:${#token}-2}" ;;
+            \'*\') candidate="${token:1:${#token}-2}" ;;
+            *) candidate="$token" ;;
+        esac
+        # Match the literal spelling in the wrapper, then expand only HOME.
+        # shellcheck disable=SC2016,SC2088
+        case "$candidate" in
+            '~/'*) candidate="$HOME/${candidate:2}" ;;
+            '$HOME/'*) candidate="$HOME/${candidate:6}" ;;
+            '${HOME}/'*) candidate="$HOME/${candidate:8}" ;;
+        esac
+        case "$candidate" in
+            *'$'*|*'`'*) continue ;;
+            /*) ;;
+            *) candidate="$(dirname "$path")/$candidate" ;;
+        esac
+        resolved=$(plak_wp_realpath "$candidate") || continue
+        if plak_wp_file_is_php "$resolved"; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    done < <(sed '/^[[:space:]]*#/d' "$path" | grep -oE "\"[^\"]+\.phar\"|'[^']+\.phar'|[^[:space:]\"';|&<>]+\.phar" || true)
+
+    echo "Error: cannot resolve the WP-CLI PHAR referenced by wrapper '$path'. Put the official WP-CLI PHAR (or a symlink to it) on PATH as 'wp'." >&2
+    return 1
+}
+
+# Caller owns a local PLAK_WP_COMMAND array (Bash dynamic scope), so paths
+# and arguments never need to be serialized into a shell command string.
+plak_wp_resolve_command() {
+    local wp_path frank
+    PLAK_WP_COMMAND=()
+    wp_path=$(plak_wp_resolve_phar) || return 1
+    frank=$(type -P frankenphp) || {
+        echo "Error: FrankenPHP not found. Run 'plak install'." >&2
+        return 1
+    }
+    frank=$(plak_wp_realpath "$frank") || return 1
+    PLAK_WP_COMMAND=("$frank" php-cli "$wp_path")
+    if [ "$(id -u)" -eq 0 ]; then
+        PLAK_WP_COMMAND+=(--allow-root)
+    fi
+}
+
+plak_wp_cli() {
+    local PLAK_WP_COMMAND=()
+    plak_wp_resolve_command || return $?
+    "${PLAK_WP_COMMAND[@]}" "$@"
+}
+
 # Source: shared/ui
 # Shared UI helpers for Plak Bash commands.
 
@@ -3056,6 +3167,11 @@ plak_ui_success() {
 
 # Source: shared/validate
 # Shared validation helpers for Plak Bash commands.
+
+plak_validate_site_name() {
+    local value="${1:-}"
+    [[ "$value" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] && [ "${#value}" -le 63 ]
+}
 
 plak_validate_hostname_alias() {
     local value="$1"
@@ -4182,137 +4298,142 @@ plak_remote() {
 }
 
 # Source: commands/site/add
-plak_site_add() {
-    cd ~/
-    local site_name="$1"
-    local site_type="wordpress"
-    local no_reload_flag=false
-
-    if [ -z "$site_name" ]; then
-        gum style --foreground red "❌ Error: A site name is required."
-        echo "Usage: plak add <name> [--plain]"
-        exit 1
+# Runs only inside plak_site_add's subshell. The directory and database flags
+# are set after exclusive creation succeeds; an existing resource is never ours.
+plak_site_add_cleanup() {
+    local rc="$1" site_dir="$2" db_name="$3" db_created="$4"
+    if [ "$db_created" = true ]; then
+        if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            -e "DROP DATABASE \`$db_name\`;"; then
+            echo "Error: could not clean up newly created database '$db_name'; remove it manually before retrying." >&2
+        fi
     fi
-
-    # Check for invalid characters.
-    if [[ "$site_name" =~ [^a-z0-9-] ]]; then
-        gum style --foreground red "❌ Error: Invalid site name '$site_name'." "Site names can only contain lowercase letters, numbers, and hyphens."
-        exit 1
+    if ! rm -rf -- "$site_dir"; then
+        echo "Error: could not clean up newly created directory '$site_dir'." >&2
     fi
+    return "$rc"
+}
 
-    # Check if the name starts or ends with a hyphen.
-    if [[ "$site_name" == -* || "$site_name" == *- ]]; then
-        gum style --foreground red "❌ Error: Invalid site name '$site_name'." "Site names cannot begin or end with a hyphen."
-        exit 1
-    fi
-
-    # Check all arguments passed to the function for our flags
+plak_site_add() (
+    # Isolate cwd and cleanup traps from callers such as pull and the dashboard.
+    # Every mandatory step is checked explicitly: main disables errexit for
+    # legacy site commands, and an outer conditional can disable it too.
+    local site_name="" site_type="wordpress" no_reload_flag=false arg
     for arg in "$@"; do
-        if [ "$arg" == "--plain" ]; then
-            site_type="plain"
-        fi
-        if [ "$arg" == "--no-reload" ]; then
-            no_reload_flag=true
-        fi
+        case "$arg" in
+            --plain) site_type="plain" ;;
+            --no-reload) no_reload_flag=true ;;
+            --help|-h) plak_display_command_help add; exit 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; exit 1 ;;
+            *)
+                if [ -n "$site_name" ]; then
+                    echo "Error: unexpected argument '$arg'." >&2
+                    exit 1
+                fi
+                site_name="$arg"
+                ;;
+        esac
     done
-
+    if ! plak_validate_site_name "$site_name"; then
+        echo "Error: a site name of 1–63 lowercase letters, numbers or hyphens is required; it cannot start or end with a hyphen." >&2
+        plak_display_command_help add >&2
+        exit 1
+    fi
+    local protected_name
     for protected_name in $PROTECTED_NAMES; do
-        if [ "$site_name" == "$protected_name" ]; then
-            gum style --foreground red "❌ Error: '$site_name' is a reserved name. Choose another."
+        if [ "$site_name" = "$protected_name" ]; then
+            echo "Error: '$site_name' is a reserved name." >&2
             exit 1
         fi
     done
 
     local site_dir="$SITES_DIR/$site_name.localhost"
-    local full_hostname
-    full_hostname=$(basename "$site_dir")
+    local full_hostname="$site_name.localhost"
+    local db_name="" db_created=false
+    local admin_user="admin" admin_pass="" one_time_login_url=""
+    local PLAK_WP_COMMAND=()
 
-    if [ -d "$site_dir" ]; then
-        echo "⚠️ Site '$full_hostname' already exists."
+    if [ -e "$site_dir" ] || [ -L "$site_dir" ]; then
+        echo "Error: site '$full_hostname' already exists." >&2
         exit 1
     fi
-
-    echo "➕ Creating $site_type site: $full_hostname"
-    mkdir -p "$site_dir/public" "$site_dir/logs"
-
-    if [ "$site_type" == "plain" ]; then
-        write_plain_site_landing "$site_dir/public"
+    if [ "$site_type" = wordpress ]; then
+        source_config
+        plak_wp_resolve_command || exit 1
+        admin_pass=$(plak_site_random_password 12) || exit 1
+        [ -n "$admin_pass" ] || { echo "Error: could not generate an admin password." >&2; exit 1; }
+        # Preserve the established database naming convention, including its
+        # trailing underscore, but never reuse an existing database.
+        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
+        if [ "${#db_name}" -gt 64 ]; then
+            echo "Error: site name is too long for its WordPress database name." >&2
+            exit 1
+        fi
     fi
 
-    local admin_user="admin"
-    local admin_pass
-    local one_time_login_url=""
+    mkdir -p "$SITES_DIR" || exit 1
+    # mkdir without -p claims this directory exclusively, including races.
+    mkdir "$site_dir" || exit 1
+    trap 'plak_site_add_cleanup "$?" "$site_dir" "$db_name" "$db_created"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    mkdir "$site_dir/public" "$site_dir/logs" || exit 1
+    echo "➕ Creating $site_type site: $full_hostname"
 
-    if [ "$site_type" == "wordpress" ]; then
-        source_config
-        local db_name
-        db_name=$(echo "plak_site_$site_name" | tr -c '[:alnum:]_' '_')
-        
+    if [ "$site_type" = plain ]; then
+        write_plain_site_landing "$site_dir/public" || exit 1
+    else
         echo "🗄️ Creating database: $db_name"
-        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
+        if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            -e "CREATE DATABASE \`$db_name\`;"; then
+            echo "Error: could not create database '$db_name'; an existing database is never reused or deleted." >&2
+            exit 1
+        fi
+        db_created=true
         echo "Installing WordPress..."
-        admin_pass=$(plak_site_random_password 12)
-        
-        # get_wp_cmd routes wp-cli through frankenphp php-cli and PHPRC
-        # (exported in main) sets display_errors=0 + error_reporting=6143.
-        # That handles parse-time and pre-bootstrap warnings, but wp-cli's
-        # own bootstrap calls ini_set('display_errors', 'stderr') to keep
-        # its status messages on stdout, which re-routes PHP deprecation
-        # warnings to stderr from wp-cli's bundled vendor code (Colors.php
-        # on PHP 8.5+). The stderr filter on the subshell strips those
-        # leaked Deprecated lines while still passing through real wp-cli
-        # error output (which doesn't carry the "Deprecated:" prefix).
-        local wp_cmd
-        wp_cmd=$(get_wp_cmd)
 
-        (
+        # Filter known vendor deprecations only for provisioning. plak wp
+        # itself passes stderr through unchanged. Explicit checks preserve
+        # each failure instead of returning only the last command's status.
+        if ! (
             cd "$site_dir/public" || exit 1
-
-            # 1. Download WordPress with a higher memory limit
-            if ! $wp_cmd core download --quiet; then
-                echo "❌ Error: Failed to download WordPress core. This might be a network issue or a permissions problem."
-                exit 1 # Exit the subshell with an error
+            "${PLAK_WP_COMMAND[@]}" core download --quiet || exit 1
+            if [ ! -s wp-includes/version.php ] || [ ! -s wp-settings.php ]; then
+                echo "Error: WP-CLI reported a download but WordPress core files are missing." >&2
+                exit 1
             fi
-
-            # 2. Create the config file
-            $wp_cmd config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<PHP
+            "${PLAK_WP_COMMAND[@]}" config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<'PHP' || exit 1
+define( 'WP_ENVIRONMENT_TYPE', 'local' );
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
 PHP
-
-            # 3. Install WordPress
-            $wp_cmd core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email
-
-            # 4. Delete default plugins
+            [ -s wp-config.php ] || { echo "Error: WP-CLI did not create wp-config.php." >&2; exit 1; }
+            "${PLAK_WP_COMMAND[@]}" core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email || exit 1
+            "${PLAK_WP_COMMAND[@]}" core is-installed --skip-plugins --skip-themes || exit 1
             echo "   - Deleting default plugins (Hello Dolly, Akismet)..."
-            $wp_cmd plugin delete hello akismet --quiet
-        ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2)
-
-        # Check the exit code of the subshell. If it's not 0, something failed.
-        if [ $? -ne 0 ]; then
-            gum style --foreground red "❌ WordPress installation failed. Please review the errors above."
-            # Clean up the failed site directory and database
-            echo "   - Cleaning up failed installation..."
-            mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$db_name\`;"
-            rm -rf "$site_dir"
+            "${PLAK_WP_COMMAND[@]}" plugin delete hello akismet --quiet || exit 1
+        ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2); then
+            echo "Error: WordPress installation failed; cleaning up the new site and database." >&2
             exit 1
         fi
-        
-        # Generate must-use plugin
-        inject_mu_plugin "$site_dir/public"
-        one_time_login_url=$($wp_cmd user login "$admin_user" --path="$site_dir/public/")
+
+        inject_mu_plugin "$site_dir/public" || exit 1
+        one_time_login_url=$("${PLAK_WP_COMMAND[@]}" user login "$admin_user" --path="$site_dir/public/") || exit 1
+        if [[ "$one_time_login_url" != https://* ]]; then
+            echo "Error: WP-CLI did not return a one-time login URL." >&2
+            exit 1
+        fi
     fi
 
-    # Only run the reload if the --no-reload flag was NOT passed.
+    # Provisioning is complete. A server reload failure keeps the valid site
+    # for retry rather than dropping data after Caddy may have begun serving it.
+    trap - EXIT INT TERM
     if [ "$no_reload_flag" = false ]; then
-        regenerate_caddyfile
-
-        # Caddy's reload admin API returns as soon as the new config is live,
-        # but its internal CA issues the TLS cert for the new hostname
-        # asynchronously after that. Racing a request in that window surfaces
-        # as "tlsv1 alert internal error". Poll HTTPS briefly so we only return
-        # once Caddy can actually complete a handshake for the new domain.
+        if ! regenerate_caddyfile; then
+            echo "Error: site '$full_hostname' was created, but server reload failed. Run 'plak reload' to retry." >&2
+            exit 1
+        fi
         local warm_url
         warm_url=$(url_for "$full_hostname")
         for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -4324,13 +4445,12 @@ PHP
     fi
 
     echo "✅ Site '$full_hostname' created successfully!"
-    
-    if [ "$site_type" == "wordpress" ]; then
+    if [ "$site_type" = wordpress ]; then
         local admin_url
         admin_url="$(url_for "$full_hostname")/wp-admin"
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(plak_terminal_link "$admin_url")" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $(plak_terminal_link "$one_time_login_url")"
     fi
-}
+)
 
 # Source: commands/site/db
 plak_site_db_backup() {
@@ -4465,7 +4585,7 @@ plak_site_db_list() {
     # This heredoc contains a PHP script to find, connect, and format the database list.
     # We invoke it via frankenphp php-cli -r so we don't depend on a standalone php binary.
     local wp_path
-    wp_path=$(command -v wp)
+    wp_path=$(plak_wp_resolve_phar) || return 1
     local frank
     frank=$(command -v frankenphp)
     local php_output
@@ -9239,6 +9359,38 @@ plak_site_url() {
     # -------------------------------------------------------------
     url_for "${site_name}.localhost"
 }
+# Source: commands/site/wp
+plak_site_wp() {
+    local site_name="${1:-}"
+    if [ "$site_name" = --help ] || [ "$site_name" = -h ]; then
+        plak_display_command_help wp
+        return 0
+    fi
+    if [ -z "$site_name" ] || [ "$#" -lt 2 ]; then
+        plak_display_command_help wp >&2
+        return 1
+    fi
+    shift
+    site_name="${site_name%.localhost}"
+    if ! plak_validate_site_name "$site_name"; then
+        echo "Error: invalid site name '$site_name'." >&2
+        return 1
+    fi
+
+    local public_dir="$SITES_DIR/$site_name.localhost/public"
+    if [ ! -d "$public_dir" ] || [ ! -f "$public_dir/wp-config.php" ] || [ ! -f "$public_dir/wp-includes/version.php" ]; then
+        echo "Error: WordPress site '$site_name.localhost' not found or incomplete." >&2
+        return 1
+    fi
+
+    local PLAK_WP_COMMAND=()
+    plak_wp_resolve_command || return $?
+    cd "$public_dir" || return 1
+    # Replace Plak with the runtime: stdin, stdout, stderr, signals and the
+    # exit status are WP-CLI's, without a formatting/filtering intermediary.
+    exec "${PLAK_WP_COMMAND[@]}" "$@"
+}
+
 # Source: commands/site/wsl-hosts
 plak_site_wsl_hosts() {
     if [ "$IS_WSL" != true ]; then

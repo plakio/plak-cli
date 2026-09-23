@@ -6,16 +6,25 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
 ./compile.sh >/dev/null
-bash -n main shared/* commands/* compile.sh install.sh plak.sh
+for source_file in main shared/* shared/site/* commands/* commands/site/* compile.sh install.sh plak.sh tests/*.sh; do
+    [ ! -f "$source_file" ] || bash -n "$source_file"
+done
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
 
 version_output=$(./plak.sh version)
 grep -q 'plak v' <<<"$version_output"
 
-status_output=$(./plak.sh status)
+# Status checks dependencies before rendering. Supply stand-ins in an empty
+# HOME so smoke tests do not require or inspect a running local site stack.
+mkdir -p "$tmpdir/status-home/.local/bin"
+for dep in frankenphp mariadb mailpit wp gum; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$tmpdir/status-home/.local/bin/$dep"
+    chmod +x "$tmpdir/status-home/.local/bin/$dep"
+done
+status_output=$(HOME="$tmpdir/status-home" ./plak.sh status)
 grep -q 'Dependencies:' <<<"$status_output"
-
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
 
 hosts_file="$tmpdir/hosts"
 cat > "$hosts_file" <<'HOSTS'
@@ -95,5 +104,6 @@ if grep -q 'maxdepth 2.*wp-config.php' commands/site/install; then
 fi
 
 ./tests/migration.sh
+bash ./tests/wp-cli.sh
 
 echo "Smoke tests passed."

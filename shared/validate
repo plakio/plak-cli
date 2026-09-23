@@ -1,5 +1,10 @@
 # Shared validation helpers for Plak Bash commands.
 
+plak_validate_site_name() {
+    local value="${1:-}"
+    [[ "$value" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] && [ "${#value}" -le 63 ]
+}
+
 plak_validate_hostname_alias() {
     local value="$1"
     [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]

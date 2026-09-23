@@ -76,6 +76,7 @@ Commands:
   delete      Delete a local site
   list        List local sites
   login       Generate a one-time WordPress admin login link
+  wp          Run WP-CLI inside a local WordPress site
   db          Manage local site databases
   pull        Pull a remote WordPress site into Plak
   push        Push a local Plak site to a remote WordPress site
@@ -182,6 +183,10 @@ HELP
         login)
             echo "Usage: plak login <site> [<user>] [--raw]"
             ;;
+        wp)
+            echo "Usage: plak wp <site> <wp-cli arguments...>"
+            echo "Arguments after <site> are passed unchanged to WP-CLI."
+            ;;
         db)
             echo "Usage: plak db <backup|list>"
             ;;
@@ -212,8 +217,13 @@ main() {
     PLAK_QUIET=0
     PLAK_JSON=0
     local new_args=()
+    local wp_passthrough=false
     for arg in "$@"; do
-        if [[ "$arg" == "--quiet" || "$arg" == "-q" ]]; then
+        # Once the top-level wp command is seen, its site and every remaining
+        # argument belong to it, including --help, --quiet and --json.
+        if [ "$wp_passthrough" = true ]; then
+            new_args+=("$arg")
+        elif [[ "$arg" == "--quiet" || "$arg" == "-q" ]]; then
             PLAK_QUIET=1
         elif [[ "$arg" == "--json" ]]; then
             PLAK_JSON=1
@@ -222,11 +232,14 @@ main() {
             exit 0
         else
             new_args+=("$arg")
+            if [ "${#new_args[@]}" -eq 1 ] && [ "$arg" = wp ]; then
+                wp_passthrough=true
+            fi
         fi
     done
     export PLAK_QUIET
     export PLAK_JSON
-    if [ "$PLAK_JSON" = "1" ]; then
+    if [ "$PLAK_JSON" = "1" ] && [ "$wp_passthrough" = false ]; then
         new_args+=("--json")
     fi
     set -- "${new_args[@]}"
@@ -243,6 +256,9 @@ main() {
     esac
 
     case "$command" in
+        wp)
+            plak_site_wp "$@"
+            ;;
         remote)
             plak_remote "$@"
             ;;

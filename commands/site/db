@@ -130,7 +130,7 @@ plak_site_db_list() {
     # This heredoc contains a PHP script to find, connect, and format the database list.
     # We invoke it via frankenphp php-cli -r so we don't depend on a standalone php binary.
     local wp_path
-    wp_path=$(command -v wp)
+    wp_path=$(plak_wp_resolve_phar) || return 1
     local frank
     frank=$(command -v frankenphp)
     local php_output

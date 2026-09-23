@@ -1,0 +1,109 @@
+# Run the PHP entry point behind `wp` with FrankenPHP and Plak's PHPRC.
+# No eval or shell execution is used to inspect wrappers.
+
+plak_wp_realpath() {
+    local path="$1" target hops=0
+    while [ -L "$path" ]; do
+        if [ "$hops" -ge 40 ]; then
+            echo "Error: too many symlinks resolving WP-CLI: $1" >&2
+            return 1
+        fi
+        target=$(readlink "$path") || return 1
+        case "$target" in
+            /*) path="$target" ;;
+            *) path="$(dirname "$path")/$target" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    [ -f "$path" ] && [ -r "$path" ] || return 1
+    local dir
+    dir=$(cd "$(dirname "$path")" && pwd -P) || return 1
+    printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+plak_wp_file_is_php() {
+    local first="" second=""
+    # The official PHAR has a PHP shebang followed by <?php. Checking the
+    # opening tag also avoids mistaking a shell path containing 'php' for PHP.
+    {
+        IFS= read -r first || true
+        IFS= read -r second || true
+    } < "$1"
+    case "$first" in
+        '<?php'*) return 0 ;;
+        '#!'*) [[ "$second" == '<?php'* ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_wp_resolve_phar() {
+    local path
+    path=$(type -P wp) || {
+        echo "Error: WP-CLI not found. Run 'plak install'." >&2
+        return 1
+    }
+    path=$(plak_wp_realpath "$path") || {
+        echo "Error: WP-CLI is not a readable file or has broken symlinks." >&2
+        return 1
+    }
+    if plak_wp_file_is_php "$path"; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    # Recognize literal PHAR paths in common shell wrappers (including
+    # Homebrew), quoted paths with spaces, and paths rooted at HOME.
+    # Complex computed wrappers are rejected rather than executed using a
+    # different PHP, or printed by PHP as a bogus successful invocation.
+    local token candidate resolved
+    while IFS= read -r token; do
+        case "$token" in
+            \"*\") candidate="${token:1:${#token}-2}" ;;
+            \'*\') candidate="${token:1:${#token}-2}" ;;
+            *) candidate="$token" ;;
+        esac
+        # Match the literal spelling in the wrapper, then expand only HOME.
+        # shellcheck disable=SC2016,SC2088
+        case "$candidate" in
+            '~/'*) candidate="$HOME/${candidate:2}" ;;
+            '$HOME/'*) candidate="$HOME/${candidate:6}" ;;
+            '${HOME}/'*) candidate="$HOME/${candidate:8}" ;;
+        esac
+        case "$candidate" in
+            *'$'*|*'`'*) continue ;;
+            /*) ;;
+            *) candidate="$(dirname "$path")/$candidate" ;;
+        esac
+        resolved=$(plak_wp_realpath "$candidate") || continue
+        if plak_wp_file_is_php "$resolved"; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    done < <(sed '/^[[:space:]]*#/d' "$path" | grep -oE "\"[^\"]+\.phar\"|'[^']+\.phar'|[^[:space:]\"';|&<>]+\.phar" || true)
+
+    echo "Error: cannot resolve the WP-CLI PHAR referenced by wrapper '$path'. Put the official WP-CLI PHAR (or a symlink to it) on PATH as 'wp'." >&2
+    return 1
+}
+
+# Caller owns a local PLAK_WP_COMMAND array (Bash dynamic scope), so paths
+# and arguments never need to be serialized into a shell command string.
+plak_wp_resolve_command() {
+    local wp_path frank
+    PLAK_WP_COMMAND=()
+    wp_path=$(plak_wp_resolve_phar) || return 1
+    frank=$(type -P frankenphp) || {
+        echo "Error: FrankenPHP not found. Run 'plak install'." >&2
+        return 1
+    }
+    frank=$(plak_wp_realpath "$frank") || return 1
+    PLAK_WP_COMMAND=("$frank" php-cli "$wp_path")
+    if [ "$(id -u)" -eq 0 ]; then
+        PLAK_WP_COMMAND+=(--allow-root)
+    fi
+}
+
+plak_wp_cli() {
+    local PLAK_WP_COMMAND=()
+    plak_wp_resolve_command || return $?
+    "${PLAK_WP_COMMAND[@]}" "$@"
+}
