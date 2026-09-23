@@ -1,0 +1,74 @@
+# Self-contained remote transfer for pull/push.
+#
+# Plak ships the Go runtime to the remote over SSH and runs it there, so the
+# remote never needs a public URL or internet access to plak.sh during the
+# operation. The same engine file is used locally and remotely for a single
+# operation, keeping both ends on one version.
+
+PLAK_GO_RUNTIME_URL="${PLAK_GO_RUNTIME_URL:-https://plak.sh/go}"
+
+# Copy the Go runtime engine to <output>. Prefers an explicit PLAK_GO_RUNTIME,
+# then an engine shipped next to the CLI (development checkouts), then the
+# published endpoint.
+plak_fetch_go_runtime() {
+    local output="$1"
+
+    if [ -n "${PLAK_GO_RUNTIME:-}" ]; then
+        if [ -r "$PLAK_GO_RUNTIME" ]; then
+            cp "$PLAK_GO_RUNTIME" "$output"
+            return 0
+        fi
+        echo "Error: PLAK_GO_RUNTIME is set but not readable: $PLAK_GO_RUNTIME" >&2
+        return 1
+    fi
+
+    local self="${BASH_SOURCE[0]:-}"
+    if [ -n "$self" ]; then
+        local dir=""
+        dir=$(cd "$(dirname "$self")" 2>/dev/null && pwd -P) || dir=""
+        if [ -n "$dir" ] && [ -r "$dir/go/go.sh" ]; then
+            cp "$dir/go/go.sh" "$output"
+            return 0
+        fi
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Error: curl is required to fetch the Plak Go runtime from $PLAK_GO_RUNTIME_URL." >&2
+        return 1
+    fi
+    if ! curl -fsSL "$PLAK_GO_RUNTIME_URL" -o "$output" || [ ! -s "$output" ]; then
+        echo "Error: could not fetch the Plak Go runtime from $PLAK_GO_RUNTIME_URL." >&2
+        return 1
+    fi
+}
+
+# A unique, space-free path for the helper on the remote. mktemp templates
+# differ across platforms, so build the name here instead.
+plak_remote_helper_path() {
+    printf '/tmp/plak-go-%s-%s.sh\n' "$(date +%s)" "${RANDOM}${RANDOM}"
+}
+
+# --- Remote cleanup bookkeeping ---
+# pull/push assign these globals as soon as remote paths exist; the EXIT trap
+# removes them and reports the location when removal is impossible.
+PLAK_RT_SSH_OPTS=""
+PLAK_RT_REMOTE=""
+PLAK_RT_REMOTE_FILES=""
+
+plak_remote_track_file() {
+    local quoted="$1"
+    if [ -n "$PLAK_RT_REMOTE_FILES" ]; then
+        PLAK_RT_REMOTE_FILES="$PLAK_RT_REMOTE_FILES $quoted"
+    else
+        PLAK_RT_REMOTE_FILES="$quoted"
+    fi
+}
+
+plak_remote_transfer_cleanup() {
+    [ -n "${PLAK_RT_REMOTE_FILES:-}" ] || return 0
+    [ -n "${PLAK_RT_REMOTE:-}" ] || return 0
+    # shellcheck disable=SC2086 # ssh options are intentionally word-split
+    if ! ssh $PLAK_RT_SSH_OPTS "$PLAK_RT_REMOTE" "rm -f $PLAK_RT_REMOTE_FILES" 2>/dev/null; then
+        echo "Warning: could not remove remote temporary files on $PLAK_RT_REMOTE. Remove them manually: $PLAK_RT_REMOTE_FILES" >&2
+    fi
+}

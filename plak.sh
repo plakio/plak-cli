@@ -804,6 +804,82 @@ plak_agent_prepare() {
     return 0
 }
 
+# Source: shared/site/remote-transfer
+# Self-contained remote transfer for pull/push.
+#
+# Plak ships the Go runtime to the remote over SSH and runs it there, so the
+# remote never needs a public URL or internet access to plak.sh during the
+# operation. The same engine file is used locally and remotely for a single
+# operation, keeping both ends on one version.
+
+PLAK_GO_RUNTIME_URL="${PLAK_GO_RUNTIME_URL:-https://plak.sh/go}"
+
+# Copy the Go runtime engine to <output>. Prefers an explicit PLAK_GO_RUNTIME,
+# then an engine shipped next to the CLI (development checkouts), then the
+# published endpoint.
+plak_fetch_go_runtime() {
+    local output="$1"
+
+    if [ -n "${PLAK_GO_RUNTIME:-}" ]; then
+        if [ -r "$PLAK_GO_RUNTIME" ]; then
+            cp "$PLAK_GO_RUNTIME" "$output"
+            return 0
+        fi
+        echo "Error: PLAK_GO_RUNTIME is set but not readable: $PLAK_GO_RUNTIME" >&2
+        return 1
+    fi
+
+    local self="${BASH_SOURCE[0]:-}"
+    if [ -n "$self" ]; then
+        local dir=""
+        dir=$(cd "$(dirname "$self")" 2>/dev/null && pwd -P) || dir=""
+        if [ -n "$dir" ] && [ -r "$dir/go/go.sh" ]; then
+            cp "$dir/go/go.sh" "$output"
+            return 0
+        fi
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Error: curl is required to fetch the Plak Go runtime from $PLAK_GO_RUNTIME_URL." >&2
+        return 1
+    fi
+    if ! curl -fsSL "$PLAK_GO_RUNTIME_URL" -o "$output" || [ ! -s "$output" ]; then
+        echo "Error: could not fetch the Plak Go runtime from $PLAK_GO_RUNTIME_URL." >&2
+        return 1
+    fi
+}
+
+# A unique, space-free path for the helper on the remote. mktemp templates
+# differ across platforms, so build the name here instead.
+plak_remote_helper_path() {
+    printf '/tmp/plak-go-%s-%s.sh\n' "$(date +%s)" "${RANDOM}${RANDOM}"
+}
+
+# --- Remote cleanup bookkeeping ---
+# pull/push assign these globals as soon as remote paths exist; the EXIT trap
+# removes them and reports the location when removal is impossible.
+PLAK_RT_SSH_OPTS=""
+PLAK_RT_REMOTE=""
+PLAK_RT_REMOTE_FILES=""
+
+plak_remote_track_file() {
+    local quoted="$1"
+    if [ -n "$PLAK_RT_REMOTE_FILES" ]; then
+        PLAK_RT_REMOTE_FILES="$PLAK_RT_REMOTE_FILES $quoted"
+    else
+        PLAK_RT_REMOTE_FILES="$quoted"
+    fi
+}
+
+plak_remote_transfer_cleanup() {
+    [ -n "${PLAK_RT_REMOTE_FILES:-}" ] || return 0
+    [ -n "${PLAK_RT_REMOTE:-}" ] || return 0
+    # shellcheck disable=SC2086 # ssh options are intentionally word-split
+    if ! ssh $PLAK_RT_SSH_OPTS "$PLAK_RT_REMOTE" "rm -f $PLAK_RT_REMOTE_FILES" 2>/dev/null; then
+        echo "Warning: could not remove remote temporary files on $PLAK_RT_REMOTE. Remove them manually: $PLAK_RT_REMOTE_FILES" >&2
+    fi
+}
+
 # Source: shared/site/runtime
 #!/bin/bash
 
@@ -7978,6 +8054,15 @@ plak_site_proxy() {
 }
 
 # Source: commands/site/pull
+# Remove local temporary state and the remote helper/backup on any exit path.
+# Remote removal failures are reported with the recoverable location instead of
+# silently deleting anything else.
+plak_site_pull_cleanup() {
+    [ -n "${PLAK_PULL_SSH_CTL:-}" ] && rm -f "$PLAK_PULL_SSH_CTL"
+    [ -n "${PLAK_PULL_TMP_DIR:-}" ] && rm -rf "$PLAK_PULL_TMP_DIR"
+    plak_remote_transfer_cleanup
+}
+
 plak_site_pull() {
     source_config
 
@@ -8013,13 +8098,12 @@ plak_site_pull() {
     # path so parallel plak pull invocations don't collide.
     local ssh_ctl
     ssh_ctl=$(mktemp -u "${TMPDIR:-/tmp}/plak-ssh-XXXXXXXX")
-    local ssh_ctl_q
-    ssh_ctl_q=$(shell_quote "$ssh_ctl")
+    PLAK_PULL_SSH_CTL="$ssh_ctl"
     local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ControlMaster=auto -o ControlPath=$ssh_ctl -o ControlPersist=5m"
-    # Remove the socket on any exit path (success, failure, Ctrl-C). Any
-    # orphaned master process times out on its own via ControlPersist.
-    # shellcheck disable=SC2064 # we want $ssh_ctl expanded at trap-set time
-    trap "rm -f $ssh_ctl_q" EXIT
+    # Remove the socket and any transferred remote files on every exit path
+    # (success, failure, Ctrl-C). Any orphaned master process times out on its
+    # own via ControlPersist.
+    trap plak_site_pull_cleanup EXIT
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pulling a remote WordPress site into Plak."
 
@@ -8207,7 +8291,45 @@ plak_site_pull() {
     [[ "$destination_home" == http* ]] || destination_home="$local_url"
     [[ "$destination_siteurl" == http* ]] || destination_siteurl="$local_url"
 
-    # --- 4. Perform Migration ---
+    # --- 4. Transfer a self-contained engine and validate remote tools ---
+    log_step "Preparing the transfer engine..."
+    local pull_tmp_dir
+    pull_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/plak-pull-XXXXXXXX")
+    PLAK_PULL_TMP_DIR="$pull_tmp_dir"
+    local local_helper="$pull_tmp_dir/plak-go.sh"
+    if ! plak_fetch_go_runtime "$local_helper"; then
+        log_error "Could not obtain the Plak transfer engine."
+    fi
+
+    local remote_helper remote_helper_q
+    remote_helper=$(plak_remote_helper_path)
+    remote_helper_q=$(shell_quote "$remote_helper")
+    PLAK_RT_SSH_OPTS="$ssh_opts"
+    PLAK_RT_REMOTE="$remote_ssh"
+
+    log_step "Uploading transfer engine to ${remote_ssh}..."
+    if ! ssh $ssh_opts $remote_ssh "cat > $remote_helper_q" < "$local_helper"; then
+        log_error "Failed to upload the transfer engine to the remote."
+    fi
+    plak_remote_track_file "$remote_helper_q"
+
+    log_step "Checking remote tools..."
+    local remote_diagnostic
+    if ! remote_diagnostic=$(ssh $ssh_opts $remote_ssh "bash $remote_helper_q diagnose --json" 2>/dev/null); then
+        log_error "The remote could not run the transfer engine. Check that 'bash' is available."
+    fi
+    log_success "Remote tools: $remote_diagnostic"
+    if ! grep -qE '"unzip":true|"tar":true' <<<"$remote_diagnostic"; then
+        log_error "The remote has no archive tool (unzip or tar). Migration cancelled before changing anything."
+    fi
+    if ! grep -qE '"mysql":true|"mariadb":true' <<<"$remote_diagnostic"; then
+        log_error "The remote has no MySQL client (mysql or mariadb). Migration cancelled before changing anything."
+    fi
+    if ! grep -qE '"mysqldump":true|"mariadb-dump":true' <<<"$remote_diagnostic"; then
+        log_error "The remote has no database dump tool (mysqldump or mariadb-dump). Migration cancelled before changing anything."
+    fi
+
+    # --- 5. Generate the remote backup and transfer it over SSH ---
     log_step "Generating backup for ${remote_home}..."
     local backup_extra_args=""
     if [ "$proxy_uploads" = true ]; then
@@ -8215,28 +8337,26 @@ plak_site_pull() {
         backup_extra_args="--exclude=\"wp-content/uploads\""
     fi
 
-    local backup_url
-    backup_url=$(ssh $ssh_opts $remote_ssh "curl -sL https://plak.sh/go | bash -s -- backup $remote_path_q --quiet $backup_extra_args")
-
-    if [[ -z "$backup_url" || ! "$backup_url" == *.zip ]]; then
-        log_error "Failed to generate backup or received an invalid backup URL."
+    local backup_filename
+    backup_filename=$(ssh $ssh_opts $remote_ssh "cd $remote_path_q && bash $remote_helper_q backup . --quiet --format=filename $backup_extra_args" 2>/dev/null | awk 'NF { last=$0 } END { print last }')
+    if [[ -z "$backup_filename" || ! "$backup_filename" == *.zip ]]; then
+        log_error "Failed to generate a backup on the remote."
     fi
-    log_success "Backup created: ${backup_url}"
+    local remote_backup="$remote_path/$backup_filename"
+    local remote_backup_q
+    remote_backup_q=$(shell_quote "$remote_backup")
+    plak_remote_track_file "$remote_backup_q"
+    log_success "Backup created: ${backup_filename}"
 
     # Download and inspect the archive before go_migrate reaches its database
     # reset. This keeps the existing database recoverable when the download is
     # missing, corrupt, or does not contain a usable SQL export.
     log_step "Downloading and validating backup..."
-    local pull_tmp_dir pull_tmp_dir_q local_backup_path sql_entry
-    pull_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/plak-pull-XXXXXXXX")
-    pull_tmp_dir_q=$(shell_quote "$pull_tmp_dir")
-    local_backup_path="$pull_tmp_dir/backup.zip"
-    # shellcheck disable=SC2064 # expand the known per-run paths now
-    trap "rm -f $ssh_ctl_q; rm -rf $pull_tmp_dir_q" EXIT
-
-    if ! curl -fLsS "$backup_url" -o "$local_backup_path"; then
+    local local_backup_path="$pull_tmp_dir/backup.zip"
+    if ! ssh $ssh_opts $remote_ssh "cat $remote_backup_q" > "$local_backup_path" 2>/dev/null || [ ! -s "$local_backup_path" ]; then
         log_error "Failed to download the generated backup. The existing database was not changed."
     fi
+    local sql_entry
     if ! unzip -tq "$local_backup_path" >/dev/null 2>&1; then
         log_error "The downloaded backup is not a valid ZIP archive. The existing database was not changed."
     fi
@@ -8252,9 +8372,9 @@ plak_site_pull() {
     fi
     log_success "Backup download and SQL validation complete."
 
+    # --- 6. Restore locally with the same engine file ---
     log_step "Restoring backup to ${site_name}.localhost..."
-    # Execute the migration script directly instead of using a variable with a pipe
-    if ! (cd "$dest_path" && curl -sL https://plak.sh/go | bash -s -- migrate \
+    if ! (cd "$dest_path" && bash "$local_helper" migrate \
         --url="$local_backup_path" \
         --update-urls \
         --source-home="$remote_home" \
@@ -8265,11 +8385,11 @@ plak_site_pull() {
     fi
     log_success "Restore complete."
 
-    # --- 5. Post-Migration Configuration ---
+    # --- 7. Post-Migration Configuration ---
     log_step "Configuring local site..."
     inject_mu_plugin "$dest_path"
 
-    # --- 6. Add Proxy Directive if Flag is Set ---
+    # --- 8. Add Proxy Directive if Flag is Set ---
     if [ "$proxy_uploads" = true ]; then
         log_step "Adding upload proxy directive..."
         local new_directive
@@ -8297,21 +8417,24 @@ EOM
         log_success "Upload proxy directive added."
     fi
 
-    # --- 7. Cleanup ---
-    log_step "Cleaning up remote backup file..."
-    local filename="${backup_url##*/}"
-    local remote_backup_q
-    remote_backup_q=$(shell_quote "$remote_path/$filename")
-    ssh $ssh_opts $remote_ssh "rm -f $remote_backup_q" 2>/dev/null
-    log_success "Cleanup complete."
-
-    # --- 8. Finalize ---
+    # --- 9. Finalize ---
+    # Local temporary state and the remote helper/backup are removed by the
+    # EXIT trap, including on failure and Ctrl-C.
     regenerate_caddyfile
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site is ready." "URL: ${local_url}"
 }
 
 # Source: commands/site/push
+# Remove local temporary state and the remote helper/backup on any exit path.
+# Remote removal failures are reported with the recoverable location.
+plak_site_push_cleanup() {
+    [ -n "${PLAK_PUSH_SSH_CTL:-}" ] && rm -f "$PLAK_PUSH_SSH_CTL"
+    [ -n "${PLAK_PUSH_TMP_DIR:-}" ] && rm -rf "$PLAK_PUSH_TMP_DIR"
+    [ -n "${PLAK_PUSH_LOCAL_BACKUP:-}" ] && rm -f "$PLAK_PUSH_LOCAL_BACKUP"
+    plak_remote_transfer_cleanup
+}
+
 plak_site_push() {
     # --- Argument Parsing ---
     local site_name="" yes=0
@@ -8342,11 +8465,9 @@ plak_site_push() {
     # password or unlocks their key once instead of four times.
     local ssh_ctl
     ssh_ctl=$(mktemp -u "${TMPDIR:-/tmp}/plak-ssh-XXXXXXXX")
-    local ssh_ctl_q
-    ssh_ctl_q=$(shell_quote "$ssh_ctl")
+    PLAK_PUSH_SSH_CTL="$ssh_ctl"
     local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ControlMaster=auto -o ControlPath=$ssh_ctl -o ControlPersist=5m"
-    # shellcheck disable=SC2064 # we want $ssh_ctl expanded at trap-set time
-    trap "rm -f $ssh_ctl_q" EXIT
+    trap plak_site_push_cleanup EXIT
 
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pushing a local Plak site to a remote server."
 
@@ -8433,54 +8554,86 @@ plak_site_push() {
         fi
     fi
 
-    # --- 5. Perform Local Backup ---
+    # --- 5. Transfer a self-contained engine and validate remote tools ---
+    log_step "Preparing the transfer engine..."
+    local push_tmp_dir
+    push_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/plak-push-XXXXXXXX")
+    PLAK_PUSH_TMP_DIR="$push_tmp_dir"
+    local local_helper="$push_tmp_dir/plak-go.sh"
+    if ! plak_fetch_go_runtime "$local_helper"; then
+        log_error "Could not obtain the Plak transfer engine."
+    fi
+
+    local remote_helper remote_helper_q
+    remote_helper=$(plak_remote_helper_path)
+    remote_helper_q=$(shell_quote "$remote_helper")
+    PLAK_RT_SSH_OPTS="$ssh_opts"
+    PLAK_RT_REMOTE="$remote_ssh"
+
+    log_step "Uploading transfer engine to ${remote_ssh}..."
+    if ! ssh $ssh_opts $remote_ssh "cat > $remote_helper_q" < "$local_helper"; then
+        log_error "Failed to upload the transfer engine to the remote."
+    fi
+    plak_remote_track_file "$remote_helper_q"
+
+    log_step "Checking remote tools..."
+    local remote_diagnostic
+    if ! remote_diagnostic=$(ssh $ssh_opts $remote_ssh "bash $remote_helper_q diagnose --json" 2>/dev/null); then
+        log_error "The remote could not run the transfer engine. Check that 'bash' is available."
+    fi
+    log_success "Remote tools: $remote_diagnostic"
+    if ! grep -qE '"unzip":true|"tar":true' <<<"$remote_diagnostic"; then
+        log_error "The remote has no archive tool (unzip or tar). Push cancelled before changing anything."
+    fi
+    if ! grep -qE '"mysql":true|"mariadb":true' <<<"$remote_diagnostic"; then
+        log_error "The remote has no MySQL client (mysql or mariadb). Push cancelled before changing anything."
+    fi
+    if ! grep -qE '"mysqldump":true|"mariadb-dump":true' <<<"$remote_diagnostic"; then
+        log_error "The remote has no database dump tool (mysqldump or mariadb-dump). Push cancelled before changing anything."
+    fi
+
+    # --- 6. Perform Local Backup ---
     log_step "Generating local backup for ${site_name}..."
     local backup_filename
-    backup_filename=$( (cd "$local_path" && curl -sL https://plak.sh/go | bash -s -- backup . --quiet --format=filename) )
+    backup_filename=$( (cd "$local_path" && bash "$local_helper" backup . --quiet --format=filename) )
     backup_filename=$(printf '%s\n' "$backup_filename" | awk 'NF { last=$0 } END { print last }')
     local local_backup_path="$local_path/$backup_filename"
-    
+    PLAK_PUSH_LOCAL_BACKUP="$local_backup_path"
+
     if [[ ! -f "$local_backup_path" || ! "$backup_filename" == *".zip" ]]; then
-        log_error "Failed to generate local backup. The go script might have failed."
+        log_error "Failed to generate local backup."
     fi
-    
+
     local size
     size=$(ls -lh "$local_backup_path" | awk '{print $5}')
     log_success "Local backup created: ${backup_filename} ($size)"
 
-    local backup_filename_q
-    backup_filename_q=$(shell_quote "$backup_filename")
+    # --- 7. Upload Backup ---
+    local remote_backup="$remote_path/$backup_filename"
     local remote_backup_q
-    remote_backup_q=$(shell_quote "$remote_path/$backup_filename")
-
-    # --- 6. Upload Backup ---
+    remote_backup_q=$(shell_quote "$remote_backup")
+    plak_remote_track_file "$remote_backup_q"
     log_step "Uploading backup to remote server..."
     if ! cat "$local_backup_path" | ssh $ssh_opts $remote_ssh "cat > $remote_backup_q"; then
-        # Clean up local backup on failure
-        rm -f "$local_backup_path"
         log_error "Failed to upload backup."
     fi
     log_success "Upload complete."
 
-    # --- 7. Remote Restore ---
+    # --- 8. Remote Restore ---
     log_step "Restoring backup on remote server..."
     local source_home_q source_siteurl_q destination_home_q destination_siteurl_q
     source_home_q=$(shell_quote "--source-home=$local_home")
     source_siteurl_q=$(shell_quote "--source-siteurl=$local_siteurl")
     destination_home_q=$(shell_quote "--destination-home=$remote_home")
     destination_siteurl_q=$(shell_quote "--destination-siteurl=$remote_siteurl")
-    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && curl -sL https://plak.sh/go | bash -s -- migrate --url=$backup_filename_q --update-urls $source_home_q $source_siteurl_q $destination_home_q $destination_siteurl_q"; then
+    if ! ssh $ssh_opts $remote_ssh "cd $remote_path_q && bash $remote_helper_q migrate --url=$remote_backup_q --update-urls $source_home_q $source_siteurl_q $destination_home_q $destination_siteurl_q"; then
         log_error "The remote migration script failed to execute correctly."
     fi
     log_success "Remote restore complete."
 
-    # --- 8. Cleanup ---
-    log_step "Cleaning up backup files..."
-    rm -f "$local_backup_path"
-    ssh $ssh_opts $remote_ssh "rm -f $remote_backup_q"
-    log_success "Cleanup complete."
-
     # --- 9. Finalize ---
+    # Local and remote temporary files are removed by the EXIT trap, including
+    # on failure and Ctrl-C.
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✨ All done! Your site has been pushed successfully." "Remote URL: ${remote_home}"
 }
 

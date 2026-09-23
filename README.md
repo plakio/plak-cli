@@ -215,6 +215,15 @@ plak pull [--proxy-uploads]
 plak push
 ```
 
+Pull and push ship a self-contained Plak engine to the remote over SSH and run
+it there, so the remote needs neither internet access nor a publicly reachable
+backup URL. The backup itself travels over SSH. Before touching the remote
+database, Plak checks which archive and database tools are available
+(`plak.sh/go diagnose` reports the same set) and cancels with an actionable
+message when a required tool is missing. The helper and backup are removed on
+success and on controlled failures; if removal is impossible, Plak reports the
+remote path so it can be cleaned manually.
+
 ### Database
 
 ```bash

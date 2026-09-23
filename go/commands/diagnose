@@ -1,0 +1,57 @@
+# Report which archive and database tools the migration engine can use, so a
+# caller can fail before touching data when the remote cannot support an
+# operation.
+go_diagnose() {
+    local json_flag="false"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --json)
+                json_flag="true"
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: _go diagnose [--json]"
+                return 0
+                ;;
+            *)
+                go_error "Unknown diagnose flag: $1"
+                return 1
+                ;;
+        esac
+    done
+
+    local tool status
+    local -a tools=(zip unzip tar php mysql mariadb mysqldump mariadb-dump wp)
+    local -A available=()
+
+    for tool in "${tools[@]}"; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            status="true"
+        else
+            status="false"
+        fi
+        available["$tool"]="$status"
+    done
+
+    if [ "$json_flag" = "true" ]; then
+        local first="true" key
+        printf '{'
+        for key in "${tools[@]}"; do
+            if [ "$first" = "true" ]; then
+                first="false"
+            else
+                printf ','
+            fi
+            printf '"%s":%s' "$key" "${available[$key]}"
+        done
+        printf '}\n'
+        return 0
+    fi
+
+    echo "Archive tools:"
+    echo "  zip=${available[zip]} unzip=${available[unzip]} tar=${available[tar]} php=${available[php]}"
+    echo "Database tools:"
+    echo "  mysql=${available[mysql]} mariadb=${available[mariadb]} mysqldump=${available[mysqldump]} mariadb-dump=${available[mariadb-dump]}"
+    echo "WordPress:"
+    echo "  wp=${available[wp]}"
+}

@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
+# Keep the compiled engine in sync with the sources this test exercises.
+(cd "$ROOT_DIR/go" && ./compile.sh >/dev/null)
+
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -269,8 +272,8 @@ unzip -Z1 "$backup_site/$proxy_archive" | grep -q 'wp-content/plugins/example/pl
 normal_archive=$(go_backup "$backup_site" --quiet --format=filename)
 unzip -Z1 "$backup_site/$normal_archive" | grep -q 'wp-content/uploads/image.txt' || fail "normal backup excluded uploads"
 
-# Pull orchestration test. Fake SSH, curl and WP-CLI record the phase order.
-# The first run fails its download; no reset/import or migration may occur.
+# Pull/push orchestration test. Fake SSH and a stub engine record the phase
+# order. The engine is transferred over SSH; no public backup URL is used.
 ./compile.sh >/dev/null
 source ./plak.sh >/dev/null
 
@@ -283,46 +286,61 @@ command_line="${*: -1}"
 case "$command_line" in
     *"option get home"*) echo REMOTE_HOME >> "$PULL_EVENTS"; echo https://remote.example ;;
     *"option get siteurl"*) echo REMOTE_SITEURL >> "$PULL_EVENTS"; echo https://remote.example/wp ;;
-    *" backup "*) echo "BACKUP_GENERATED $command_line" >> "$PULL_EVENTS"; echo https://remote.example/plak-backup.zip ;;
-    *"rm -f"*) echo REMOTE_CLEANUP >> "$PULL_EVENTS" ;;
-    *"cat >"*) cat >/dev/null; echo UPLOAD >> "$PULL_EVENTS" ;;
-    *" migrate "*) echo "PUSH_MIGRATE $command_line" >> "$PULL_EVENTS" ;;
+    "cat > "*)
+        cat >/dev/null
+        case "$command_line" in
+            *plak-go-*) echo HELPER_UPLOAD >> "$PULL_EVENTS" ;;
+            *) echo BACKUP_UPLOAD >> "$PULL_EVENTS" ;;
+        esac
+        [ "${PULL_UPLOAD_FAIL:-0}" = 1 ] && exit 1
+        ;;
+    "cat "*)
+        echo DOWNLOAD >> "$PULL_EVENTS"
+        [ "${PULL_DOWNLOAD_FAIL:-0}" = 1 ] && exit 1
+        cat "$PULL_FIXTURE"
+        ;;
+    *"diagnose --json"*)
+        [ "${PULL_DIAGNOSE_FAIL:-0}" = 1 ] && exit 1
+        if [ "${PULL_MISSING_TOOLS:-0}" = 1 ]; then
+            echo '{"zip":false,"unzip":false,"tar":false,"php":true,"mysql":false,"mariadb":false,"mysqldump":false,"mariadb-dump":false,"wp":false}'
+        else
+            echo '{"zip":true,"unzip":true,"tar":true,"php":true,"mysql":true,"mariadb":true,"mysqldump":true,"mariadb-dump":true,"wp":true}'
+        fi
+        ;;
+    *" backup "*|"backup "*)
+        echo "BACKUP_GENERATED $command_line" >> "$PULL_EVENTS"
+        echo remote-backup.zip
+        ;;
+    *" migrate "*|"migrate "*)
+        echo "PUSH_MIGRATE $command_line" >> "$PULL_EVENTS"
+        echo "Migrating files..."
+        ;;
+    *"rm -f"*)
+        echo "REMOTE_CLEANUP $command_line" >> "$PULL_EVENTS" ;;
 esac
+exit 0
 FAKE_SSH
 chmod +x "$pull_bin/ssh"
 
-cat > "$pull_bin/mysql" <<'FAKE_MYSQL'
+# Stub engine: used locally by pull/push; remote runs are intercepted by ssh.
+stub_go="$tmpdir/stub-go"
+cat > "$stub_go" <<'STUB_GO'
 #!/usr/bin/env bash
-echo "MYSQL $*" >> "$PULL_EVENTS"
-FAKE_MYSQL
-chmod +x "$pull_bin/mysql"
-
-cat > "$pull_bin/curl" <<'FAKE_CURL'
-#!/usr/bin/env bash
-output=""
-previous=""
-for arg in "$@"; do
-    if [ "$previous" = "-o" ]; then output="$arg"; fi
-    previous="$arg"
-done
-if [ -n "$output" ]; then
-    echo DOWNLOAD >> "$PULL_EVENTS"
-    if [ "${PULL_DOWNLOAD_FAIL:-0}" = 1 ]; then exit 22; fi
-    cp "$PULL_FIXTURE" "$output"
-    exit 0
-fi
-cat <<'MIGRATOR'
-#!/usr/bin/env bash
-if [ "${1:-}" = "backup" ]; then
-    cp "$PULL_FIXTURE" ./push-backup.zip
-    echo push-backup.zip
-else
-    printf 'MIGRATE %s\n' "$*" >> "$PULL_EVENTS"
-    echo "Migrating files..."
-fi
-MIGRATOR
-FAKE_CURL
-chmod +x "$pull_bin/curl"
+case "${1:-}" in
+    migrate)
+        printf 'MIGRATE %s\n' "$*" >> "$PULL_EVENTS"
+        echo "Migrating files..."
+        ;;
+    backup)
+        cp "$PULL_FIXTURE" ./push-backup.zip
+        echo push-backup.zip
+        ;;
+    diagnose)
+        echo '{"zip":true,"unzip":true,"tar":true,"php":true,"mysql":true,"mariadb":true,"mysqldump":true,"mariadb-dump":true,"wp":true}'
+        ;;
+esac
+STUB_GO
+chmod +x "$stub_go"
 
 local_wp="$tmpdir/local-wp"
 cat > "$local_wp" <<'LOCAL_WP'
@@ -356,6 +374,7 @@ run_pull() (
     export PATH="$pull_bin:$PATH"
     export PULL_EVENTS="$pull_events"
     export PULL_FIXTURE="$tmpdir/pull-fixture.zip"
+    export PLAK_GO_RUNTIME="$stub_go"
     export PULL_DOWNLOAD_FAIL="${1:-0}"
     SITES_DIR="$tmpdir/sites"
     PLAK_SITE_CMD="$site_command"
@@ -372,18 +391,24 @@ run_pull() (
     plak_site_pull "${pull_args[@]}"
 )
 
+# Download failure: the engine and remote tools are used, but no destructive
+# phase may run and the remote temporary files must still be cleaned up.
 : > "$pull_events"
 if run_pull 1 >/dev/null 2>&1; then
     fail "pull succeeded despite failed backup download"
 fi
-if grep -Eq 'MIGRATE|MYSQL|db reset|db import' "$pull_events"; then
+if grep -Eq 'MIGRATE|PUSH_MIGRATE|db reset|db import' "$pull_events"; then
     fail "failed backup reached a destructive migration phase"
 fi
 assert_before REMOTE_HOME BACKUP_GENERATED "$pull_events"
 assert_before REMOTE_SITEURL BACKUP_GENERATED "$pull_events"
 assert_before DEST_HOME BACKUP_GENERATED "$pull_events"
 assert_before DEST_SITEURL BACKUP_GENERATED "$pull_events"
+grep -q 'HELPER_UPLOAD' "$pull_events" || fail "pull did not upload the transfer engine"
+grep -q 'REMOTE_CLEANUP' "$pull_events" || fail "failed pull did not clean up remote files"
 
+# Success: engine + backup travel over SSH, the local engine runs the restore,
+# and no public backup URL is involved.
 : > "$pull_events"
 pull_output=$(run_pull 0)
 grep -q 'Migrating files...' <<<"$pull_output" || fail "successful pull did not reach file migration"
@@ -398,20 +423,37 @@ if grep -Fq -- '--exclude="wp-content/uploads"' "$pull_events"; then
     fail "normal pull excluded uploads from its backup"
 fi
 assert_before DOWNLOAD MIGRATE "$pull_events"
+grep -Eq 'REMOTE_CLEANUP.*plak-go-.*remote-backup\.zip' "$pull_events" || fail "successful pull did not clean up helper and backup"
+if grep -Fq 'https://remote.example/plak-backup.zip' "$pull_events"; then
+    fail "pull still relied on a public backup URL"
+fi
 
+# Missing remote tools must fail before the backup and still clean up.
+: > "$pull_events"
+export PULL_MISSING_TOOLS=1
+if run_pull 0 >/dev/null 2>&1; then
+    fail "pull proceeded although the remote lacks required tools"
+fi
+unset PULL_MISSING_TOOLS
+if grep -q BACKUP_GENERATED "$pull_events"; then
+    fail "missing remote tools still reached the backup phase"
+fi
+grep -q REMOTE_CLEANUP "$pull_events" || fail "missing-tools failure did not clean up the remote helper"
+
+# Proxy pull keeps the existing exclude and directive behaviour.
 : > "$pull_events"
 run_pull 0 --proxy-uploads >/dev/null
 grep -q PROXY_DIRECTIVE "$pull_events" || fail "proxy pull did not configure its directive"
 grep -Fq 'reverse_proxy https://remote.example' "$pull_events" || fail "proxy directive did not target source home"
 grep -Fq -- '--exclude="wp-content/uploads"' "$pull_events" || fail "proxy pull did not exclude uploads from its backup"
 
-# Push did not previously reset the remote database before reading home, but it
-# shares the migrator contract. Verify it captures both sides before restore and
-# passes the same four explicit values symmetrically.
+# Push shares the migrator contract: both sides are captured before restore and
+# the same four explicit values are passed symmetrically.
 run_push() (
     export PATH="$pull_bin:$PATH"
     export PULL_EVENTS="$pull_events"
     export PULL_FIXTURE="$tmpdir/pull-fixture.zip"
+    export PLAK_GO_RUNTIME="$stub_go"
     SITES_DIR="$tmpdir/sites"
     mkdir -p "$SITES_DIR/demo.localhost/public"
     touch "$SITES_DIR/demo.localhost/public/wp-config.php"
@@ -429,5 +471,40 @@ grep -Fq -- '--destination-home=https://remote.example' "$pull_events" || fail "
 grep -Fq -- '--destination-siteurl=https://remote.example/wp' "$pull_events" || fail "push did not pass remote siteurl"
 assert_before REMOTE_HOME PUSH_MIGRATE "$pull_events"
 assert_before REMOTE_SITEURL PUSH_MIGRATE "$pull_events"
+grep -q 'HELPER_UPLOAD' "$pull_events" || fail "push did not upload the transfer engine"
+grep -q 'BACKUP_UPLOAD' "$pull_events" || fail "push did not upload the backup over SSH"
+grep -Eq 'REMOTE_CLEANUP.*plak-go-.*push-backup\.zip' "$pull_events" || fail "push did not clean up helper and backup"
+
+# Special-character remote paths must survive quoting through SSH.
+run_pull_special() (
+    export PATH="$pull_bin:$PATH"
+    export PULL_EVENTS="$pull_events"
+    export PULL_FIXTURE="$tmpdir/pull-fixture.zip"
+    export PLAK_GO_RUNTIME="$stub_go"
+    SITES_DIR="$tmpdir/sites"
+    PLAK_SITE_CMD="$site_command"
+    mkdir -p "$SITES_DIR/demo.localhost/public"
+    touch "$SITES_DIR/demo.localhost/public/wp-config.php"
+    source_config() { :; }
+    plak_remote_get_binding() { echo "production|path with spaces"; }
+    get_wp_cmd() { echo "$local_wp"; }
+    inject_mu_plugin() { :; }
+    regenerate_caddyfile() { :; }
+    gum() { :; }
+    plak_site_pull demo --yes
+)
+
+: > "$pull_events"
+if ! run_pull_special >/dev/null 2>&1; then
+    fail "pull failed with a remote path containing spaces"
+fi
+grep -Fq "cd 'path with spaces'" "$pull_events" || fail "remote path with spaces was not quoted"
+grep -Fq "'path with spaces/remote-backup.zip'" "$pull_events" || fail "remote backup path with spaces was not quoted"
+
+# The engine reports which archive and database tools it will use.
+diagnose_json=$(bash "$ROOT_DIR/go/go.sh" diagnose --json)
+grep -q '"unzip":' <<<"$diagnose_json" || fail "diagnose did not report archive tools"
+grep -q '"mysqldump":' <<<"$diagnose_json" || fail "diagnose did not report database tools"
+grep -q '"wp":' <<<"$diagnose_json" || fail "diagnose did not report WordPress tooling"
 
 echo "Migration regression tests passed."

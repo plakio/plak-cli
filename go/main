@@ -26,6 +26,7 @@ Commands:
   db backup           Create a database-only backup.
   db check-autoload   Report autoloaded options size.
   db optimize         Convert MyISAM tables, show large tables, clean transients.
+  diagnose            Report available archive and database tools.
   dump                Concatenate matching files for agent context.
   email               Send an email through wp_mail.
   find recent-files   List recently modified files.
@@ -71,6 +72,9 @@ go_command_help() {
             ;;
         db)
             echo "Usage: _go db <backup|check-autoload|optimize>"
+            ;;
+        diagnose)
+            echo "Usage: _go diagnose [--json]"
             ;;
         dump)
             echo "Usage: _go dump <pattern> [--output=<file>] [--exclude=<pattern>]"
@@ -168,6 +172,9 @@ go_main() {
                     return 1
                     ;;
             esac
+            ;;
+        diagnose)
+            go_diagnose "$@"
             ;;
         dump)
             go_dump "$@"

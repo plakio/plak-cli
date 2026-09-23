@@ -26,6 +26,7 @@ Commands:
   db backup           Create a database-only backup.
   db check-autoload   Report autoloaded options size.
   db optimize         Convert MyISAM tables, show large tables, clean transients.
+  diagnose            Report available archive and database tools.
   dump                Concatenate matching files for agent context.
   email               Send an email through wp_mail.
   find recent-files   List recently modified files.
@@ -71,6 +72,9 @@ go_command_help() {
             ;;
         db)
             echo "Usage: _go db <backup|check-autoload|optimize>"
+            ;;
+        diagnose)
+            echo "Usage: _go diagnose [--json]"
             ;;
         dump)
             echo "Usage: _go dump <pattern> [--output=<file>] [--exclude=<pattern>]"
@@ -168,6 +172,9 @@ go_main() {
                     return 1
                     ;;
             esac
+            ;;
+        diagnose)
+            go_diagnose "$@"
             ;;
         dump)
             go_dump "$@"
@@ -1072,6 +1079,65 @@ go_db_optimize() {
     echo "Deleting expired transients..."
     "$wp_cmd" transient delete --expired
     echo "Database optimization complete."
+}
+
+# Source: commands/diagnose
+# Report which archive and database tools the migration engine can use, so a
+# caller can fail before touching data when the remote cannot support an
+# operation.
+go_diagnose() {
+    local json_flag="false"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --json)
+                json_flag="true"
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: _go diagnose [--json]"
+                return 0
+                ;;
+            *)
+                go_error "Unknown diagnose flag: $1"
+                return 1
+                ;;
+        esac
+    done
+
+    local tool status
+    local -a tools=(zip unzip tar php mysql mariadb mysqldump mariadb-dump wp)
+    local -A available=()
+
+    for tool in "${tools[@]}"; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            status="true"
+        else
+            status="false"
+        fi
+        available["$tool"]="$status"
+    done
+
+    if [ "$json_flag" = "true" ]; then
+        local first="true" key
+        printf '{'
+        for key in "${tools[@]}"; do
+            if [ "$first" = "true" ]; then
+                first="false"
+            else
+                printf ','
+            fi
+            printf '"%s":%s' "$key" "${available[$key]}"
+        done
+        printf '}\n'
+        return 0
+    fi
+
+    echo "Archive tools:"
+    echo "  zip=${available[zip]} unzip=${available[unzip]} tar=${available[tar]} php=${available[php]}"
+    echo "Database tools:"
+    echo "  mysql=${available[mysql]} mariadb=${available[mariadb]} mysqldump=${available[mysqldump]} mariadb-dump=${available[mariadb-dump]}"
+    echo "WordPress:"
+    echo "  wp=${available[wp]}"
 }
 
 # Source: commands/dump
