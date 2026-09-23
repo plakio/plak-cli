@@ -79,6 +79,7 @@ Commands:
   wp          Run WP-CLI inside a local WordPress site
   agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
+  snapshot    Create, list, restore, export or delete site snapshots
   pull        Pull a remote WordPress site into Plak
   push        Push a local Plak site to a remote WordPress site
   enable      Start local site services
@@ -261,7 +262,7 @@ main() {
     fi
 
     case "$command" in
-        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
             set +e
             ;;
     esac
@@ -350,6 +351,10 @@ main() {
                     exit 0
                     ;;
             esac
+            ;;
+        snapshot)
+            check_dependencies
+            plak_site_snapshot "$@"
             ;;
         directive)
             check_dependencies

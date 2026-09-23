@@ -79,6 +79,7 @@ Commands:
   wp          Run WP-CLI inside a local WordPress site
   agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
+  snapshot    Create, list, restore, export or delete site snapshots
   pull        Pull a remote WordPress site into Plak
   push        Push a local Plak site to a remote WordPress site
   enable      Start local site services
@@ -261,7 +262,7 @@ main() {
     fi
 
     case "$command" in
-        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
             set +e
             ;;
     esac
@@ -350,6 +351,10 @@ main() {
                     exit 0
                     ;;
             esac
+            ;;
+        snapshot)
+            check_dependencies
+            plak_site_snapshot "$@"
             ;;
         directive)
             check_dependencies
@@ -3453,6 +3458,57 @@ EOM
     rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"
 }
 
+# Source: shared/site/snapshot
+# Site snapshots: local recovery points of files and database per site.
+#
+# A snapshot is a self-contained directory under the site's private folder:
+#
+#   <SITES_DIR>/<name>.localhost/private/snapshots/<id>/
+#     meta          key=value metadata (site, created, note, type)
+#     files.tar.gz  wp-content plus root files when available (WordPress only)
+#     database.sql  database export (WordPress only, when the dump succeeds)
+#
+# Restore replaces the current state after keeping a safety snapshot, and uses
+# the shared recoverable database contract for the SQL step so a partial
+# restore is never reported as success.
+
+plak_snapshot_dir() {
+    printf '%s/%s.localhost/private/snapshots\n' "$SITES_DIR" "$1"
+}
+
+# Unique, sortable identifier: UTC timestamp plus random suffix for collision
+# safety when two snapshots are created within the same second.
+plak_snapshot_new_id() {
+    printf '%s-%s\n' "$(date -u +%Y%m%dT%H%M%SZ)" "$(openssl rand -hex 3)"
+}
+
+plak_snapshot_valid_id() {
+    [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$ ]]
+}
+
+plak_snapshot_list_ids() {
+    local dir
+    dir=$(plak_snapshot_dir "$1")
+    [ -d "$dir" ] || return 0
+    find "$dir" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' 2>/dev/null | sort
+}
+
+plak_snapshot_meta() {
+    local dir="$1" key="$2"
+    local file="$dir/meta"
+    [ -f "$file" ] || return 1
+    local line
+    line=$(grep -m1 "^${key}=" "$file" 2>/dev/null || true)
+    [ -n "$line" ] || return 1
+    printf '%s' "${line#*=}"
+}
+
+# Keep the current state as a safety snapshot before a destructive operation.
+plak_snapshot_keep_safety() {
+    local site="$1"
+    plak_snapshot_create "$site" --note "pre-restore safety" --json >/dev/null
+}
+
 # Source: shared/site/wp-cli
 # Run the PHP entry point behind `wp` with FrankenPHP and Plak's PHPRC.
 # No eval or shell execution is used to inspect wrappers.
@@ -5719,6 +5775,9 @@ HELP
             ;;
         share)
             echo "Usage: plak share [<site>] [--print-url] [--no-install]"
+            ;;
+        snapshot)
+            plak_site_snapshot_usage
             ;;
         pull)
             echo "Usage: plak pull [<site>] [--yes] [--proxy-uploads]"
@@ -9179,6 +9238,381 @@ PYTHON_PROXY
         echo ""
         gum style --foreground yellow "Cloudflare tunnel disconnected."
     fi
+}
+
+# Source: commands/site/snapshot
+plak_site_snapshot_usage() {
+    cat <<'HELP'
+Usage:
+  plak snapshot <site> create [--note <text>] [--json]
+  plak snapshot <site> list [--json]
+  plak snapshot <site> restore <id> [--yes]
+  plak snapshot <site> delete <id> [--yes]
+  plak snapshot <site> export <id> [--output <path>]
+
+Snapshots are local recovery points of a site's files and database. Static
+(plain) sites include only their files.
+HELP
+}
+
+# Resolve the site directory or fail before any work is done.
+plak_snapshot_require_site() {
+    local site="$1"
+    if ! plak_validate_site_name "$site"; then
+        echo "Error: invalid site name '$site'." >&2
+        return 1
+    fi
+    local site_dir="$SITES_DIR/$site.localhost"
+    if [ ! -d "$site_dir" ]; then
+        echo "Error: site '$site.localhost' not found." >&2
+        return 1
+    fi
+    printf '%s' "$site_dir"
+}
+
+plak_snapshot_site_is_wordpress() {
+    [ -f "$1/public/wp-config.php" ]
+}
+
+plak_snapshot_create() {
+    local site="$1"
+    shift
+    local note="" json=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --note)
+                note="${2:-}"
+                [ "$#" -ge 2 ] || { echo "Error: --note requires a value." >&2; return 1; }
+                shift 2
+                ;;
+            --note=*)
+                note="${1#*=}"
+                shift
+                ;;
+            --json)
+                json=true
+                shift
+                ;;
+            *)
+                echo "Error: unknown snapshot create argument '$1'." >&2
+                return 1
+                ;;
+        esac
+    done
+
+    local site_dir
+    site_dir=$(plak_snapshot_require_site "$site") || return 1
+
+    local snapshots_dir id snapshot_dir
+    snapshots_dir=$(plak_snapshot_dir "$site")
+    id=$(plak_snapshot_new_id)
+    snapshot_dir="$snapshots_dir/$id"
+    mkdir -p "$snapshot_dir" || return 1
+
+    local site_type="wordpress"
+    plak_snapshot_site_is_wordpress "$site_dir" || site_type="plain"
+
+    if ! tar -czf "$snapshot_dir/files.tar.gz" -C "$site_dir/public" . 2>/dev/null; then
+        rm -rf "$snapshot_dir"
+        echo "Error: could not archive site files." >&2
+        return 1
+    fi
+
+    if [ "$site_type" = wordpress ]; then
+        source_config
+        local wp_cmd
+        wp_cmd=$(get_wp_cmd)
+        if ! (cd "$site_dir/public" && "$wp_cmd" db export "$snapshot_dir/database.sql" --add-drop-table --skip-plugins --skip-themes >/dev/null 2>&1); then
+            rm -rf "$snapshot_dir"
+            echo "Error: database export failed; snapshot was not published as complete." >&2
+            return 1
+        fi
+        if [ ! -s "$snapshot_dir/database.sql" ]; then
+            rm -rf "$snapshot_dir"
+            echo "Error: database export is empty; snapshot was not published." >&2
+            return 1
+        fi
+    fi
+
+    {
+        printf 'id=%s\n' "$id"
+        printf 'site=%s\n' "$site"
+        printf 'created=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'type=%s\n' "$site_type"
+        printf 'note=%s\n' "$note"
+    } > "$snapshot_dir/meta"
+
+    if [ "$json" = true ]; then
+        printf '{"id":"%s","site":"%s","type":"%s","note":"%s"}\n' "$id" "$site" "$site_type" "$note"
+    else
+        echo "Created snapshot $id for $site.localhost."
+    fi
+}
+
+plak_snapshot_list() {
+    local site="$1"
+    shift
+    local json=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --json) json=true; shift ;;
+            *) echo "Error: unknown snapshot list argument '$1'." >&2; return 1 ;;
+        esac
+    done
+
+    plak_snapshot_require_site "$site" >/dev/null || return 1
+
+    local dir id first=true
+    dir=$(plak_snapshot_dir "$site")
+    if [ "$json" = true ]; then
+        printf '['
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            local created type note files_size db_size
+            created=$(plak_snapshot_meta "$dir/$id" created || true)
+            type=$(plak_snapshot_meta "$dir/$id" type || true)
+            note=$(plak_snapshot_meta "$dir/$id" note || true)
+            files_size="0"
+            [ -f "$dir/$id/files.tar.gz" ] && files_size=$(stat -c '%s' "$dir/$id/files.tar.gz" 2>/dev/null || stat -f '%z' "$dir/$id/files.tar.gz" 2>/dev/null || echo 0)
+            db_size="0"
+            [ -f "$dir/$id/database.sql" ] && db_size=$(stat -c '%s' "$dir/$id/database.sql" 2>/dev/null || stat -f '%z' "$dir/$id/database.sql" 2>/dev/null || echo 0)
+            if [ "$first" = true ]; then first=false; else printf ','; fi
+            printf '{"id":"%s","created":"%s","type":"%s","note":"%s","files_bytes":%s,"db_bytes":%s}' \
+                "$id" "$created" "$type" "$note" "$files_size" "$db_size"
+        done < <(plak_snapshot_list_ids "$site")
+        printf ']\n'
+        return 0
+    fi
+
+    if ! plak_snapshot_list_ids "$site" | grep -q .; then
+        echo "No snapshots found for $site.localhost."
+        return 0
+    fi
+    printf '%-32s %-20s %-10s %s\n' "ID" "CREATED" "TYPE" "NOTE"
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        local created type note
+        created=$(plak_snapshot_meta "$dir/$id" created || true)
+        type=$(plak_snapshot_meta "$dir/$id" type || true)
+        note=$(plak_snapshot_meta "$dir/$id" note || true)
+        printf '%-32s %-20s %-10s %s\n' "$id" "$created" "$type" "$note"
+    done < <(plak_snapshot_list_ids "$site")
+}
+
+plak_snapshot_delete() {
+    local site="$1" id="$2"
+    shift 2 || true
+    local yes=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=true; shift ;;
+            *) echo "Error: unknown snapshot delete argument '$1'." >&2; return 1 ;;
+        esac
+    done
+
+    plak_snapshot_require_site "$site" >/dev/null || return 1
+    if ! plak_snapshot_valid_id "$id"; then
+        echo "Error: invalid snapshot id '$id'." >&2
+        return 1
+    fi
+    local dir
+    dir=$(plak_snapshot_dir "$site")/$id
+    if [ ! -d "$dir" ]; then
+        echo "Error: snapshot '$id' not found for $site.localhost." >&2
+        return 1
+    fi
+
+    if [ "$yes" = false ] && [ -t 0 ] && plak_command_exists gum; then
+        if ! gum confirm "Delete snapshot $id for $site.localhost?"; then
+            echo "Deletion cancelled."
+            return 0
+        fi
+    elif [ "$yes" = false ]; then
+        echo "Error: refusing to delete snapshot '$id' without --yes in non-interactive mode." >&2
+        return 1
+    fi
+
+    rm -rf "$dir"
+    echo "Deleted snapshot $id."
+}
+
+# Replace a site's database with the given SQL dump using the portable
+# recoverable contract: keep a pre-reset snapshot, import, and roll back on
+# failure. Recovery material survives a failed rollback for a later retry.
+plak_snapshot_replace_database() {
+    local site_dir="$1" dump="$2"
+    local wp_cmd
+    wp_cmd=$(get_wp_cmd)
+
+    local recovery_dir="$site_dir/private/restore_recovery"
+    local recovery_state="$recovery_dir/state"
+    local recovery_dump="$recovery_dir/pre-reset-backup.sql"
+
+    if [ -f "$recovery_state" ]; then
+        echo "Error: an interrupted restore exists at $recovery_dir. Resolve it before retrying." >&2
+        return 1
+    fi
+
+    mkdir -p "$recovery_dir" || return 1
+    if ! (cd "$site_dir/public" && "$wp_cmd" db export "$recovery_dump" --add-drop-table --skip-plugins --skip-themes >/dev/null 2>&1); then
+        rm -rf "$recovery_dir"
+        echo "Error: could not snapshot the current database before restoring." >&2
+        return 1
+    fi
+    {
+        printf 'recovery_dump=%s\n' "$recovery_dump"
+        printf 'stage=restoring\n'
+    } > "$recovery_state"
+
+    if ! (cd "$site_dir/public" && "$wp_cmd" db reset --yes --skip-plugins --skip-themes >/dev/null 2>&1); then
+        echo "Error: database reset failed; recovery material kept at $recovery_dir." >&2
+        return 1
+    fi
+
+    if (cd "$site_dir/public" && "$wp_cmd" db import "$dump" --skip-plugins --skip-themes >/dev/null 2>&1); then
+        rm -rf "$recovery_dir"
+        return 0
+    fi
+
+    echo "Database import failed; rolling back to the pre-restore state..."
+    if (cd "$site_dir/public" && "$wp_cmd" db reset --yes --skip-plugins --skip-themes >/dev/null 2>&1 &&
+        "$wp_cmd" db import "$recovery_dump" --skip-plugins --skip-themes >/dev/null 2>&1); then
+        rm -rf "$recovery_dir"
+        echo "The current database was restored to its pre-restore state."
+    else
+        echo "Error: automatic rollback failed; recovery material kept at $recovery_dir." >&2
+    fi
+    return 1
+}
+
+# Restore from a snapshot. A safety snapshot of the current state is taken
+# first; the database step uses the recoverable contract.
+plak_snapshot_restore() {
+    local site="$1" id="$2"
+    shift 2 || true
+    local yes=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=true; shift ;;
+            *) echo "Error: unknown snapshot restore argument '$1'." >&2; return 1 ;;
+        esac
+    done
+
+    local site_dir
+    site_dir=$(plak_snapshot_require_site "$site") || return 1
+    if ! plak_snapshot_valid_id "$id"; then
+        echo "Error: invalid snapshot id '$id'." >&2
+        return 1
+    fi
+    local snapshot_dir
+    snapshot_dir=$(plak_snapshot_dir "$site")/$id
+    if [ ! -d "$snapshot_dir" ]; then
+        echo "Error: snapshot '$id' not found for $site.localhost." >&2
+        return 1
+    fi
+
+    if [ "$yes" = false ] && [ -t 0 ] && plak_command_exists gum; then
+        if ! gum confirm "Restore $site.localhost from snapshot $id? Current files and database will be replaced."; then
+            echo "Restore cancelled."
+            return 0
+        fi
+    elif [ "$yes" = false ]; then
+        echo "Error: refusing to restore without --yes in non-interactive mode." >&2
+        return 1
+    fi
+
+    echo "Keeping a safety snapshot of the current state..."
+    plak_snapshot_keep_safety "$site" || {
+        echo "Error: could not keep a safety snapshot; restore aborted." >&2
+        return 1
+    }
+
+    echo "Restoring files from snapshot $id..."
+    if ! tar -xzf "$snapshot_dir/files.tar.gz" -C "$site_dir/public"; then
+        echo "Error: failed to restore files; the safety snapshot was kept." >&2
+        return 1
+    fi
+
+    if [ -f "$snapshot_dir/database.sql" ]; then
+        echo "Restoring database from snapshot $id..."
+        source_config
+        # The Go engine is not available in the CLI shell, so the same portable
+        # contract is applied here with the local WP-CLI: snapshot the current
+        # database, reset, import, and roll back on failure.
+        if ! plak_snapshot_replace_database "$site_dir" "$snapshot_dir/database.sql"; then
+            echo "Error: database restore failed; the safety snapshot was kept." >&2
+            return 1
+        fi
+    fi
+
+    regenerate_caddyfile
+    echo "Restored $site.localhost from snapshot $id."
+}
+
+plak_snapshot_export() {
+    local site="$1" id="$2"
+    shift 2 || true
+    local output=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --output)
+                output="${2:-}"
+                [ "$#" -ge 2 ] || { echo "Error: --output requires a value." >&2; return 1; }
+                shift 2
+                ;;
+            --output=*)
+                output="${1#*=}"
+                shift
+                ;;
+            *)
+                echo "Error: unknown snapshot export argument '$1'." >&2
+                return 1
+                ;;
+        esac
+    done
+
+    plak_snapshot_require_site "$site" >/dev/null || return 1
+    plak_snapshot_valid_id "$id" || { echo "Error: invalid snapshot id '$id'." >&2; return 1; }
+    local snapshot_dir
+    snapshot_dir=$(plak_snapshot_dir "$site")/$id
+    if [ ! -d "$snapshot_dir" ]; then
+        echo "Error: snapshot '$id' not found." >&2
+        return 1
+    fi
+
+    if [ -z "$output" ]; then
+        output="./plak-snapshot-$site-$id.zip"
+    fi
+
+    if ! (cd "$snapshot_dir" && zip -qr "$(cd "$(dirname "$output")" && pwd -P)/$(basename "$output")" .); then
+        echo "Error: failed to export snapshot." >&2
+        return 1
+    fi
+    echo "Exported snapshot to $output"
+}
+
+plak_site_snapshot() {
+    local site="${1:-}"
+    if [ -z "$site" ] || [ "$site" = "help" ] || [ "$site" = "--help" ] || [ "$site" = "-h" ]; then
+        plak_site_snapshot_usage
+        return 0
+    fi
+    shift || true
+    local action="${1:-}"
+    [ "$#" -gt 0 ] && shift
+
+    case "$action" in
+        create) plak_snapshot_create "$site" "$@" ;;
+        list) plak_snapshot_list "$site" "$@" ;;
+        restore) plak_snapshot_restore "$site" "${1:-}" "${@:2}" ;;
+        delete) plak_snapshot_delete "$site" "${1:-}" "${@:2}" ;;
+        export) plak_snapshot_export "$site" "${1:-}" "${@:2}" ;;
+        *)
+            echo "Error: unknown snapshot action '${action:-}'." >&2
+            plak_site_snapshot_usage >&2
+            return 1
+            ;;
+    esac
 }
 
 # Source: commands/site/status

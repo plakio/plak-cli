@@ -1,0 +1,49 @@
+# Site snapshots: local recovery points of files and database per site.
+#
+# A snapshot is a self-contained directory under the site's private folder:
+#
+#   <SITES_DIR>/<name>.localhost/private/snapshots/<id>/
+#     meta          key=value metadata (site, created, note, type)
+#     files.tar.gz  wp-content plus root files when available (WordPress only)
+#     database.sql  database export (WordPress only, when the dump succeeds)
+#
+# Restore replaces the current state after keeping a safety snapshot, and uses
+# the shared recoverable database contract for the SQL step so a partial
+# restore is never reported as success.
+
+plak_snapshot_dir() {
+    printf '%s/%s.localhost/private/snapshots\n' "$SITES_DIR" "$1"
+}
+
+# Unique, sortable identifier: UTC timestamp plus random suffix for collision
+# safety when two snapshots are created within the same second.
+plak_snapshot_new_id() {
+    printf '%s-%s\n' "$(date -u +%Y%m%dT%H%M%SZ)" "$(openssl rand -hex 3)"
+}
+
+plak_snapshot_valid_id() {
+    [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$ ]]
+}
+
+plak_snapshot_list_ids() {
+    local dir
+    dir=$(plak_snapshot_dir "$1")
+    [ -d "$dir" ] || return 0
+    find "$dir" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' 2>/dev/null | sort
+}
+
+plak_snapshot_meta() {
+    local dir="$1" key="$2"
+    local file="$dir/meta"
+    [ -f "$file" ] || return 1
+    local line
+    line=$(grep -m1 "^${key}=" "$file" 2>/dev/null || true)
+    [ -n "$line" ] || return 1
+    printf '%s' "${line#*=}"
+}
+
+# Keep the current state as a safety snapshot before a destructive operation.
+plak_snapshot_keep_safety() {
+    local site="$1"
+    plak_snapshot_create "$site" --note "pre-restore safety" --json >/dev/null
+}

@@ -231,6 +231,22 @@ plak db backup
 plak db list
 ```
 
+### Snapshots
+
+```bash
+plak snapshot <site> create [--note <text>]
+plak snapshot <site> list [--json]
+plak snapshot <site> restore <id> [--yes]
+plak snapshot <site> delete <id> [--yes]
+plak snapshot <site> export <id> [--output <path>]
+```
+
+Snapshots are local recovery points of a site's files and database, stored under
+`private/snapshots/<id>` with a unique, sortable identifier. Static sites only
+capture files. Restoring keeps a safety snapshot of the current state first and
+applies the same recoverable database contract as migrations, so a partial
+restore is never reported as success. Export produces a portable ZIP.
+
 ### Site Configuration
 
 ```bash

@@ -43,6 +43,9 @@ HELP
         share)
             echo "Usage: plak share [<site>] [--print-url] [--no-install]"
             ;;
+        snapshot)
+            plak_site_snapshot_usage
+            ;;
         pull)
             echo "Usage: plak pull [<site>] [--yes] [--proxy-uploads]"
             ;;
