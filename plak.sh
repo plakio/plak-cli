@@ -73,6 +73,7 @@ Commands:
   hosts       Manage entries in /etc/hosts
   sshkey      Manage SSH keys
   add         Create a WordPress or plain local site
+  import      Create a local site from a backup ZIP or TAR
   delete      Delete a local site
   list        List local sites
   login       Generate a one-time WordPress admin login link
@@ -262,7 +263,7 @@ main() {
     fi
 
     case "$command" in
-        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|import|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
             set +e
             ;;
     esac
@@ -290,6 +291,10 @@ main() {
         add)
             check_dependencies
             plak_site_add "$@"
+            ;;
+        import)
+            check_dependencies
+            plak_site_import "$@"
             ;;
         delete)
             check_dependencies
@@ -5779,6 +5784,9 @@ HELP
         snapshot)
             plak_site_snapshot_usage
             ;;
+        import)
+            plak_site_import_usage
+            ;;
         pull)
             echo "Usage: plak pull [<site>] [--yes] [--proxy-uploads]"
             ;;
@@ -5801,6 +5809,196 @@ HELP
             plak_show_help
             ;;
     esac
+}
+
+# Source: commands/site/import
+plak_site_import_usage() {
+    cat <<'HELP'
+Usage:
+  plak import <name> <backup.zip> [--plain] [--yes] [--no-reload]
+
+Create a local site from a WordPress backup ZIP or TAR. Accepts Plak exports,
+Local exports, and hosting backups that contain a single-site WordPress tree
+with a recognisable SQL dump. Multisite backups are rejected.
+HELP
+}
+
+# Inspect an archive without extracting it: report how deep the WordPress tree
+# and the SQL dump live, and refuse ambiguous or escaping structures.
+plak_import_inspect() {
+    local archive="$1"
+    local listing
+    if ! listing=$(plak_import_list_archive "$archive"); then
+        echo "Error: could not read archive '$archive'." >&2
+        return 1
+    fi
+    if [ -z "$listing" ]; then
+        echo "Error: archive '$archive' is empty." >&2
+        return 1
+    fi
+
+    # Reject absolute paths and parent-directory escapes.
+    if grep -Eq '(^/)|(^|/)\.\.(/|$)' <<<"$listing"; then
+        echo "Error: archive contains paths that escape the extraction directory." >&2
+        return 1
+    fi
+
+    local sql_entries wp_config_entries
+    sql_entries=$(grep -Ei '\.sql(\.gz|\.bz2)?$' <<<"$listing" || true)
+    local sql_count
+    sql_count=$(grep -c . <<<"$sql_entries" || true)
+    if [ "$sql_count" -eq 0 ]; then
+        echo "Error: archive does not contain an SQL dump." >&2
+        return 1
+    fi
+    if [ "$sql_count" -gt 1 ]; then
+        echo "Error: archive contains multiple SQL dumps; refusing an ambiguous import." >&2
+        return 1
+    fi
+
+    # Multisite is explicitly out of scope for this first delivery. A network
+    # is recognisable by its per-site uploads tree or a MULTISITE wp-config.
+    if grep -Eqi '(^|/)wp-content/uploads/sites(/|$)' <<<"$listing"; then
+        echo "Error: multisite backups are not supported." >&2
+        return 1
+    fi
+
+    wp_config_entries=$(grep -E '(^|/)wp-content(/|$)' <<<"$listing" || true)
+    if [ -z "$wp_config_entries" ]; then
+        echo "Error: archive does not contain a wp-content directory." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$sql_entries"
+}
+
+plak_import_list_archive() {
+    local archive="$1"
+    case "$archive" in
+        *.zip) unzip -Z1 "$archive" 2>/dev/null ;;
+        *.tar.gz|*.tgz) tar tzf "$archive" 2>/dev/null ;;
+        *.tar) tar tf "$archive" 2>/dev/null ;;
+        *)
+            echo "Error: unsupported archive format for '$archive'. Use zip, tar.gz, tgz or tar." >&2
+            return 1
+            ;;
+    esac
+}
+
+plak_import_extract() {
+    local archive="$1" dest="$2"
+    case "$archive" in
+        *.zip) unzip -q -o "$archive" -d "$dest" -x "__MACOSX/*" ;;
+        *.tar.gz|*.tgz) tar xzf "$archive" -C "$dest" ;;
+        *.tar) tar xf "$archive" -C "$dest" ;;
+    esac
+}
+
+# Import a backup as a new site: create an empty site, then let the Go
+# migration engine populate files and database with the destination URL.
+plak_site_import() {
+    local site_name="" archive="" site_type="wordpress" yes=0 no_reload=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --plain) site_type="plain" ;;
+            --yes|-y) yes=1 ;;
+            --no-reload) no_reload=true ;;
+            --help|-h) plak_site_import_usage; return 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; return 1 ;;
+            *)
+                if [ -z "$site_name" ]; then
+                    site_name="$arg"
+                elif [ -z "$archive" ]; then
+                    archive="$arg"
+                else
+                    echo "Error: unexpected argument '$arg'." >&2
+                    return 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$site_name" ] || [ -z "$archive" ]; then
+        plak_site_import_usage >&2
+        return 1
+    fi
+    if ! plak_validate_site_name "$site_name"; then
+        echo "Error: invalid site name '$site_name'." >&2
+        return 1
+    fi
+    if [ ! -f "$archive" ]; then
+        echo "Error: backup file '$archive' not found." >&2
+        return 1
+    fi
+    if [ -e "$SITES_DIR/$site_name.localhost" ]; then
+        echo "Error: site '$site_name.localhost' already exists; refusing to overwrite it." >&2
+        return 1
+    fi
+
+    # Inspection validates the archive shape and exits early on ambiguity; the
+    # engine performs the actual extraction and SQL import.
+    plak_import_inspect "$archive" >/dev/null || return 1
+
+    if [ "$yes" -eq 0 ] && [ -t 0 ] && plak_command_exists gum; then
+        if ! gum confirm "Create '$site_name.localhost' from $(basename "$archive")?"; then
+            echo "Import cancelled."
+            return 0
+        fi
+    fi
+
+    echo "Creating site '$site_name.localhost'..."
+    "$PLAK_SITE_CMD" add "$site_name" --plain --no-reload || {
+        echo "Error: could not create the destination site." >&2
+        return 1
+    }
+
+    # Resolve the Go transfer engine and migrate the extracted archive into the
+    # new site. go_migrate handles extraction, SQL import, URL rewriting and
+    # table-prefix adjustment.
+    local import_tmp
+    import_tmp=$(mktemp -d "${TMPDIR:-/tmp}/plak-import-XXXXXXXX")
+    local helper="$import_tmp/plak-go.sh"
+    local local_home local_siteurl
+    local_home=$(url_for "$site_name.localhost")
+    local_siteurl="$local_home"
+
+    local rc=0
+    if ! plak_fetch_go_runtime "$helper"; then
+        echo "Error: could not obtain the Plak engine." >&2
+        rc=1
+    else
+        if ! (cd "$SITES_DIR/$site_name.localhost/public" && bash "$helper" migrate \
+            --url="$archive" \
+            --update-urls \
+            --destination-home="$local_home" \
+            --destination-siteurl="$local_siteurl"); then
+            echo "Error: the import engine failed." >&2
+            rc=1
+        fi
+    fi
+    rm -rf "$import_tmp"
+
+    if [ "$rc" -ne 0 ]; then
+        echo "Error: import failed. The partially created site '$site_name.localhost' was kept for inspection." >&2
+        echo "Remove it with: plak delete $site_name --yes --no-reload" >&2
+        return 1
+    fi
+
+    # Reinstall the local helper plugin and referenced site configuration.
+    if [ "$site_type" != plain ]; then
+        inject_mu_plugin "$SITES_DIR/$site_name.localhost/public" || true
+    fi
+
+    if [ "$no_reload" = false ]; then
+        regenerate_caddyfile || {
+            echo "Error: site imported, but server reload failed. Run 'plak reload' to retry." >&2
+            return 1
+        }
+    fi
+
+    echo "Site '$site_name.localhost' imported successfully."
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "✅ Imported" "URL: $(plak_terminal_link "$local_home")"
 }
 
 # Source: commands/site/install

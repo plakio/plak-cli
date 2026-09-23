@@ -138,6 +138,7 @@ The local site dashboard is served at `https://plak.localhost` after install.
 
 ```bash
 plak add <name> [--plain] [--agent]
+plak import <name> <backup.zip> [--yes]
 plak delete <name> [--force]
 plak rename <old-name> <new-name>
 plak list [--totals]
@@ -240,6 +241,14 @@ plak snapshot <site> restore <id> [--yes]
 plak snapshot <site> delete <id> [--yes]
 plak snapshot <site> export <id> [--output <path>]
 ```
+
+`plak import` creates a new site from a WordPress backup ZIP, tar.gz or tar
+(including Plak exports, Local exports, and hosting backups with a single-site
+WordPress tree and one recognisable SQL dump). It refuses path traversal,
+ambiguous or missing SQL dumps, existing destinations, and multisite backups,
+and rewrites home/siteurl plus the table prefix through the shared migration
+engine. A failed import keeps the partially created site for inspection and
+tells you how to remove it.
 
 Snapshots are local recovery points of a site's files and database, stored under
 `private/snapshots/<id>` with a unique, sortable identifier. Static sites only

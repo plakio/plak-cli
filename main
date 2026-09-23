@@ -73,6 +73,7 @@ Commands:
   hosts       Manage entries in /etc/hosts
   sshkey      Manage SSH keys
   add         Create a WordPress or plain local site
+  import      Create a local site from a backup ZIP or TAR
   delete      Delete a local site
   list        List local sites
   login       Generate a one-time WordPress admin login link
@@ -262,7 +263,7 @@ main() {
     fi
 
     case "$command" in
-        add|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|import|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
             set +e
             ;;
     esac
@@ -290,6 +291,10 @@ main() {
         add)
             check_dependencies
             plak_site_add "$@"
+            ;;
+        import)
+            check_dependencies
+            plak_site_import "$@"
             ;;
         delete)
             check_dependencies

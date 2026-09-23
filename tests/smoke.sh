@@ -105,6 +105,7 @@ fi
 
 ./tests/migration.sh
 bash ./tests/snapshots.sh
+bash ./tests/import.sh
 bash ./tests/wp-cli.sh
 bash ./tests/agent.sh
 
