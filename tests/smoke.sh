@@ -105,5 +105,6 @@ fi
 
 ./tests/migration.sh
 bash ./tests/wp-cli.sh
+bash ./tests/agent.sh
 
 echo "Smoke tests passed."

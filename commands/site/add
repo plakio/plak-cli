@@ -18,11 +18,12 @@ plak_site_add() (
     # Isolate cwd and cleanup traps from callers such as pull and the dashboard.
     # Every mandatory step is checked explicitly: main disables errexit for
     # legacy site commands, and an outer conditional can disable it too.
-    local site_name="" site_type="wordpress" no_reload_flag=false arg
+    local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=false arg
     for arg in "$@"; do
         case "$arg" in
             --plain) site_type="plain" ;;
             --no-reload) no_reload_flag=true ;;
+            --agent) agent_mode=true ;;
             --help|-h) plak_display_command_help add; exit 0 ;;
             -*) echo "Error: unknown option '$arg'." >&2; exit 1 ;;
             *)
@@ -34,6 +35,10 @@ plak_site_add() (
                 ;;
         esac
     done
+    if [ "$agent_mode" = true ] && [ "$site_type" = plain ]; then
+        echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --plain." >&2
+        exit 1
+    fi
     if ! plak_validate_site_name "$site_name"; then
         echo "Error: a site name of 1–63 lowercase letters, numbers or hyphens is required; it cannot start or end with a hyphen." >&2
         plak_display_command_help add >&2
@@ -142,6 +147,16 @@ PHP
             fi
             sleep 0.2
         done
+    fi
+
+    # The site is valid at this point, so a failed preparation is a retry, not
+    # a cleanup: never drop a working site because an agent plugin or the
+    # wp-mcp profile could not be finished.
+    if [ "$agent_mode" = true ]; then
+        if ! plak_agent_prepare "$site_name"; then
+            echo "Error: site '$full_hostname' was created, but agent preparation did not finish. Retry with: plak agent $site_name" >&2
+            exit 1
+        fi
     fi
 
     echo "✅ Site '$full_hostname' created successfully!"

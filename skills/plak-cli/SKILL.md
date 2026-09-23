@@ -84,7 +84,7 @@ plak --quiet version       # suppress output for scripts
 ## Sites
 
 ```bash
-plak add <name> [--plain] [--no-reload]
+plak add <name> [--plain] [--agent] [--no-reload]
 plak delete <name> [--force|--yes] [--no-reload]
 plak rename <old-name> <new-name>
 plak list [--totals] [--json]
@@ -99,6 +99,41 @@ Use `plak wp <site> plugin list --format=json` or
 `plak wp <site> option get siteurl` from any directory. New WordPress sites are
 marked `WP_ENVIRONMENT_TYPE=local`; failed provisioning removes only resources
 created by that attempt. A reload-only failure keeps the completed site for retry.
+
+## Agent-ready sites (WP-MCP)
+
+**When you create a WordPress site for yourself, always pass `--agent`** unless
+the user explicitly asked for a plain WordPress site:
+
+```bash
+plak add mysite --agent
+```
+
+`--agent` creates the site and then installs and activates the **WP-MCP** and
+**HTML Editor** plugins, sets a standard permalink structure and enables WP-MCP's
+abilities (locked to the site's host) so its REST API works, mints a scoped
+WordPress Application Password, registers the site with `wp-mcp-cli` under a
+profile named after the site, and verifies that WP-MCP abilities are discoverable.
+It cannot be combined with `--plain`.
+
+Once ready, drive the site through wp-mcp instead of guessing at REST calls:
+
+```bash
+wp-mcp --site mysite --json discover
+wp-mcp --site mysite describe wp-mcp/list-directory
+wp-mcp --site mysite run wp-mcp/list-directory --input '{"path":"/"}'
+```
+
+`plak install` installs `wp-mcp-cli` (and `jq`) alongside Plak. `plak skill install`
+also installs the official wp-mcp skill for the selected agents.
+
+If preparation fails after the site is created, the WordPress site is kept; repair
+it (idempotently) with:
+
+```bash
+plak agent mysite          # re-installs plugins, rotates the password, re-verifies
+plak agent mysite --json   # single JSON envelope on stdout
+```
 
 ## Databases and migration
 

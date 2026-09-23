@@ -77,6 +77,7 @@ Commands:
   list        List local sites
   login       Generate a one-time WordPress admin login link
   wp          Run WP-CLI inside a local WordPress site
+  agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
   pull        Pull a remote WordPress site into Plak
   push        Push a local Plak site to a remote WordPress site
@@ -172,7 +173,17 @@ HELP
             echo "Usage: plak status"
             ;;
         add)
-            echo "Usage: plak add <name> [--plain] [--no-reload]"
+            echo "Usage: plak add <name> [--plain] [--agent] [--no-reload]"
+            echo ""
+            echo "  --agent  Install and activate WP-MCP and HTML Editor, then register"
+            echo "           the site with wp-mcp-cli. WordPress only."
+            ;;
+        agent)
+            echo "Usage: plak agent <site> [--json]"
+            echo ""
+            echo "Prepares or repairs an existing WordPress site for agents: installs"
+            echo "WP-MCP and HTML Editor, rotates the scoped Application Password,"
+            echo "refreshes the wp-mcp-cli profile and verifies abilities."
             ;;
         delete)
             echo "Usage: plak delete <name> [--force|--yes] [--no-reload]"
@@ -258,6 +269,10 @@ main() {
     case "$command" in
         wp)
             plak_site_wp "$@"
+            ;;
+        agent)
+            check_dependencies
+            plak_site_agent "$@"
             ;;
         remote)
             plak_remote "$@"

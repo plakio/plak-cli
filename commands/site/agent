@@ -1,0 +1,39 @@
+# Retry/repair entry point for the agent preparation done by `plak add --agent`.
+# Idempotent: re-running installs/activates the plugins, rotates the scoped
+# Application Password, refreshes the wp-mcp profile and re-verifies abilities.
+plak_site_agent() {
+    local site_name="" json_mode=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            --help|-h) plak_display_command_help agent; return 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; return 1 ;;
+            *)
+                if [ -n "$site_name" ]; then
+                    echo "Error: unexpected argument '$arg'." >&2
+                    return 1
+                fi
+                site_name="$arg"
+                ;;
+        esac
+    done
+
+    if ! plak_validate_site_name "$site_name"; then
+        echo "Error: a site name is required." >&2
+        plak_display_command_help agent >&2
+        return 1
+    fi
+
+    if [ "$json_mode" = true ]; then
+        # Keep the human progress on stderr so stdout stays a single envelope.
+        if plak_agent_prepare "$site_name" >&2; then
+            printf '{"success":true,"site":"%s","profile":"%s","url":"%s"}\n' \
+                "$site_name" "$site_name" "$(url_for "$site_name.localhost")"
+        else
+            printf '{"success":false,"site":"%s"}\n' "$site_name"
+            return 1
+        fi
+    else
+        plak_agent_prepare "$site_name"
+    fi
+}

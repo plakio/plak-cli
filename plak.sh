@@ -77,6 +77,7 @@ Commands:
   list        List local sites
   login       Generate a one-time WordPress admin login link
   wp          Run WP-CLI inside a local WordPress site
+  agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
   pull        Pull a remote WordPress site into Plak
   push        Push a local Plak site to a remote WordPress site
@@ -172,7 +173,17 @@ HELP
             echo "Usage: plak status"
             ;;
         add)
-            echo "Usage: plak add <name> [--plain] [--no-reload]"
+            echo "Usage: plak add <name> [--plain] [--agent] [--no-reload]"
+            echo ""
+            echo "  --agent  Install and activate WP-MCP and HTML Editor, then register"
+            echo "           the site with wp-mcp-cli. WordPress only."
+            ;;
+        agent)
+            echo "Usage: plak agent <site> [--json]"
+            echo ""
+            echo "Prepares or repairs an existing WordPress site for agents: installs"
+            echo "WP-MCP and HTML Editor, rotates the scoped Application Password,"
+            echo "refreshes the wp-mcp-cli profile and verifies abilities."
             ;;
         delete)
             echo "Usage: plak delete <name> [--force|--yes] [--no-reload]"
@@ -258,6 +269,10 @@ main() {
     case "$command" in
         wp)
             plak_site_wp "$@"
+            ;;
+        agent)
+            check_dependencies
+            plak_site_agent "$@"
             ;;
         remote)
             plak_remote "$@"
@@ -443,6 +458,350 @@ plak_remote_choose_ssh() {
     [ -n "$selected" ] || return 1
     selected="${selected##ssh }"
     printf '%s\n' "$selected"
+}
+
+# Source: shared/site/agent
+# Agent site preparation.
+#
+# Turns a freshly created WordPress site into one an agent can drive over
+# WP-MCP: install and activate the WP-MCP and HTML Editor plugins from Plak's
+# own downloads, mint a scoped Application Password, register the site with
+# wp-mcp-cli, and verify the abilities surface. Every step is idempotent so a
+# failed preparation can be retried with `plak agent <site>` without creating a
+# second site, a duplicate profile, or an extra Application Password.
+
+# Pinned for a reproducible install; bump deliberately with the CLI.
+PLAK_WPMCP_VERSION="${PLAK_WPMCP_VERSION:-v0.1.9}"
+PLAK_WPMCP_INSTALL_URL="${PLAK_WPMCP_INSTALL_URL:-https://raw.githubusercontent.com/plakio/wp-mcp-cli/${PLAK_WPMCP_VERSION}/wp-mcp.sh}"
+PLAK_AGENT_WP_MCP_URL="${PLAK_AGENT_WP_MCP_URL:-https://downloads.plak.io/wp-mcp-latest.zip}"
+PLAK_AGENT_HTML_EDITOR_URL="${PLAK_AGENT_HTML_EDITOR_URL:-https://downloads.plak.io/html-editor-latest.zip}"
+# One name for every password this flow mints, so retries can revoke the old
+# one instead of accumulating credentials.
+PLAK_AGENT_PASSWORD_NAME="Plak CLI (agent)"
+
+plak_agent_user_agent() {
+    printf 'PlakCLI/%s\n' "${PLAK_VERSION:-unknown}"
+}
+
+plak_agent_wpmcp_available() {
+    plak_command_exists wp-mcp
+}
+
+# Install wp-mcp-cli and its jq dependency. Homebrew on macOS, the pinned
+# release script elsewhere. Never installs an unpinned "main" build.
+plak_agent_install_cli() {
+    if plak_agent_wpmcp_available; then
+        echo "✅ wp-mcp is already installed."
+        return 0
+    fi
+
+    if ! plak_command_exists jq; then
+        install_dependency "jq" "jq" "jq" "jq" ""
+    fi
+
+    echo "📦 Installing wp-mcp-cli ${PLAK_WPMCP_VERSION}..."
+    if [ "$OS" = macos ] && plak_command_exists brew; then
+        if brew install plakio/tap/wp-mcp-cli >/dev/null 2>&1; then
+            hash -r
+            if plak_agent_wpmcp_available; then
+                echo "✅ wp-mcp-cli installed."
+                return 0
+            fi
+        fi
+        plak_ui_warn "Homebrew install failed; falling back to the release script."
+    fi
+
+    if ! plak_command_exists curl; then
+        plak_ui_error "curl is required to install wp-mcp-cli."
+        return 1
+    fi
+
+    local tmp
+    tmp=$(mktemp) || return 1
+    if ! curl -fsSL "$PLAK_WPMCP_INSTALL_URL" -o "$tmp"; then
+        rm -f "$tmp"
+        plak_ui_error "Could not download wp-mcp-cli from $PLAK_WPMCP_INSTALL_URL."
+        return 1
+    fi
+
+    local install_dir="${PLAK_WPMCP_BIN_DIR:-${BIN_DIR:-/usr/local/bin}}"
+    if ! mkdir -p "$install_dir" 2>/dev/null; then
+        $SUDO_CMD mkdir -p "$install_dir" || { rm -f "$tmp"; return 1; }
+    fi
+    if ! mv "$tmp" "$install_dir/wp-mcp" 2>/dev/null; then
+        if ! $SUDO_CMD mv "$tmp" "$install_dir/wp-mcp"; then
+            rm -f "$tmp"
+            plak_ui_error "Could not install wp-mcp to $install_dir."
+            return 1
+        fi
+    fi
+    chmod +x "$install_dir/wp-mcp" 2>/dev/null || $SUDO_CMD chmod +x "$install_dir/wp-mcp"
+    hash -r
+
+    if ! plak_agent_wpmcp_available; then
+        plak_ui_error "wp-mcp installed but not found on PATH. Restart your shell and re-run."
+        return 1
+    fi
+    echo "✅ wp-mcp-cli installed."
+}
+
+# Download one plugin ZIP with Plak's User-Agent and reject anything that is
+# not a ZIP, so a firewall block page served with HTTP 200 never reaches
+# WP-CLI as a "plugin".
+plak_agent_download_plugin() {
+    local url="$1" dest="$2"
+    if ! plak_command_exists curl; then
+        plak_ui_error "curl is required to download agent plugins."
+        return 1
+    fi
+    if ! curl --fail --location --silent --show-error \
+        --user-agent "$(plak_agent_user_agent)" \
+        --max-time 120 \
+        --output "$dest" "$url"; then
+        rm -f "$dest"
+        plak_ui_error "Download failed for $url (check the downloads.plak.io firewall rule for PlakCLI)."
+        return 1
+    fi
+    local magic=""
+    if [ -f "$dest" ]; then
+        magic=$(head -c 2 "$dest" 2>/dev/null || true)
+    fi
+    if [ "$magic" != "PK" ]; then
+        rm -f "$dest"
+        plak_ui_error "Downloaded file is not a ZIP plugin (blocked or corrupt): $url"
+        return 1
+    fi
+    return 0
+}
+
+# Derive the WordPress plugin slug from a ZIP: the directory of the file that
+# carries a "Plugin Name:" header. Falls back to the archive name.
+plak_agent_zip_plugin_slug() {
+    local zip="$1" slug="" frank
+    if frank=$(command -v frankenphp 2>/dev/null); then
+        # The PHP below is intentionally single-quoted so the shell does not expand it.
+        # shellcheck disable=SC2016
+        slug=$(PLAK_AGENT_ZIP_PATH="$zip" "$frank" php-cli -r '
+            $path = getenv("PLAK_AGENT_ZIP_PATH");
+            if (!class_exists("ZipArchive")) { exit(1); }
+            $zip = new ZipArchive();
+            if ($zip->open($path) !== true) { exit(1); }
+            $slug = "";
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $name = $zip->getNameIndex($i);
+                if (!preg_match("#^([^/]+)/[^/]+\.php$#", $name, $m)) { continue; }
+                $data = $zip->getFromIndex($i);
+                if ($data !== false && preg_match("/^[ \t\/*#@]*Plugin Name:/mi", $data)) {
+                    $slug = $m[1];
+                    break;
+                }
+            }
+            $zip->close();
+            if ($slug === "") { exit(1); }
+            echo $slug;
+        ' 2>/dev/null) || slug=""
+    fi
+    if [ -z "$slug" ]; then
+        slug=$(basename "$zip")
+        slug="${slug%.zip}"
+        slug="${slug%-latest}"
+    fi
+    [ -n "$slug" ] || return 1
+    printf '%s\n' "$slug"
+}
+
+# Install and activate both agent plugins from the local ZIPs, then confirm
+# each is actually active.
+plak_agent_install_plugins() {
+    local site_dir="$1"
+    local public_dir="$site_dir/public"
+    if [ ! -f "$public_dir/wp-config.php" ]; then
+        plak_ui_error "WordPress site not found at $public_dir."
+        return 1
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d) || return 1
+    local wp_mcp_zip="$tmpdir/wp-mcp.zip" html_zip="$tmpdir/html-editor.zip"
+    local rc=0
+
+    if ! plak_agent_download_plugin "$PLAK_AGENT_WP_MCP_URL" "$wp_mcp_zip"; then rc=1; fi
+    if [ "$rc" -eq 0 ] && ! plak_agent_download_plugin "$PLAK_AGENT_HTML_EDITOR_URL" "$html_zip"; then rc=1; fi
+    if [ "$rc" -ne 0 ]; then
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    local wp_mcp_slug html_slug
+    wp_mcp_slug=$(plak_agent_zip_plugin_slug "$wp_mcp_zip") || wp_mcp_slug=""
+    html_slug=$(plak_agent_zip_plugin_slug "$html_zip") || html_slug=""
+
+    if ! ( cd "$public_dir" && plak_wp_cli plugin install "$wp_mcp_zip" --activate --force --quiet ); then rc=1; fi
+    if [ "$rc" -eq 0 ] && ! ( cd "$public_dir" && plak_wp_cli plugin install "$html_zip" --activate --force --quiet ); then rc=1; fi
+    rm -rf "$tmpdir"
+    if [ "$rc" -ne 0 ]; then
+        plak_ui_error "Could not install and activate the agent plugins."
+        return 1
+    fi
+
+    # Installation success is not activation success: verify each slug.
+    local slug
+    for slug in "$wp_mcp_slug" "$html_slug"; do
+        [ -n "$slug" ] || continue
+        if ! ( cd "$public_dir" && plak_wp_cli plugin is-active "$slug" --skip-plugins --skip-themes ) >/dev/null 2>&1; then
+            plak_ui_error "Plugin '$slug' is installed but not active."
+            return 1
+        fi
+    done
+    echo "   - ✅ WP-MCP and HTML Editor installed and active."
+}
+
+# wp-mcp talks to /wp-json/..., which only resolves when the site has a
+# non-empty permalink structure. Plak creates sites with plain permalinks,
+# where /wp-json/... is rendered by the theme instead of reaching the REST API,
+# so every wp-mcp call would fail. Set a standard structure only when none is
+# set (never clobber a deliberate one) and flush the rewrite rules.
+plak_agent_ensure_rest_api() {
+    local public_dir="$1"
+    local current
+    current=$( cd "$public_dir" && plak_wp_cli option get permalink_structure \
+        --skip-plugins --skip-themes 2>/dev/null ) || current=""
+    if [ -z "$current" ]; then
+        if ! ( cd "$public_dir" && plak_wp_cli option update permalink_structure \
+            '/%postname%/' --skip-plugins --skip-themes ); then
+            plak_ui_error "Could not enable the pretty permalinks WP-MCP requires."
+            return 1
+        fi
+    fi
+    ( cd "$public_dir" && plak_wp_cli rewrite flush --hard --skip-plugins --skip-themes ) >/dev/null 2>&1 || true
+    return 0
+}
+
+# WP-MCP ships with its abilities disabled and locked to the domain they were
+# enabled on. An agent-ready site must turn them on, or every ability call is
+# refused with wp_mcp_disabled even though discovery succeeds.
+plak_agent_enable_wp_mcp() {
+    local public_dir="$1" host="$2"
+    if ! ( cd "$public_dir" && plak_wp_cli option update wp_mcp_ai_abilities_enabled \
+        '1' --skip-plugins --skip-themes ) >/dev/null; then
+        plak_ui_error "Could not enable WP-MCP abilities."
+        return 1
+    fi
+    if ! ( cd "$public_dir" && plak_wp_cli option update wp_mcp_ai_abilities_domain \
+        "$host" --skip-plugins --skip-themes ) >/dev/null; then
+        plak_ui_error "Could not lock WP-MCP abilities to $host."
+        return 1
+    fi
+    return 0
+}
+
+# Remove every password this flow created for a user.
+plak_agent_revoke_passwords() {
+    local public_dir="$1" user="$2"
+    local rows
+    rows=$( cd "$public_dir" && plak_wp_cli user application-password list "$user" \
+        --fields=uuid,name --format=csv --skip-plugins --skip-themes 2>/dev/null ) || return 0
+    [ -n "$rows" ] || return 0
+    local uuid name
+    while IFS=, read -r uuid name; do
+        uuid="${uuid%$'\r'}"
+        name="${name%$'\r'}"
+        # WP-CLI's CSV formatter double-quotes values containing spaces, so
+        # strip the quotes before comparing the name.
+        name="${name#\"}"
+        name="${name%\"}"
+        [ -n "$uuid" ] || continue
+        [ "$uuid" = "uuid" ] && continue
+        [ "$name" = "$PLAK_AGENT_PASSWORD_NAME" ] || continue
+        ( cd "$public_dir" && plak_wp_cli user application-password delete "$user" "$uuid" \
+            --quiet --skip-plugins --skip-themes ) >/dev/null 2>&1 || true
+    done <<< "$rows"
+}
+
+# Create a scoped Application Password, rotating any earlier one first.
+plak_agent_create_password() {
+    local public_dir="$1" user="$2"
+    plak_agent_revoke_passwords "$public_dir" "$user"
+    local pass
+    pass=$( cd "$public_dir" && plak_wp_cli user application-password create "$user" \
+        "$PLAK_AGENT_PASSWORD_NAME" --porcelain --skip-plugins --skip-themes ) || return 1
+    [ -n "$pass" ] || return 1
+    printf '%s\n' "$pass"
+}
+
+# Register (or refresh) the wp-mcp-cli profile. The secret travels through the
+# environment, never argv, so it cannot leak via process listings or logs.
+plak_agent_register_profile() {
+    local site_name="$1" user="$2" pass="$3"
+    local url
+    url=$(url_for "$site_name.localhost")
+    if ! WPMCP_USERNAME="$user" WPMCP_PASSWORD="$pass" \
+        wp-mcp --json auth login "$url" --name "$site_name" >/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+plak_agent_verify() {
+    local site_name="$1"
+    wp-mcp --json --site "$site_name" discover >/dev/null 2>&1
+}
+
+plak_agent_site_reachable() {
+    local site_name="$1" url
+    url=$(url_for "$site_name.localhost")
+    local _
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -ks --max-time 1 -o /dev/null "$url/" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.3
+    done
+    return 1
+}
+
+# Prepare an existing WordPress site for agents. Idempotent: safe to re-run.
+plak_agent_prepare() {
+    local site_name="$1"
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    local public_dir="$site_dir/public"
+
+    if [ ! -f "$public_dir/wp-config.php" ]; then
+        plak_ui_error "WordPress site '$site_name.localhost' not found."
+        return 1
+    fi
+    if ! plak_agent_wpmcp_available; then
+        plak_ui_error "wp-mcp-cli is required. Run 'plak install' first."
+        return 1
+    fi
+    if ! plak_agent_site_reachable "$site_name"; then
+        plak_ui_error "Site '$site_name.localhost' is not answering yet. Run 'plak reload' and retry: plak agent $site_name"
+        return 1
+    fi
+
+    echo "🤖 Preparing '$site_name.localhost' for agents (WP-MCP + HTML Editor)..."
+    plak_agent_install_plugins "$site_dir" || return 1
+    plak_agent_ensure_rest_api "$public_dir" || return 1
+    plak_agent_enable_wp_mcp "$public_dir" "$site_name.localhost" || return 1
+
+    local pass
+    pass=$(plak_agent_create_password "$public_dir" admin) || {
+        plak_ui_error "Could not create an application password."
+        return 1
+    }
+    if ! plak_agent_register_profile "$site_name" admin "$pass"; then
+        # Do not leave an orphan credential behind if registration failed.
+        plak_agent_revoke_passwords "$public_dir" admin
+        plak_ui_error "Could not register '$site_name' with wp-mcp-cli."
+        return 1
+    fi
+    if ! plak_agent_verify "$site_name"; then
+        plak_ui_error "WP-MCP is registered, but its abilities could not be discovered."
+        return 1
+    fi
+
+    plak_ui_success "Agent ready: wp-mcp profile '$site_name' at $(url_for "$site_name.localhost")"
+    return 0
 }
 
 # Source: shared/site/runtime
@@ -4318,11 +4677,12 @@ plak_site_add() (
     # Isolate cwd and cleanup traps from callers such as pull and the dashboard.
     # Every mandatory step is checked explicitly: main disables errexit for
     # legacy site commands, and an outer conditional can disable it too.
-    local site_name="" site_type="wordpress" no_reload_flag=false arg
+    local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=false arg
     for arg in "$@"; do
         case "$arg" in
             --plain) site_type="plain" ;;
             --no-reload) no_reload_flag=true ;;
+            --agent) agent_mode=true ;;
             --help|-h) plak_display_command_help add; exit 0 ;;
             -*) echo "Error: unknown option '$arg'." >&2; exit 1 ;;
             *)
@@ -4334,6 +4694,10 @@ plak_site_add() (
                 ;;
         esac
     done
+    if [ "$agent_mode" = true ] && [ "$site_type" = plain ]; then
+        echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --plain." >&2
+        exit 1
+    fi
     if ! plak_validate_site_name "$site_name"; then
         echo "Error: a site name of 1–63 lowercase letters, numbers or hyphens is required; it cannot start or end with a hyphen." >&2
         plak_display_command_help add >&2
@@ -4444,6 +4808,16 @@ PHP
         done
     fi
 
+    # The site is valid at this point, so a failed preparation is a retry, not
+    # a cleanup: never drop a working site because an agent plugin or the
+    # wp-mcp profile could not be finished.
+    if [ "$agent_mode" = true ]; then
+        if ! plak_agent_prepare "$site_name"; then
+            echo "Error: site '$full_hostname' was created, but agent preparation did not finish. Retry with: plak agent $site_name" >&2
+            exit 1
+        fi
+    fi
+
     echo "✅ Site '$full_hostname' created successfully!"
     if [ "$site_type" = wordpress ]; then
         local admin_url
@@ -4451,6 +4825,47 @@ PHP
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(plak_terminal_link "$admin_url")" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $(plak_terminal_link "$one_time_login_url")"
     fi
 )
+
+# Source: commands/site/agent
+# Retry/repair entry point for the agent preparation done by `plak add --agent`.
+# Idempotent: re-running installs/activates the plugins, rotates the scoped
+# Application Password, refreshes the wp-mcp profile and re-verifies abilities.
+plak_site_agent() {
+    local site_name="" json_mode=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json_mode=true ;;
+            --help|-h) plak_display_command_help agent; return 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; return 1 ;;
+            *)
+                if [ -n "$site_name" ]; then
+                    echo "Error: unexpected argument '$arg'." >&2
+                    return 1
+                fi
+                site_name="$arg"
+                ;;
+        esac
+    done
+
+    if ! plak_validate_site_name "$site_name"; then
+        echo "Error: a site name is required." >&2
+        plak_display_command_help agent >&2
+        return 1
+    fi
+
+    if [ "$json_mode" = true ]; then
+        # Keep the human progress on stderr so stdout stays a single envelope.
+        if plak_agent_prepare "$site_name" >&2; then
+            printf '{"success":true,"site":"%s","profile":"%s","url":"%s"}\n' \
+                "$site_name" "$site_name" "$(url_for "$site_name.localhost")"
+        else
+            printf '{"success":false,"site":"%s"}\n' "$site_name"
+            return 1
+        fi
+    else
+        plak_agent_prepare "$site_name"
+    fi
+}
 
 # Source: commands/site/db
 plak_site_db_backup() {
@@ -5795,6 +6210,10 @@ plak_site_install() {
     # WP-CLI - WordPress command line tool
     # Not in default Linux repos, so we use the phar download as fallback
     install_dependency "wp" "wp-cli" "" "" "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+
+    # wp-mcp-cli - the WP-MCP companion CLI used by `plak add --agent` to
+    # register sites. Installed from a pinned release for reproducibility.
+    plak_agent_install_cli
 
     # --- Directory and Service Setup (Copied from original file) ---
     echo "📁 Creating Plak directory structure..."
@@ -9492,6 +9911,47 @@ plak_site_wsl_hosts() {
 # Source: commands/skill
 PLAK_SKILL_NAME="plak-cli"
 PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/plak-cli/main/skills/plak-cli}"
+# The WP-MCP companion skill is installed beside the Plak skill for the same
+# targets, so an agent that drives a Plak site knows how to use wp-mcp too.
+PLAK_WPMCP_SKILL_NAME="wp-mcp"
+PLAK_WPMCP_SKILL_RAW_BASE="${PLAK_WPMCP_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/wp-mcp-cli/${PLAK_WPMCP_VERSION}/skills/wp-mcp}"
+
+# Destination used by wp-mcp-cli's own `skill install` for a target.
+plak_skill_wpmcp_path() {
+    case "$1" in
+        codex) echo "$HOME/.codex/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        opencode) echo "$HOME/.config/opencode/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        hermes) echo "$HOME/.hermes/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        pi) echo "$HOME/.pi/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        global) echo "$HOME/.agents/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Install the official wp-mcp skill for one target. Prefer wp-mcp-cli's own
+# installer; fall back to fetching the pinned skill file. Never fails the Plak
+# skill install and never writes to targets the user did not select.
+plak_skill_install_wpmcp_companion() {
+    local target="$1" dest
+    if plak_command_exists wp-mcp; then
+        if wp-mcp skill install "$target" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    dest=$(plak_skill_wpmcp_path "$target") || return 0
+    if ! plak_command_exists curl; then
+        plak_ui_warn "curl is required to install the wp-mcp skill for $target."
+        return 0
+    fi
+    mkdir -p "$(dirname "$dest")" || return 0
+    if curl -fsSL "$PLAK_WPMCP_SKILL_RAW_BASE/SKILL.md" -o "$dest"; then
+        plak_ui_success "Installed wp-mcp skill for $target: $dest"
+    else
+        plak_ui_warn "Could not install the wp-mcp skill for $target."
+    fi
+    return 0
+}
 
 plak_skill_help() {
     cat <<'HELP'
@@ -9573,6 +10033,7 @@ plak_skill_install_target() {
     fi
 
     plak_ui_success "Installed Plak skill for $target: $dest/SKILL.md"
+    plak_skill_install_wpmcp_companion "$target"
 }
 
 plak_skill_prompt_targets() {

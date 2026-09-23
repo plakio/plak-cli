@@ -540,6 +540,10 @@ plak_site_install() {
     # Not in default Linux repos, so we use the phar download as fallback
     install_dependency "wp" "wp-cli" "" "" "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
 
+    # wp-mcp-cli - the WP-MCP companion CLI used by `plak add --agent` to
+    # register sites. Installed from a pinned release for reproducibility.
+    plak_agent_install_cli
+
     # --- Directory and Service Setup (Copied from original file) ---
     echo "📁 Creating Plak directory structure..."
     mkdir -p "$SITES_DIR" "$LOGS_DIR" "$GUI_DIR" "$ADMINER_DIR" "$CUSTOM_CADDY_DIR"

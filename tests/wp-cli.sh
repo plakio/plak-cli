@@ -211,10 +211,8 @@ touch "$SITES_DIR/new.localhost/keep"
 if ./plak.sh add new --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted existing site'; fi
 test -f "$SITES_DIR/new.localhost/keep" || fail 'destroyed pre-existing site'
 rm -r "$SITES_DIR/new.localhost"
-for arg in --unknown --agent; do
-    if ./plak.sh add new "$arg" >"$tmpdir/out" 2>"$tmpdir/err"; then fail "ignored unsupported option $arg"; fi
-    [ ! -e "$SITES_DIR/new.localhost" ] || fail 'created resources with unsupported options'
-done
+if ./plak.sh add new --unknown >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'ignored an unsupported option'; fi
+[ ! -e "$SITES_DIR/new.localhost" ] || fail 'created resources with an unsupported option'
 
 # Exercise the real MU-plugin/landing writers and successful provisioning.
 ./plak.sh add new --no-reload >"$tmpdir/out" 2>"$tmpdir/err"

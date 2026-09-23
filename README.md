@@ -137,12 +137,13 @@ The local site dashboard is served at `https://plak.localhost` after install.
 ### Sites
 
 ```bash
-plak add <name> [--plain]
+plak add <name> [--plain] [--agent]
 plak delete <name> [--force]
 plak rename <old-name> <new-name>
 plak list [--totals]
 plak login <site> [<user>]
 plak wp <site> <wp-cli arguments...>
+plak agent <site> [--json]
 plak path <name>
 plak url <name>
 plak log [site] [-f]
@@ -170,6 +171,42 @@ Creation checks every installation stage and cleans up only the directory and
 database created by that invocation if provisioning fails. An existing database
 is never reused. If only the server reload fails, the completed site is kept and
 Plak reports how to retry the reload.
+
+### Agent-ready sites
+
+Agents should create the sites they will work on with `--agent`:
+
+```bash
+plak add my-site --agent
+```
+
+This creates the WordPress site, then installs and activates the **WP-MCP** and
+**HTML Editor** plugins from `downloads.plak.io`, sets a standard permalink
+structure and enables WP-MCP's abilities (locked to the site's host) so its REST
+API answers, mints a scoped WordPress Application Password, registers the site
+with `wp-mcp-cli` under a profile named after the site, and verifies that WP-MCP
+abilities are discoverable. The plugins are downloaded with the
+`PlakCLI/<version>` User-Agent, so the downloads host can allow Plak through its
+firewall without opening the archives to the world. `--agent` requires WordPress
+and cannot be combined with `--plain`.
+
+`plak install` installs `wp-mcp-cli` and its `jq` dependency alongside Plak, and
+`plak skill install` also installs the official wp-mcp skill for the selected
+agents. After a successful `--agent` run the site is driven through wp-mcp:
+
+```bash
+wp-mcp --site my-site --json discover
+wp-mcp --site my-site run wp-mcp/list-directory --input '{"path":"/"}'
+```
+
+If preparation fails after the site is created, the site is kept and the failure
+is reported as partial. Repair it idempotently (installs/activates the plugins,
+rotates the scoped password, refreshes the profile and re-verifies) with:
+
+```bash
+plak agent my-site
+plak agent my-site --json
+```
 
 ### Migration
 

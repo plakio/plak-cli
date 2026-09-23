@@ -1,5 +1,46 @@
 PLAK_SKILL_NAME="plak-cli"
 PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/plak-cli/main/skills/plak-cli}"
+# The WP-MCP companion skill is installed beside the Plak skill for the same
+# targets, so an agent that drives a Plak site knows how to use wp-mcp too.
+PLAK_WPMCP_SKILL_NAME="wp-mcp"
+PLAK_WPMCP_SKILL_RAW_BASE="${PLAK_WPMCP_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/wp-mcp-cli/${PLAK_WPMCP_VERSION}/skills/wp-mcp}"
+
+# Destination used by wp-mcp-cli's own `skill install` for a target.
+plak_skill_wpmcp_path() {
+    case "$1" in
+        codex) echo "$HOME/.codex/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        opencode) echo "$HOME/.config/opencode/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        hermes) echo "$HOME/.hermes/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        pi) echo "$HOME/.pi/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        global) echo "$HOME/.agents/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Install the official wp-mcp skill for one target. Prefer wp-mcp-cli's own
+# installer; fall back to fetching the pinned skill file. Never fails the Plak
+# skill install and never writes to targets the user did not select.
+plak_skill_install_wpmcp_companion() {
+    local target="$1" dest
+    if plak_command_exists wp-mcp; then
+        if wp-mcp skill install "$target" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    dest=$(plak_skill_wpmcp_path "$target") || return 0
+    if ! plak_command_exists curl; then
+        plak_ui_warn "curl is required to install the wp-mcp skill for $target."
+        return 0
+    fi
+    mkdir -p "$(dirname "$dest")" || return 0
+    if curl -fsSL "$PLAK_WPMCP_SKILL_RAW_BASE/SKILL.md" -o "$dest"; then
+        plak_ui_success "Installed wp-mcp skill for $target: $dest"
+    else
+        plak_ui_warn "Could not install the wp-mcp skill for $target."
+    fi
+    return 0
+}
 
 plak_skill_help() {
     cat <<'HELP'
@@ -81,6 +122,7 @@ plak_skill_install_target() {
     fi
 
     plak_ui_success "Installed Plak skill for $target: $dest/SKILL.md"
+    plak_skill_install_wpmcp_companion "$target"
 }
 
 plak_skill_prompt_targets() {
