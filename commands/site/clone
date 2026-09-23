@@ -1,0 +1,223 @@
+plak_site_clone_usage() {
+    cat <<'HELP'
+Usage:
+  plak clone <source> <destination> [--yes] [--no-reload]
+
+Duplicate a local site into an independent copy for testing changes. Works with
+WordPress and static sites. Files and database are copied independently; URLs and
+serialized content are rewritten to the destination. Exclusive domains and remote
+bindings are not carried over, so the copy never deploys to the source's remote.
+HELP
+}
+
+# Remove resources created by a failed clone. Only the destination directory and
+# database (when this invocation created them) are touched; the source is never
+# modified.
+plak_site_clone_cleanup() {
+    trap - EXIT
+    local site_dir="${1:-}" db_name="${2:-}" db_created="${3:-false}"
+    [ -n "$site_dir" ] || return 0
+    if [ "$db_created" = true ]; then
+        if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            -e "DROP DATABASE IF EXISTS \`$db_name\`;"; then
+            echo "Error: could not remove the cloned database '$db_name'; remove it manually." >&2
+        fi
+    fi
+    if ! rm -rf -- "$site_dir"; then
+        echo "Error: could not remove the cloned directory '$site_dir'." >&2
+    fi
+}
+
+# Resolve the source database name from its real configuration rather than a
+# naming convention, so custom DB names and SQLite-style configs are handled.
+plak_clone_source_db_name() {
+    local public_dir="$1" wp_cmd="$2"
+    (cd "$public_dir" && "$wp_cmd" config get DB_NAME --skip-plugins --skip-themes 2>/dev/null)
+}
+
+plak_site_clone() {
+    local source="" destination="" yes=0 no_reload=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) yes=1 ;;
+            --no-reload) no_reload=true ;;
+            --help|-h) plak_site_clone_usage; return 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; return 1 ;;
+            *)
+                if [ -z "$source" ]; then
+                    source="$arg"
+                elif [ -z "$destination" ]; then
+                    destination="$arg"
+                else
+                    echo "Error: unexpected argument '$arg'." >&2
+                    return 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$source" ] || [ -z "$destination" ]; then
+        plak_site_clone_usage >&2
+        return 1
+    fi
+    if ! plak_validate_site_name "$source" || ! plak_validate_site_name "$destination"; then
+        echo "Error: invalid source or destination site name." >&2
+        return 1
+    fi
+    if [ "$source" = "$destination" ]; then
+        echo "Error: source and destination must differ." >&2
+        return 1
+    fi
+
+    local source_dir="$SITES_DIR/$source.localhost"
+    local dest_dir="$SITES_DIR/$destination.localhost"
+    local full_hostname="$destination.localhost"
+
+    if [ ! -d "$source_dir" ]; then
+        echo "Error: source site '$source.localhost' not found." >&2
+        return 1
+    fi
+    if [ -e "$dest_dir" ]; then
+        echo "Error: destination '$full_hostname' already exists." >&2
+        return 1
+    fi
+
+    local is_wordpress=false
+    [ -f "$source_dir/public/wp-config.php" ] && is_wordpress=true
+
+    if [ "$yes" -eq 0 ] && [ -t 0 ] && plak_command_exists gum; then
+        if ! gum confirm "Clone '$source.localhost' into '$full_hostname'?"; then
+            echo "Clone cancelled."
+            return 0
+        fi
+    fi
+
+    source_config
+    local wp_cmd=""
+    if [ "$is_wordpress" = true ]; then
+        wp_cmd=$(get_wp_cmd)
+    fi
+
+    # mkdir without -p claims the destination exclusively, including races.
+    mkdir -p "$SITES_DIR" || return 1
+    if ! mkdir "$dest_dir"; then
+        echo "Error: could not create '$dest_dir' (it may have appeared concurrently)." >&2
+        return 1
+    fi
+
+    local dest_db="" source_db="" db_created=false
+    # On failure, remove only what this invocation created and return non-zero
+    # so callers (and the original site) are unaffected.
+    trap 'plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    echo "➕ Cloning '$source.localhost' to '$full_hostname'..."
+
+    # --- Files: copy-on-write clone when available, portable copy otherwise ---
+    if cp -Rc "$source_dir/." "$dest_dir/" 2>/dev/null; then
+        echo "   - Files copied (copy-on-write)."
+    elif cp -R "$source_dir/." "$dest_dir/"; then
+        echo "   - Files copied."
+    else
+        echo "Error: failed to copy site files." >&2
+        plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+        return 1
+    fi
+
+    if [ "$is_wordpress" = true ]; then
+        source_db=$(plak_clone_source_db_name "$source_dir/public" "$wp_cmd")
+        if [ -z "$source_db" ]; then
+            echo "Error: could not read the source database configuration." >&2
+            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+            return 1
+        fi
+
+        dest_db=$(echo "plak_site_$destination" | tr -c '[:alnum:]_' '_')
+        if [ "${#dest_db}" -gt 64 ]; then
+            echo "Error: destination name is too long for its database." >&2
+            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+            return 1
+        fi
+        echo "   - Creating database: $dest_db"
+        if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            -e "CREATE DATABASE \`$dest_db\`;"; then
+            echo "Error: could not create the destination database." >&2
+            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+            return 1
+        fi
+        db_created=true
+
+        local dump
+        dump=$(mktemp) || { plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"; return 1; }
+        if ! mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            --single-transaction --quick --lock-tables=false "$source_db" > "$dump"; then
+            rm -f "$dump"
+            echo "Error: could not dump the source database '$source_db'." >&2
+            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+            return 1
+        fi
+        if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$dest_db" < "$dump"; then
+            rm -f "$dump"
+            echo "Error: could not import into the destination database." >&2
+            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+            return 1
+        fi
+        rm -f "$dump"
+
+        echo "   - Updating configuration and URLs..."
+        if ! (cd "$dest_dir/public" && "$wp_cmd" config set DB_NAME "$dest_db" --skip-plugins --skip-themes --quiet); then
+            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+            return 1
+        fi
+
+        # Preserve distinct home/siteurl values and local ports: read them from
+        # the copied database, then map the source hostname to the destination.
+        local source_home source_siteurl dest_home dest_siteurl
+        source_home=$( (cd "$dest_dir/public" && "$wp_cmd" option get home --skip-plugins --skip-themes 2>/dev/null) )
+        source_siteurl=$( (cd "$dest_dir/public" && "$wp_cmd" option get siteurl --skip-plugins --skip-themes 2>/dev/null) )
+        dest_home=$(printf '%s' "$source_home" | sed "s|$source\.localhost|$destination.localhost|g")
+        dest_siteurl=$(printf '%s' "$source_siteurl" | sed "s|$source\.localhost|$destination.localhost|g")
+        [ -n "$dest_home" ] || dest_home=$(url_for "$full_hostname")
+        [ -n "$dest_siteurl" ] || dest_siteurl=$(url_for "$full_hostname")
+
+        if ! (cd "$dest_dir/public" && "$wp_cmd" search-replace "$source_siteurl" "$dest_siteurl" --all-tables --report-changed-only --skip-plugins --skip-themes &&
+              "$wp_cmd" search-replace "$source_home" "$dest_home" --all-tables --report-changed-only --skip-plugins --skip-themes &&
+              "$wp_cmd" option update home "$dest_home" --skip-plugins --skip-themes &&
+              "$wp_cmd" option update siteurl "$dest_siteurl" --skip-plugins --skip-themes); then
+            echo "Error: failed to rewrite the cloned site URLs." >&2
+            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+            return 1
+        fi
+    fi
+
+    # --- Independent state: no remote binding, no exclusive domains, empty logs ---
+    # A cloned mappings file would repoint the source's exclusive domains at the
+    # copy and collide, so it is intentionally dropped.
+    rm -f "$dest_dir/.remote" "$dest_dir/mappings"
+    rm -rf "$dest_dir/logs"
+    mkdir -p "$dest_dir/logs"
+
+    # --- Copy relevant custom Caddy directives (not exclusive domains) ---
+    local source_directive="$CUSTOM_CADDY_DIR/$source.localhost"
+    if [ -f "$source_directive" ]; then
+        # Rewrite the source hostname so a cloned directive does not answer for
+        # or proxy to the original site.
+        sed "s|$source\.localhost|$destination.localhost|g" "$source_directive" > "$CUSTOM_CADDY_DIR/$destination.localhost"
+        echo "   - Custom directives copied."
+    fi
+
+    # Provisioning is complete; a reload failure keeps the valid clone.
+    trap - EXIT INT TERM
+
+    if [ "$no_reload" = false ]; then
+        if ! regenerate_caddyfile; then
+            echo "Error: clone '$full_hostname' was created, but server reload failed. Run 'plak reload' to retry." >&2
+            return 1
+        fi
+    fi
+
+    echo "✅ Site '$full_hostname' cloned successfully!"
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
+        "✅ Clone created" "URL: $(plak_terminal_link "$(url_for "$full_hostname")")"
+}

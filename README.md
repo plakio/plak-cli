@@ -242,6 +242,14 @@ plak snapshot <site> delete <id> [--yes]
 plak snapshot <site> export <id> [--output <path>]
 ```
 
+`plak clone <source> <destination>` duplicates a local site into an independent
+copy, reading the source database name from its real configuration (not a naming
+convention) and rewriting home/siteurl while preserving distinct values and local
+ports. Files are copied with copy-on-write when available and a portable copy
+otherwise. The clone starts with empty logs and drops exclusive domains and
+remote bindings, so it never collides with or deploys to the source's remote. A
+failure removes only the resources the clone created.
+
 `plak import` creates a new site from a WordPress backup ZIP, tar.gz or tar
 (including Plak exports, Local exports, and hosting backups with a single-site
 WordPress tree and one recognisable SQL dump). It refuses path traversal,

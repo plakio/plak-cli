@@ -49,6 +49,9 @@ HELP
         import)
             plak_site_import_usage
             ;;
+        clone)
+            plak_site_clone_usage
+            ;;
         pull)
             echo "Usage: plak pull [<site>] [--yes] [--proxy-uploads]"
             ;;
