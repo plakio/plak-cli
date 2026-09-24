@@ -137,6 +137,14 @@ Each site has a linkable detail view at `https://plak.localhost/#/site/<name>`
 showing its type, URL, path, size and links to open the site, log in, or reach
 Adminer and Mailpit; WordPress version and plugin counts load on demand.
 
+A WordPress site's detail view also manages plugins and themes: it lists name,
+version, status and available updates (special-casing must-use plugins and the
+active theme), and lets you activate, deactivate, update and delete. Update
+checks against WordPress.org run only when you ask; opening the list never blocks
+on a remote query. Invalid actions (deactivating a must-use plugin, deleting the
+active theme) are prevented in the UI and refused by the API, which passes
+arguments as data and respects the site's runtime.
+
 The dashboard, Adminer and Mailpit are administrative surfaces: Caddy answers
 them only from the local machine (and WSL2's private adapter), and Tailscale
 exposes them only from the tailnet's address space. `api.php` repeats the check

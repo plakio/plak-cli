@@ -1707,6 +1707,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             echo json_encode($response);
             exit;
+        case 'site_plugins':
+        case 'site_themes':
+        case 'site_plugin_op':
+        case 'site_theme_op':
+            // WP-CLI inside the site, through `plak wp`, so the site's runtime
+            // and pinned PHP are honoured. Arguments are built here from
+            // validated inputs and passed one per escapeshellarg; nothing the
+            // browser sends is interpreted by a shell.
+            if (empty($site_name) || !preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid site name.']);
+                exit;
+            }
+            if (!is_file($sitedir . '/' . $site_name . '.localhost/public/wp-config.php')) {
+                echo json_encode(['success' => false, 'message' => 'Not a WordPress site.']);
+                exit;
+            }
+            $__wp = function (array $args) use ($user_home, $plak_site_path, $site_name) {
+                $cmd = 'HOME=' . escapeshellarg($user_home) . ' ' . escapeshellarg($plak_site_path) . ' wp ' . escapeshellarg($site_name);
+                foreach ($args as $a) $cmd .= ' ' . escapeshellarg((string) $a);
+                $t0 = microtime(true);
+                exec($cmd . ' 2>&1', $lines, $code);
+                $out = preg_replace('/\x1b\[[0-9;]*m/', '', implode("\n", $lines));
+                return [$out, (int) $code, round((microtime(true) - $t0) * 1000)];
+            };
+            $__wp_json = function (array $args) use ($__wp) {
+                [$out, $code] = $__wp($args);
+                $data = json_decode(trim($out), true);
+                if ($code !== 0 || !is_array($data)) {
+                    foreach (array_reverse(explode("\n", trim($out))) as $line) {
+                        $try = json_decode(trim($line), true);
+                        if (is_array($try)) { $data = $try; break; }
+                    }
+                }
+                if (!is_array($data)) {
+                    echo json_encode(['success' => false, 'message' => trim($out) !== '' ? trim(substr($out, -600)) : 'wp-cli returned nothing.']);
+                    exit;
+                }
+                return $data;
+            };
+            $__slug_ok = function ($s) { return is_string($s) && $s !== '' && preg_match('/^[A-Za-z0-9._-]+$/', $s); };
+
+            if ($action === 'site_plugins' || $action === 'site_themes') {
+                $kind = $action === 'site_plugins' ? 'plugin' : 'theme';
+                // Listing skips loading plugins/themes: a heavy plugin can cost
+                // twenty seconds to boot and the list needs none of it. `check`
+                // asks wp.org for updates (slow, so it is explicit).
+                $args = [$kind, 'list', '--fields=name,title,status,version,update,update_version,auto_update', '--format=json', '--skip-plugins', '--skip-themes'];
+                if (empty($input['check'])) $args[] = '--skip-update-check';
+                $items = $__wp_json($args);
+                echo json_encode(['success' => true, 'items' => array_values($items), 'checked' => !empty($input['check'])]);
+                exit;
+            }
+
+            // Mutation: an allow-listed op on a validated slug. There is no path
+            // from a browser value to a shell command.
+            $kind = $action === 'site_plugin_op' ? 'plugin' : 'theme';
+            $op = (string) ($input['op'] ?? '');
+            $slug = $input['slug'] ?? '';
+            $allowed = $kind === 'plugin'
+                ? ['activate', 'deactivate', 'delete', 'update']
+                : ['activate', 'delete', 'update'];
+            if (!in_array($op, $allowed, true) || !$__slug_ok($slug)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid operation.']);
+                exit;
+            }
+            if ($kind === 'plugin' && $op === 'deactivate' && (string) ($input['status'] ?? '') === 'must-use') {
+                echo json_encode(['success' => false, 'message' => 'Must-use plugins cannot be deactivated.']);
+                exit;
+            }
+            [$out, $code] = $__wp([$kind, $op, $slug]);
+            echo json_encode([
+                'success' => $code === 0,
+                'message' => trim($out) !== '' ? trim($out) : ($code === 0 ? 'Done.' : 'wp-cli failed (' . $code . ').'),
+            ]);
+            exit;
         case 'get_login_link':
             $response = ['success' => false, 'message' => 'An unknown error occurred.'];
             if (!empty($site_name)) {
@@ -2166,6 +2241,25 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .detail-grid dd code { font-family: var(--font-mono); font-size: 0.82rem; }
         .detail-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
         .detail-actions .site-action-btn { text-decoration: none; }
+        .components { margin-top: 1.25rem; border-top: 1px solid var(--panel-border); padding-top: 1rem; }
+        .components-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem; }
+        .components-tabs { display: flex; gap: 0.35rem; }
+        .comp-tab { background: var(--pill-bg); color: var(--text-dim); border: 0; border-radius: var(--radius-pill); padding: 0.3rem 0.8rem; cursor: pointer; font: inherit; }
+        .comp-tab.active { background: var(--accent); color: var(--accent-fg); }
+        .comp-hint { color: var(--text-dim); font-size: 0.8rem; margin: 0 0 0.5rem; }
+        .comp-error { color: var(--danger); font-size: 0.85rem; margin: 0 0 0.5rem; }
+        .comp-loading { color: var(--text-dim); font-size: 0.85rem; }
+        .comp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+        .comp-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 0.6rem; padding: 0.5rem 0; border-bottom: 1px solid var(--panel-border); }
+        .comp-main { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; }
+        .comp-title { font-weight: 500; }
+        .comp-slug { color: var(--text-faint); font-family: var(--font-mono); font-size: 0.75rem; }
+        .comp-version { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.78rem; }
+        .comp-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; }
+        .comp-badge { font-size: 0.7rem; border-radius: var(--radius-pill); padding: 0.1rem 0.5rem; background: var(--pill-bg); color: var(--text-dim); }
+        .comp-badge.active { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .comp-badge.mu { background: var(--pill-static-bg); color: var(--pill-static-fg); }
+        .comp-badge.update { background: var(--accent); color: var(--accent-fg); }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -2343,6 +2437,66 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         </button>
                     </template>
                 </div>
+
+                <template x-if="detailSite.type === 'WordPress'">
+                    <div class="components">
+                        <div class="components-head">
+                            <div class="components-tabs">
+                                <button type="button" class="comp-tab" :class="{ active: compTab === 'plugins' }" @click="setCompTab('plugins')">plugins</button>
+                                <button type="button" class="comp-tab" :class="{ active: compTab === 'themes' }" @click="setCompTab('themes')">themes</button>
+                            </div>
+                            <button type="button" class="site-action-btn" :class="{ loading: compLoading }" @click="loadComponents(detailSite.name, { check: true })" :disabled="compLoading" title="Ask WordPress.org for available updates">
+                                <span class="btn-label" x-text="compLoading ? 'checking…' : 'check updates'"></span>
+                            </button>
+                        </div>
+
+                        <p class="comp-hint" x-show="compChecked" x-cloak>Update check run against WordPress.org.</p>
+                        <p class="comp-error" x-show="compError" x-text="compError" x-cloak></p>
+                        <p class="comp-loading" x-show="compLoading" x-cloak>Reading <span x-text="compTab"></span>…</p>
+
+                        <ul class="comp-list" x-show="!compLoading && !compError" x-cloak>
+                            <template x-for="item in compItems" :key="item.name">
+                                <li class="comp-row">
+                                    <div class="comp-main">
+                                        <span class="comp-title" x-text="item.title || item.name"></span>
+                                        <span class="comp-slug" x-text="item.name"></span>
+                                        <span class="comp-badge" :class="compStatusClass(item)" x-text="item.status"></span>
+                                        <span class="comp-badge update" x-show="updateAvailable(item)" x-cloak
+                                            x-text="'→ ' + (item.update_version || 'update')"></span>
+                                    </div>
+                                    <span class="comp-version" x-text="item.version || '—'"></span>
+                                    <div class="comp-actions">
+                                        <template x-if="compTab === 'plugins' && item.status !== 'must-use'">
+                                            <button type="button" class="site-action-btn" :disabled="compBusy[item.name] || item.status === 'active'"
+                                                @click="componentOp('plugins', item, 'activate')"
+                                                :title="item.status === 'active' ? 'Already active' : 'Activate ' + item.name">activate</button>
+                                        </template>
+                                        <template x-if="compTab === 'plugins' && item.status !== 'must-use'">
+                                            <button type="button" class="site-action-btn" :disabled="compBusy[item.name] || item.status !== 'active'"
+                                                @click="componentOp('plugins', item, 'deactivate')"
+                                                :title="item.status !== 'active' ? 'Not active' : 'Deactivate ' + item.name">deactivate</button>
+                                        </template>
+                                        <span class="comp-badge mu" x-show="item.status === 'must-use'" x-cloak>must-use · cannot deactivate</span>
+                                        <template x-if="compTab === 'themes' && item.status !== 'active'">
+                                            <button type="button" class="site-action-btn" :disabled="compBusy[item.name]"
+                                                @click="componentOp('themes', item, 'activate')">activate</button>
+                                        </template>
+                                        <span class="comp-badge mu" x-show="compTab === 'themes' && item.status === 'active'" x-cloak>active theme · cannot delete</span>
+                                        <template x-if="item.update === 'available' || item.update === '1'">
+                                            <button type="button" class="site-action-btn" :disabled="compBusy[item.name]"
+                                                @click="componentOp(compTab, item, 'update')">update</button>
+                                        </template>
+                                        <button type="button" class="site-action-btn danger" :disabled="compBusy[item.name] || canDelete(item) !== true"
+                                            @click="componentDelete(compTab, item)"
+                                            :title="deleteTitle(compTab, item)"
+                                            x-text="compArm === item.name ? 'confirm delete?' : 'delete'"></button>
+                                    </div>
+                                </li>
+                            </template>
+                            <li class="empty" x-show="compItems.length === 0" x-cloak>No <span x-text="compTab"></span>.</li>
+                        </ul>
+                    </div>
+                </template>
             </div>
         </template>
     </section>
@@ -2390,6 +2544,15 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 detailSite: null,
                 detailInfo: null,
                 detailLoading: false,
+                // Plugins/themes panel for the open WordPress site.
+                compTab: 'plugins',
+                compItems: [],
+                compLoading: false,
+                compError: null,
+                compChecked: false,
+                compBusy: {},
+                compArm: null,
+                compArmTimer: null,
                 isRefreshingSizes: false,
                 filter: '',
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
@@ -2485,11 +2648,22 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
 
                 applyHash() {
                     const name = this.parseSiteHash();
+                    const previous = this.detailSite ? this.detailSite.name : null;
                     if (name && this.sites.some(s => s.name === name)) {
                         this.detailSite = this.sites.find(s => s.name === name);
+                        if (previous !== name) {
+                            // Reset the components panel for the new site.
+                            this.compTab = 'plugins';
+                            this.compItems = [];
+                            this.compError = null;
+                            this.compChecked = false;
+                            this.compBusy = {};
+                            this.compArm = null;
+                        }
                     } else {
                         this.detailSite = null;
                         this.detailInfo = null;
+                        this.compItems = [];
                     }
                 },
 
@@ -2500,6 +2674,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     } else {
                         this.detailSite = null;
                         this.detailInfo = null;
+                        this.compItems = [];
                     }
                 },
 
@@ -2515,6 +2690,86 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     } finally {
                         this.detailLoading = false;
                     }
+                },
+
+                setCompTab(tab) {
+                    if (this.compTab === tab) return;
+                    this.compTab = tab;
+                    this.compItems = [];
+                    this.compError = null;
+                    this.compChecked = false;
+                    this.compArm = null;
+                    const site = this.detailSite;
+                    if (site) this.loadComponents(site.name);
+                },
+
+                // `check` asks WordPress.org for updates (slow, explicit only);
+                // an ordinary list never blocks on a remote query.
+                async loadComponents(name, opts = {}) {
+                    this.compLoading = true;
+                    this.compError = null;
+                    const action = this.compTab === 'plugins' ? 'site_plugins' : 'site_themes';
+                    const res = await this.apiPost(action, { site_name: name, check: !!opts.check });
+                    // Ignore a response that arrives after the user navigated away.
+                    if (!this.detailSite || this.detailSite.name !== name) return;
+                    this.compLoading = false;
+                    if (!res.success) {
+                        this.compError = res.message || 'wp-cli failed.';
+                        this.compItems = [];
+                        return;
+                    }
+                    this.compItems = res.items || [];
+                    if (opts.check) this.compChecked = true;
+                },
+
+                updateAvailable(item) {
+                    return item.update === 'available' || item.update === '1' || item.update === true;
+                },
+
+                compStatusClass(item) {
+                    if (item.status === 'must-use') return 'mu';
+                    if (item.status === 'active') return 'active';
+                    if (item.status === 'inactive') return 'inactive';
+                    return '';
+                },
+
+                // Deleting an active theme or a must-use plugin is invalid.
+                canDelete(item) {
+                    if (this.compTab === 'plugins') return item.status !== 'must-use';
+                    return item.status !== 'active';
+                },
+
+                deleteTitle(tab, item) {
+                    if (tab === 'plugins' && item.status === 'must-use') return 'Must-use plugins cannot be deleted';
+                    if (tab === 'themes' && item.status === 'active') return 'The active theme cannot be deleted';
+                    return 'Delete ' + item.name;
+                },
+
+                async componentOp(tab, item, op) {
+                    if (this.compBusy[item.name]) return;
+                    this.compBusy = { ...this.compBusy, [item.name]: op };
+                    const res = await this.apiPost(tab === 'plugins' ? 'site_plugin_op' : 'site_theme_op',
+                        { site_name: this.detailSite.name, slug: item.name, op, status: item.status });
+                    const busy = { ...this.compBusy };
+                    delete busy[item.name];
+                    this.compBusy = busy;
+                    const last = (res.message || '').split('\n').filter(Boolean).pop() || '';
+                    this.showSnack(last.replace(/^(Success|Error|Warning): /, '') || (res.success ? 'Done.' : 'Failed.'), !res.success);
+                    if (res.success) this.loadComponents(this.detailSite.name);
+                },
+
+                // Two-step delete: the first click arms, the second confirms.
+                componentDelete(tab, item) {
+                    if (this.canDelete(item) !== true) return;
+                    if (this.compArm !== item.name) {
+                        this.compArm = item.name;
+                        clearTimeout(this.compArmTimer);
+                        this.compArmTimer = setTimeout(() => { this.compArm = null; }, 3500);
+                        return;
+                    }
+                    this.compArm = null;
+                    clearTimeout(this.compArmTimer);
+                    this.componentOp(tab, item, 'delete');
                 },
 
                 applyTheme() {
