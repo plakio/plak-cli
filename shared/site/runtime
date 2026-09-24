@@ -1172,6 +1172,13 @@ regenerate_caddyfile() {
         port_directives+="    https_port $HTTPS_PORT"$'\n'
     fi
 
+    # Who may reach the dashboard, Adminer and Mailpit: this machine. Under
+    # WSL2's default NAT networking the Windows browser arrives from the virtual
+    # adapter's private address, so private ranges are allowed there (mirrored
+    # networking arrives as loopback, which is always allowed).
+    local local_only='remote_ip 127.0.0.1 ::1'
+    [ "$IS_WSL" = true ] && local_only='remote_ip private_ranges'
+
     # Write the static header of the Caddyfile
     cat > "$CADDYFILE_PATH" <<- EOM
 {
@@ -1198,19 +1205,35 @@ ${port_directives}    frankenphp {
 }
 
 # --- Global Services ---
+# The dashboard, Adminer and Mailpit are administrative surfaces. Caddy listens
+# on every interface, so each rejects requests whose direct peer is not this
+# machine's loopback (or a WSL2 private address). The Origin check in api.php is
+# a browser courtesy, not authentication; the Host header is never trusted.
 
 mail.plak.localhost {
+    @outside not $local_only
+    handle @outside {
+        respond "This answers only on the machine running Plak." 403
+    }
     reverse_proxy 127.0.0.1:8025
     tls internal
 }
 
 db.plak.localhost {
+    @outside not $local_only
+    handle @outside {
+        respond "This answers only on the machine running Plak." 403
+    }
     root * "$ADMINER_DIR"
     php_server
     tls internal
 }
 
 plak.localhost {
+    @outside not $local_only
+    handle @outside {
+        respond "This answers only on the machine running Plak." 403
+    }
     root * "$GUI_DIR"
     php_server
     tls internal
@@ -1409,27 +1432,44 @@ EOM
             done
         fi
 
-        # Global services on fixed ports
+        # Global administrative services on fixed ports. They keep answering the
+        # tailnet, but only from Tailscale's address space (CGNAT 100.64.0.0/10
+        # and its IPv6 prefix) plus loopback, so a host on a shared local network
+        # still cannot reach them. Mirrors the loopback guard on the local hosts.
+        local tailnet_only='remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1'
+
         # Mail on port 9901
         echo "# Tailscale: mail -> port 9901" >> "$CADDYFILE_PATH"
         echo "https://${tailscale_hostname}:9901 {" >> "$CADDYFILE_PATH"
+        echo "    @outside not $tailnet_only" >> "$CADDYFILE_PATH"
+        echo "    handle @outside {" >> "$CADDYFILE_PATH"
+        echo "        respond \"This answers only on the Tailscale network.\" 403" >> "$CADDYFILE_PATH"
+        echo "    }" >> "$CADDYFILE_PATH"
         echo "    tls internal" >> "$CADDYFILE_PATH"
         echo "    reverse_proxy 127.0.0.1:8025" >> "$CADDYFILE_PATH"
         echo "}" >> "$CADDYFILE_PATH"
         echo "" >> "$CADDYFILE_PATH"
 
-        # DB on port 9902 - serve directly
+        # DB on port 9902
         echo "# Tailscale: db -> port 9902" >> "$CADDYFILE_PATH"
         echo "https://${tailscale_hostname}:9902 {" >> "$CADDYFILE_PATH"
+        echo "    @outside not $tailnet_only" >> "$CADDYFILE_PATH"
+        echo "    handle @outside {" >> "$CADDYFILE_PATH"
+        echo "        respond \"This answers only on the Tailscale network.\" 403" >> "$CADDYFILE_PATH"
+        echo "    }" >> "$CADDYFILE_PATH"
         echo "    tls internal" >> "$CADDYFILE_PATH"
         echo "    root * \"$ADMINER_DIR\"" >> "$CADDYFILE_PATH"
         echo "    php_server" >> "$CADDYFILE_PATH"
         echo "}" >> "$CADDYFILE_PATH"
         echo "" >> "$CADDYFILE_PATH"
 
-        # Dashboard on port 9900 - serve directly
+        # Dashboard on port 9900
         echo "# Tailscale: plak dashboard -> port 9900" >> "$CADDYFILE_PATH"
         echo "https://${tailscale_hostname}:9900 {" >> "$CADDYFILE_PATH"
+        echo "    @outside not $tailnet_only" >> "$CADDYFILE_PATH"
+        echo "    handle @outside {" >> "$CADDYFILE_PATH"
+        echo "        respond \"This answers only on the Tailscale network.\" 403" >> "$CADDYFILE_PATH"
+        echo "    }" >> "$CADDYFILE_PATH"
         echo "    tls internal" >> "$CADDYFILE_PATH"
         echo "    root * \"$GUI_DIR\"" >> "$CADDYFILE_PATH"
         echo "    php_server" >> "$CADDYFILE_PATH"
@@ -1488,6 +1528,44 @@ if (file_exists($__plak_site_cfg_path)) {
     }
 }
 $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__plak_site_https_port;
+
+// --- Administrative access protection ---
+// Second line behind the Caddy matcher: only this machine, a WSL2 private
+// address, or the tailnet may talk to the API. The CSRF token below then guards
+// mutating requests against a page opened elsewhere in the browser. The Host
+// header is never treated as authentication.
+$__plak_site_ra = $_SERVER['REMOTE_ADDR'] ?? '';
+$__plak_site_wsl = 'IS_WSL_PLACEHOLDER' === 'true';
+$__plak_site_ok = in_array($__plak_site_ra, ['127.0.0.1', '::1', '::ffff:127.0.0.1', ''], true)
+    || preg_match('/^(100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|fd7a:115c:a1e0:)/i', $__plak_site_ra)
+    || ($__plak_site_wsl && preg_match('/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fe80:|fd|fc|::ffff:(10\.|192\.168\.))/i', $__plak_site_ra));
+if (!$__plak_site_ok) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'This answers only on the machine running Plak.']);
+    exit;
+}
+
+$__plak_site_token_file = $user_home . '/Plak/cache/dashboard-token';
+
+function plak_site_dashboard_token($path) {
+    if (file_exists($path)) {
+        $existing = trim((string) @file_get_contents($path));
+        if (strlen($existing) >= 32) return $existing;
+    }
+    $token = bin2hex(random_bytes(32));
+    @mkdir(dirname($path), 0755, true);
+    // Create with restrictive permissions atomically, then fall back to write.
+    $tmp = $path . '.' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tmp, $token) !== false) {
+        @chmod($tmp, 0600);
+        @rename($tmp, $path);
+    } else {
+        @file_put_contents($path, $token);
+    }
+    return $token;
+}
+
+$__plak_site_dashboard_token = plak_site_dashboard_token($__plak_site_token_file);
 
 // Per-site disk sizes are cached so list_sites stays fast even on hosts with
 // ~100 sites. The cache is refreshed on demand by the dashboard's 'refresh_sizes'
@@ -1553,11 +1631,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
 // Handle POST requests for adding/deleting/reloading
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // CSRF / cross-origin guard. Every POST action here mutates state (add /
+    // delete sites, reload), and the body is read via php://input regardless of
+    // Content-Type — so a cross-site page could drive it with a CORS "simple"
+    // text/plain POST that skips preflight. Browsers still stamp such a request
+    // with an Origin (and always a Referer on same-origin), so require one of
+    // them to match this host before doing anything. Compare host only;
+    // HTTP_HOST may carry a :port that the Origin/Referer host omits.
+    $__plak_site_host_only = preg_replace('/:\d+$/', '', $_SERVER['HTTP_HOST'] ?? '');
+    $__plak_site_src = $_SERVER['HTTP_ORIGIN'] ?? ($_SERVER['HTTP_REFERER'] ?? '');
+    $__plak_site_src_host = $__plak_site_src !== '' ? parse_url($__plak_site_src, PHP_URL_HOST) : '';
+    if (empty($__plak_site_src_host) || empty($__plak_site_host_only) || strcasecmp($__plak_site_src_host, $__plak_site_host_only) !== 0) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Cross-origin request blocked.']);
+        exit;
+    }
+
     $input = json_decode(file_get_contents('php://input'), true);
     $action = $input['action'] ?? '';
     $response = ['success' => false, 'message' => 'Invalid request.'];
     $command = '';
     $site_name = $input['site_name'] ?? '';
+
+    // Per-request CSRF token, embedded in index.php and echoed back by the UI.
+    $__plak_site_client_token = $input['csrf'] ?? ($_SERVER['HTTP_X_PLAK_CSRF'] ?? '');
+    if (!is_string($__plak_site_client_token) || !hash_equals($__plak_site_dashboard_token, $__plak_site_client_token)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Invalid or missing CSRF token.']);
+        exit;
+    }
 
     switch ($action) {
         case 'add_site':
@@ -1578,6 +1680,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $command = sprintf('HOME=%s %s delete %s --force --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name));
             } else { $response['message'] = 'Site name not provided for deletion.'; }
             break;
+        case 'site_info':
+            // WP-CLI is comparatively slow, so this runs only when the user
+            // opens a site's detail view and asks for fresh info — never on the
+            // dashboard's initial load.
+            $response = ['success' => false, 'message' => 'Invalid site name.'];
+            if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                $site_public = $sitedir . '/' . $site_name . '.localhost/public';
+                if (!is_file($site_public . '/wp-config.php')) {
+                    $response = ['success' => false, 'message' => 'Not a WordPress site.'];
+                    break;
+                }
+                $info = ['wp_version' => null, 'plugins' => null];
+                $vp = []; $vrc = 0;
+                exec(sprintf('HOME=%s %s wp %s core version --skip-plugins --skip-themes 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name)), $vp, $vrc);
+                if ($vrc === 0 && !empty($vp[0])) {
+                    $info['wp_version'] = trim($vp[0]);
+                }
+                $pl = []; $prc = 0;
+                exec(sprintf('HOME=%s %s wp %s plugin list --field=name --skip-plugins --skip-themes 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name)), $pl, $prc);
+                if ($prc === 0) {
+                    $names = array_filter(array_map('trim', $pl), fn($v) => $v !== '');
+                    $info['plugins'] = count($names);
+                }
+                $response = ['success' => true, 'info' => $info];
+            }
+            echo json_encode($response);
+            exit;
         case 'get_login_link':
             $response = ['success' => false, 'message' => 'An unknown error occurred.'];
             if (!empty($site_name)) {
@@ -1706,6 +1835,11 @@ $config_file = getenv('HOME') . '/Plak/config';
 $config_data = file_exists($config_file) ? parse_ini_file($config_file) : [];
 $__plak_site_https_port = isset($config_data['HTTPS_PORT']) ? (int) $config_data['HTTPS_PORT'] : 443;
 $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__plak_site_https_port;
+
+// The same CSRF token api.php verifies, surfaced to the UI so each mutating
+// request can echo it back. Read (never generated) here: api.php owns creation.
+$__plak_site_token_file = getenv('HOME') . '/Plak/cache/dashboard-token';
+$__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_get_contents($__plak_site_token_file)) : '';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -2021,6 +2155,17 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
             .add-row { padding: 0.8rem 1rem; }
             .card-foot { padding: 0.75rem 1rem; }
         }
+
+        [x-cloak] { display: none !important; }
+        .site-detail { margin-top: 1rem; padding: 1.1rem 1.25rem; }
+        .detail-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+        .detail-title { margin: 0; font-family: var(--font-serif); font-size: 1.3rem; }
+        .detail-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1rem; margin: 0 0 1rem; }
+        .detail-grid dt { color: var(--text-dim); font-size: 0.85rem; }
+        .detail-grid dd { margin: 0; word-break: break-word; }
+        .detail-grid dd code { font-family: var(--font-mono); font-size: 0.82rem; }
+        .detail-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .detail-actions .site-action-btn { text-decoration: none; }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -2155,6 +2300,53 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
         </section>
     </div>
 
+    <section class="card site-detail" x-show="detailSite" x-cloak>
+        <template x-if="detailSite">
+            <div>
+                <div class="detail-head">
+                    <button type="button" class="site-action-btn" @click="closeSiteDetail()" title="Back to sites">← back</button>
+                    <h2 class="detail-title" x-text="detailSite.name"></h2>
+                    <span class="site-type" :class="detailSite.type === 'WordPress' ? 'wp' : 'static'"
+                        x-text="detailSite.type === 'WordPress' ? 'WP' : 'STATIC'"></span>
+                </div>
+                <dl class="detail-grid">
+                    <dt>URL</dt>
+                    <dd><a :href="detailSite.domain" target="_blank" rel="noopener" x-text="detailSite.domain"></a></dd>
+                    <dt>Path</dt>
+                    <dd><button type="button" class="site-action-btn" @click="copyPath(detailSite.full_path)" title="Copy path">copy</button>
+                        <code x-text="detailSite.full_path"></code></dd>
+                    <dt>Size</dt>
+                    <dd x-text="formatSize(detailSite.size_bytes)"></dd>
+                    <dt>Modified</dt>
+                    <dd x-text="detailSite.modified_at ? new Date(detailSite.modified_at * 1000).toLocaleString() : '—'"></dd>
+                    <template x-if="detailSite.type === 'WordPress'">
+                        <template x-if="detailInfo">
+                            <template>
+                                <dt>WordPress</dt>
+                                <dd x-text="detailInfo.wp_version || '—'"></dd>
+                                <dt>Plugins</dt>
+                                <dd x-text="detailInfo.plugins !== null ? detailInfo.plugins + ' installed' : '—'"></dd>
+                            </template>
+                        </template>
+                    </template>
+                </dl>
+                <div class="detail-actions">
+                    <a class="site-action-btn" :href="detailSite.domain" target="_blank" rel="noopener">open site</a>
+                    <template x-if="detailSite.type === 'WordPress'">
+                        <button class="site-action-btn" @click="getLoginLink(detailSite.name)">login</button>
+                    </template>
+                    <a class="site-action-btn" :href="adminerUrl" target="_blank" rel="noopener">database</a>
+                    <a class="site-action-btn" :href="mailpitUrl" target="_blank" rel="noopener">mail</a>
+                    <template x-if="detailSite.type === 'WordPress'">
+                        <button class="site-action-btn" :class="{ loading: detailLoading }" @click="loadSiteInfo(detailSite.name)" :disabled="detailLoading">
+                            <span class="btn-label" x-text="detailLoading ? 'loading…' : 'refresh info'"></span>
+                        </button>
+                    </template>
+                </div>
+            </div>
+        </template>
+    </section>
+
     <div x-show="showDbModal" x-transition.opacity class="modal-backdrop" @click.self="showDbModal = false" @keydown.escape.window="showDbModal = false" style="display: none;">
         <div class="modal">
             <h3>Database credentials</h3>
@@ -2181,6 +2373,8 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
     <script>
         const PORT_SUFFIX = '<?= $__plak_site_port_suffix ?>';
         const SITES_DIR = 'SITES_DIR_PLACEHOLDER';
+        // Echoed on every mutating request; api.php rejects POSTs without it.
+        const CSRF_TOKEN = '<?= htmlspecialchars($__plak_site_csrf, ENT_QUOTES) ?>';
 
         document.addEventListener('alpine:init', () => {
             Alpine.data('dashboard', () => ({
@@ -2190,6 +2384,12 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
                 isLoading: true,
                 adding: false,
                 showDbModal: false,
+                // Per-site detail view, driven by the URL hash so each site has
+                // a navigable, linkable address (#/site/<name>) that works with
+                // back/forward.
+                detailSite: null,
+                detailInfo: null,
+                detailLoading: false,
                 isRefreshingSizes: false,
                 filter: '',
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
@@ -2270,7 +2470,51 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
                         if (this.sites.length > 0 && this.sites.every(s => s.size_bytes === null)) {
                             this.refreshSizes();
                         }
+                        // Honour a deep link (#/site/<name>) after sites load.
+                        this.applyHash();
                     });
+
+                    window.addEventListener('hashchange', () => this.applyHash());
+                },
+
+                // Hash routing for the per-site view: #/site/<name>.
+                parseSiteHash() {
+                    const m = /^#\/site\/(.+)$/.exec(window.location.hash || '');
+                    return m ? decodeURIComponent(m[1]) : null;
+                },
+
+                applyHash() {
+                    const name = this.parseSiteHash();
+                    if (name && this.sites.some(s => s.name === name)) {
+                        this.detailSite = this.sites.find(s => s.name === name);
+                    } else {
+                        this.detailSite = null;
+                        this.detailInfo = null;
+                    }
+                },
+
+                closeSiteDetail() {
+                    if (this.parseSiteHash()) {
+                        // Clears the hash and fires hashchange, which closes it.
+                        window.location.hash = '';
+                    } else {
+                        this.detailSite = null;
+                        this.detailInfo = null;
+                    }
+                },
+
+                // Fetch version/plugin counts on demand; never on page load, so
+                // opening the dashboard stays fast.
+                async loadSiteInfo(name) {
+                    this.detailLoading = true;
+                    try {
+                        const res = await this.apiPost('site_info', { site_name: name });
+                        if (res.success) {
+                            this.detailInfo = res.info || {};
+                        }
+                    } finally {
+                        this.detailLoading = false;
+                    }
                 },
 
                 applyTheme() {
@@ -2355,7 +2599,8 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
                     // Don't navigate when the click was part of a drag-to-select,
                     // so users can still grab the domain/size text to copy.
                     if (window.getSelection && window.getSelection().toString()) return;
-                    window.open(site.domain, '_blank', 'noopener');
+                    // Navigate to the linkable per-site detail view.
+                    window.location.hash = '#/site/' + encodeURIComponent(site.name);
                 },
 
                 showSnack(msg, isError = false) {
@@ -2368,8 +2613,8 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
                     try {
                         const res = await fetch('api.php', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action, ...payload })
+                            headers: { 'Content-Type': 'application/json', 'X-Plak-CSRF': CSRF_TOKEN },
+                            body: JSON.stringify({ action, csrf: CSRF_TOKEN, ...payload })
                         }).then(r => r.json());
                         if (!res.success) this.showSnack(res.message || 'An error occurred.', true);
                         return res;
@@ -2557,10 +2802,15 @@ EOM
     local escaped_home
     escaped_home=$(printf '%s\n' "$HOME" | sed -e 's/[\/&]/\\&/g')
 
-    # Substitute placeholders in both api.php and index.php
+    # Substitute placeholders in both api.php and index.php. IS_WSL gates the
+    # private-range allowance that WSL2's NAT adapter needs.
+    local wsl_flag="false"
+    [ "$IS_WSL" = true ] && wsl_flag="true"
+
     sed -e "s/PLAK_SITE_EXECUTABLE_PATH_PLACEHOLDER/${escaped_path}/g" \
         -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
         -e "s/USER_HOME_PLACEHOLDER/${escaped_home}/g" \
+        -e "s/IS_WSL_PLACEHOLDER/${wsl_flag}/g" \
         "$GUI_DIR/api.php.tmp" > "$GUI_DIR/api.php"
 
     sed -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \

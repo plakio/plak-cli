@@ -133,6 +133,15 @@ plak reload
 ```
 
 The local site dashboard is served at `https://plak.localhost` after install.
+Each site has a linkable detail view at `https://plak.localhost/#/site/<name>`
+showing its type, URL, path, size and links to open the site, log in, or reach
+Adminer and Mailpit; WordPress version and plugin counts load on demand.
+
+The dashboard, Adminer and Mailpit are administrative surfaces: Caddy answers
+them only from the local machine (and WSL2's private adapter), and Tailscale
+exposes them only from the tailnet's address space. `api.php` repeats the check
+in PHP and requires same-origin `Origin`/`Referer` plus a per-install CSRF token
+on every mutating request. The Host header is never treated as authentication.
 
 ### Sites
 
