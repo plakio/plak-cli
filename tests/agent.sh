@@ -14,6 +14,9 @@ mkdir -p "$HOME/.local/bin" "$HOME/Plak/Sites" "$tmpdir/plugins" "$tmpdir/passwo
 # Keep the harness hermetic: a system wp-mcp (e.g. Homebrew) must not satisfy
 # `command -v` and skip the installer path under test.
 export PATH="$HOME/.local/bin:/usr/bin:/bin"
+# Hermetic: never let the prelude add a real Homebrew/Linuxbrew dir, or a
+# system wp-mcp/gum would shadow the fakes below.
+export PLAK_NO_PATH_PRELUDE=1
 export PLAK_TERMINAL_LINKS=0
 export WP_LOG="$tmpdir/wp-log" WPMCP_LOG="$tmpdir/wpmcp-log" WPMCP_ENV_LOG="$tmpdir/wpmcp-env"
 export CURL_LOG="$tmpdir/curl-log" TEST_PLUGINS="$tmpdir/plugins" TEST_PASSWORDS="$tmpdir/passwords/passwords"

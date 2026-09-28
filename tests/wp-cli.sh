@@ -11,6 +11,9 @@ trap 'rm -rf "$tmpdir"' EXIT
 export HOME="$tmpdir/home with spaces"
 mkdir -p "$HOME/.local/bin" "$HOME/Plak/Sites/demo.localhost/public/wp-includes" "$tmpdir/databases"
 export PATH="$HOME/.local/bin:$PATH"
+# Hermetic: keep the prelude from adding real Homebrew/Linuxbrew tools that
+# would shadow the fakes below.
+export PLAK_NO_PATH_PRELUDE=1
 export WP_ARGV_LOG="$tmpdir/argv" WP_STEPS="$tmpdir/steps" WP_CWD_LOG="$tmpdir/cwd" WP_INI_LOG="$tmpdir/ini"
 export MYSQL_LOG="$tmpdir/mysql" TEST_DATABASES="$tmpdir/databases" WP_RECORD_ONLY=1
 export PLAK_TERMINAL_LINKS=0

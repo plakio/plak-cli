@@ -12,12 +12,19 @@ PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
 PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
 
 # Ensure common user-managed binary locations are available when launched from
-# restricted environments such as cron, launchd, or GUI shells.
-for _plak_bin in /opt/homebrew/bin /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
-    if [ -d "$_plak_bin" ] && [[ ":$PATH:" != *":$_plak_bin:"* ]]; then
-        PATH="$_plak_bin:$PATH"
-    fi
-done
+# restricted environments such as cron, launchd, systemd, or GUI shells.
+# /home/linuxbrew/.linuxbrew/bin and ~/.linuxbrew/bin cover Homebrew on Linux,
+# whose default prefix is neither /usr/local nor /opt/homebrew.
+# Append (don't prepend) so an explicit PATH — e.g. a caller's or a hermetic
+# test's — keeps its priority; we only supply entries that are missing.
+# PLAK_NO_PATH_PRELUDE=1 disables the addition for hermetic tests.
+if [ "${PLAK_NO_PATH_PRELUDE:-0}" != "1" ]; then
+    for _plak_bin in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin "$HOME/.linuxbrew/bin" /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
+        if [ -d "$_plak_bin" ] && [[ ":$PATH:" != *":$_plak_bin:"* ]]; then
+            PATH="$PATH:$_plak_bin"
+        fi
+    done
+fi
 unset _plak_bin
 export PATH
 
@@ -907,12 +914,17 @@ plak_remote_transfer_cleanup() {
 # Ensure Homebrew/user bin dirs are on PATH. Callers like launchd and
 # systemd hand down a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which
 # means the dashboard's shell_exec of plak fails to find gum/wp/frankenphp.
-# We only prepend dirs that actually exist and aren't already on PATH.
-for _plak_site_bin in /opt/homebrew/bin /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
-    if [ -d "$_plak_site_bin" ] && [[ ":$PATH:" != *":$_plak_site_bin:"* ]]; then
-        PATH="$_plak_site_bin:$PATH"
-    fi
-done
+# /home/linuxbrew/.linuxbrew/bin and ~/.linuxbrew/bin cover Homebrew on Linux.
+# Append (don't prepend) so an explicit PATH keeps its priority; we only supply
+# entries that are missing, and only for dirs that actually exist.
+# PLAK_NO_PATH_PRELUDE=1 disables the addition for hermetic tests.
+if [ "${PLAK_NO_PATH_PRELUDE:-0}" != "1" ]; then
+    for _plak_site_bin in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin "$HOME/.linuxbrew/bin" /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
+        if [ -d "$_plak_site_bin" ] && [[ ":$PATH:" != *":$_plak_site_bin:"* ]]; then
+            PATH="$PATH:$_plak_site_bin"
+        fi
+    done
+fi
 unset _plak_site_bin
 export PATH
 
@@ -6382,6 +6394,12 @@ EOM
         local frankenphp_bin
         frankenphp_bin=$(command -v "$CADDY_CMD")
 
+        # Capture the invoking PATH so the service can resolve gum/wp/frankenphp
+        # for the dashboard's shell_exec of plak. systemd's default PATH omits
+        # Homebrew-on-Linux (/home/linuxbrew/.linuxbrew/bin), which is not a
+        # standard location the script prelude can hardcode reliably.
+        local service_path_value="$PATH"
+
         echo "   - Generating Plak FrankenPHP service file..."
         # Same sudo-tee pattern as the mailpit unit above; see the note
         # there for why mktemp + sudo mv doesn't survive SELinux.
@@ -6400,6 +6418,7 @@ RestartSec=2s
 User=$current_user
 Environment=HOME=/home/$current_user
 Environment=PHPRC=$PHP_INI_FILE
+Environment=PATH=$service_path_value
 
 [Install]
 WantedBy=multi-user.target

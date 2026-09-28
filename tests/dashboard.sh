@@ -25,6 +25,8 @@ if ! command -v php >/dev/null 2>&1; then
     exit 0
 fi
 
+# Hermetic: keep the prelude from adding real Homebrew/Linuxbrew tools.
+export PLAK_NO_PATH_PRELUDE=1
 source ./plak.sh >/dev/null
 
 # Generate the real dashboard files into a temp HOME so create_gui_file runs

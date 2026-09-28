@@ -9,12 +9,17 @@
 # Ensure Homebrew/user bin dirs are on PATH. Callers like launchd and
 # systemd hand down a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which
 # means the dashboard's shell_exec of plak fails to find gum/wp/frankenphp.
-# We only prepend dirs that actually exist and aren't already on PATH.
-for _plak_site_bin in /opt/homebrew/bin /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
-    if [ -d "$_plak_site_bin" ] && [[ ":$PATH:" != *":$_plak_site_bin:"* ]]; then
-        PATH="$_plak_site_bin:$PATH"
-    fi
-done
+# /home/linuxbrew/.linuxbrew/bin and ~/.linuxbrew/bin cover Homebrew on Linux.
+# Append (don't prepend) so an explicit PATH keeps its priority; we only supply
+# entries that are missing, and only for dirs that actually exist.
+# PLAK_NO_PATH_PRELUDE=1 disables the addition for hermetic tests.
+if [ "${PLAK_NO_PATH_PRELUDE:-0}" != "1" ]; then
+    for _plak_site_bin in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin "$HOME/.linuxbrew/bin" /usr/local/bin /usr/local/sbin "$HOME/.local/bin"; do
+        if [ -d "$_plak_site_bin" ] && [[ ":$PATH:" != *":$_plak_site_bin:"* ]]; then
+            PATH="$PATH:$_plak_site_bin"
+        fi
+    done
+fi
 unset _plak_site_bin
 export PATH
 
