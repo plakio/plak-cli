@@ -154,7 +154,7 @@ on every mutating request. The Host header is never treated as authentication.
 ### Sites
 
 ```bash
-plak add <name> [--plain] [--agent]
+plak add <name> [--plain] [--agent|--no-agent]
 plak import <name> <backup.zip> [--yes]
 plak delete <name> [--force]
 plak rename <old-name> <new-name>
@@ -192,18 +192,23 @@ Plak reports how to retry the reload.
 
 ### Agent-ready sites
 
-Agents should create the sites they will work on with `--agent`:
+A new WordPress site becomes agent-ready by default when `wp-mcp-cli` is
+installed, so nobody has to remember a flag:
 
 ```bash
-plak add my-site --agent
+plak add my-site            # agent-ready when wp-mcp-cli is available
+plak add my-site --no-agent # opt out
+plak add my-site --agent    # force, even if you want it explicit
 ```
 
-This creates the WordPress site, then installs and activates the **WP-MCP** and
-**HTML Editor** plugins from `downloads.plak.io`, sets a standard permalink
-structure and enables WP-MCP's abilities (locked to the site's host) so its REST
-API answers, mints a scoped WordPress Application Password, registers the site
-with `wp-mcp-cli` under a profile named after the site, and verifies that WP-MCP
-abilities are discoverable. The plugins are downloaded with the
+This installs and activates the **WP-MCP** and **HTML Editor** plugins from
+`downloads.plak.io`, sets a standard permalink structure and enables WP-MCP's
+abilities (locked to the site's host) so its REST API answers, mints a scoped
+WordPress Application Password, registers the site with `wp-mcp-cli` under a
+profile named after the site, and verifies that WP-MCP abilities are
+discoverable. `plak import` and `plak clone` prepare WordPress sites the same way
+(or tell you how), and `plak list` shows which sites are agent-ready. Agent
+preparation requires WordPress and cannot be combined with `--plain`. The plugins are downloaded with the
 `PlakCLI/<version>` User-Agent, so the downloads host can allow Plak through its
 firewall without opening the archives to the world. `--agent` requires WordPress
 and cannot be combined with `--plain`.

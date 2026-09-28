@@ -217,6 +217,12 @@ plak_site_clone() {
         fi
     fi
 
+    # A clone of an agent-ready site should stay agent-ready; prepare when
+    # possible and otherwise say how, without failing the clone.
+    if [ "$is_wordpress" = true ]; then
+        plak_agent_maybe_prepare "$destination"
+    fi
+
     echo "✅ Site '$full_hostname' cloned successfully!"
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
         "✅ Clone created" "URL: $(plak_terminal_link "$(url_for "$full_hostname")")"

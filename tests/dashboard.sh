@@ -189,6 +189,25 @@ mu_out=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' 
     -H 'Content-Type: application/json' --data "{\"action\":\"site_plugin_op\",\"site_name\":\"demo\",\"slug\":\"plak-helper\",\"op\":\"deactivate\",\"status\":\"must-use\",\"csrf\":\"$token\"}" "$base/api.php")
 grep -q 'Must-use' <<<"$mu_out" || fail "api.php allowed deactivating a must-use plugin"
 
+# --- add_site passes --no-agent only when the box is unchecked (CLI-33) ------
+: > "$WP_CALLS"
+add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"dashagent\",\"agent\":true,\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":true' <<<"$add_out" || fail "add_site (agent on) failed: $add_out"
+grep -q 'add dashagent' "$WP_CALLS" || fail "add_site did not run plak add"
+if grep -q -- '--no-agent' "$WP_CALLS"; then
+    fail "checked agent box still passed --no-agent"
+fi
+
+add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"dashplain\",\"agent\":false,\"csrf\":\"$token\"}" "$base/api.php")
+grep -q -- '--no-agent' "$WP_CALLS" || fail "unchecked agent box did not pass --no-agent"
+
+# --- listing exposes agent_ready; prepare_agent action exists ---------------
+list_out=$(curl -fsS "$base/api.php?action=list_sites")
+grep -q '"agent_ready":false' <<<"$list_out" || fail "list_sites did not expose agent_ready: $list_out"
+grep -q "case 'prepare_agent'" "$GUI_DIR/api.php" || fail "api.php lacks the prepare_agent action"
+
 # --- index.php carries the hash-routed detail view, components panel and token ---
 grep -q '#/site/' "$GUI_DIR/index.php" || fail "index.php lacks the per-site hash route"
 grep -q 'const CSRF_TOKEN' "$GUI_DIR/index.php" || fail "index.php did not expose the CSRF token"

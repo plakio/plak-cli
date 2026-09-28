@@ -320,6 +320,27 @@ plak_agent_site_reachable() {
     return 1
 }
 
+# Prepare a freshly created/imported/cloned WordPress site for agents when
+# wp-mcp-cli is available. Unlike `plak add --agent`, a failure here must not
+# fail the caller: the site is already valid and repair is a retry away. Prints
+# the retry hint instead. Sites without wp-mcp are left alone and told clearly.
+plak_agent_maybe_prepare() {
+    local site_name="$1"
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    if [ ! -f "$site_dir/public/wp-config.php" ]; then
+        return 0
+    fi
+    if ! plak_agent_wpmcp_available; then
+        echo "ℹ️  '$site_name.localhost' is not agent-ready (wp-mcp-cli not installed). Run 'plak install' then 'plak agent $site_name'."
+        return 0
+    fi
+    if plak_agent_prepare "$site_name"; then
+        return 0
+    fi
+    echo "⚠️  '$site_name.localhost' was created, but agent preparation did not finish. Retry with: plak agent $site_name" >&2
+    return 0
+}
+
 # Prepare an existing WordPress site for agents. Idempotent: safe to re-run.
 plak_agent_prepare() {
     local site_name="$1"
@@ -359,6 +380,10 @@ plak_agent_prepare() {
         plak_ui_error "WP-MCP is registered, but its abilities could not be discovered."
         return 1
     fi
+
+    # Record readiness so `plak list` and the dashboard can report it without
+    # re-running WP-CLI. A failed removal later (e.g. site deleted) is harmless.
+    : > "$site_dir/agent-ready"
 
     plak_ui_success "Agent ready: wp-mcp profile '$site_name' at $(url_for "$site_name.localhost")"
     return 0

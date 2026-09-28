@@ -183,10 +183,14 @@ HELP
             echo "Usage: plak status"
             ;;
         add)
-            echo "Usage: plak add <name> [--plain] [--agent] [--no-reload]"
+            echo "Usage: plak add <name> [--plain] [--agent|--no-agent] [--no-reload]"
             echo ""
-            echo "  --agent  Install and activate WP-MCP and HTML Editor, then register"
-            echo "           the site with wp-mcp-cli. WordPress only."
+            echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
+            echo "              register the site with wp-mcp-cli). WordPress only."
+            echo "  --no-agent  Skip agent preparation even when wp-mcp-cli is installed."
+            echo ""
+            echo "  WordPress sites become agent-ready by default when wp-mcp-cli is"
+            echo "  installed; use --no-agent to opt out."
             ;;
         agent)
             echo "Usage: plak agent <site> [--json]"
@@ -805,6 +809,27 @@ plak_agent_site_reachable() {
     return 1
 }
 
+# Prepare a freshly created/imported/cloned WordPress site for agents when
+# wp-mcp-cli is available. Unlike `plak add --agent`, a failure here must not
+# fail the caller: the site is already valid and repair is a retry away. Prints
+# the retry hint instead. Sites without wp-mcp are left alone and told clearly.
+plak_agent_maybe_prepare() {
+    local site_name="$1"
+    local site_dir="$SITES_DIR/$site_name.localhost"
+    if [ ! -f "$site_dir/public/wp-config.php" ]; then
+        return 0
+    fi
+    if ! plak_agent_wpmcp_available; then
+        echo "ℹ️  '$site_name.localhost' is not agent-ready (wp-mcp-cli not installed). Run 'plak install' then 'plak agent $site_name'."
+        return 0
+    fi
+    if plak_agent_prepare "$site_name"; then
+        return 0
+    fi
+    echo "⚠️  '$site_name.localhost' was created, but agent preparation did not finish. Retry with: plak agent $site_name" >&2
+    return 0
+}
+
 # Prepare an existing WordPress site for agents. Idempotent: safe to re-run.
 plak_agent_prepare() {
     local site_name="$1"
@@ -844,6 +869,10 @@ plak_agent_prepare() {
         plak_ui_error "WP-MCP is registered, but its abilities could not be discovered."
         return 1
     fi
+
+    # Record readiness so `plak list` and the dashboard can report it without
+    # re-running WP-CLI. A failed removal later (e.g. site deleted) is harmless.
+    : > "$site_dir/agent-ready"
 
     plak_ui_success "Agent ready: wp-mcp profile '$site_name' at $(url_for "$site_name.localhost")"
     return 0
@@ -2536,6 +2565,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                         'full_path' => $site_path,
                         'size_bytes' => isset($size_cache[$item]) ? (int) $size_cache[$item] : null,
                         'modified_at' => $mtime ?: null,
+                        'agent_ready' => file_exists($site_path . '/agent-ready'),
                     ];
                 }
             }
@@ -2587,11 +2617,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     switch ($action) {
         case 'add_site':
             if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
-                $type_flag = ($input['is_plain'] ?? false) ? '--plain' : '';
-                $command = sprintf('HOME=%s %s add %s %s --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), $type_flag);
+                $is_plain = (bool) ($input['is_plain'] ?? false);
+                $type_flag = $is_plain ? '--plain' : '';
+                // Agent readiness is opt-in from the dashboard checkbox; the
+                // CLI defaults it on, so the explicit flag is only added when
+                // the user unchecked it for a WordPress site.
+                $agent_flag = (!$is_plain && isset($input['agent']) && !$input['agent']) ? '--no-agent' : '';
+                $command = sprintf('HOME=%s %s add %s %s %s --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), $type_flag, $agent_flag);
                 // Remember we're adding so the post-exec block below can
                 // measure the new site's size and fold it into the cache.
                 $add_site_target = $site_name;
+            } else { $response['message'] = 'Invalid site name provided.'; }
+            break;
+        case 'prepare_agent':
+            // Run the same idempotent preparation as `plak agent`.
+            if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                $command = sprintf('HOME=%s %s agent %s 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name));
             } else { $response['message'] = 'Invalid site name provided.'; }
             break;
         case 'delete_site':
@@ -3183,6 +3224,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .comp-badge.active { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
         .comp-badge.mu { background: var(--pill-static-bg); color: var(--pill-static-fg); }
         .comp-badge.update { background: var(--accent); color: var(--accent-fg); }
+        .agent-badge { font-size: 0.7rem; border-radius: var(--radius-pill); padding: 0.15rem 0.55rem; background: var(--pill-wp-bg); color: var(--pill-wp-fg); white-space: nowrap; }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -3259,6 +3301,10 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         <input type="checkbox" x-model="newSite.isPlain" :disabled="newSite.isLoading">
                         plain (no WordPress)
                     </label>
+                    <label class="plain-toggle" x-show="!newSite.isPlain" x-cloak title="Install WP-MCP and register the site with wp-mcp-cli">
+                        <input type="checkbox" x-model="newSite.agent" :disabled="newSite.isLoading">
+                        agent-ready (WP-MCP)
+                    </label>
                     <button class="pill primary" type="submit" :disabled="!newSite.name || newSite.isLoading">
                         <span class="btn-spinner" x-show="newSite.isLoading" aria-hidden="true" style="display: none;"></span>
                         <span x-text="newSite.isLoading ? 'creating…' : 'create'"></span>
@@ -3274,6 +3320,15 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
                         <div class="site-actions">
+                            <template x-if="site.type === 'WordPress' && !site.agent_ready">
+                                <button class="site-action-btn" :class="{ loading: site.isPreparingAgent }" @click.stop="prepareAgent(site)" :disabled="site.isPreparingAgent" :title="'Make ' + site.name + ' agent-ready (WP-MCP)'">
+                                    <span class="btn-label" x-text="site.isPreparingAgent ? 'preparing…' : 'agent'"></span>
+                                    <span class="btn-spinner" aria-hidden="true"></span>
+                                </button>
+                            </template>
+                            <template x-if="site.type === 'WordPress' && site.agent_ready">
+                                <span class="agent-badge" title="Agent-ready (WP-MCP)">agent ✓</span>
+                            </template>
                             <template x-if="site.type === 'WordPress'">
                                 <button class="site-action-btn" :class="{ loading: site.isLoggingIn }" @click.stop="getLoginLink(site.name)" :disabled="site.isLoggingIn" :title="'One-time admin login for ' + site.name">
                                     <span class="btn-label">login</span>
@@ -3481,7 +3536,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
                 sort: 'name',
                 sortModes: ['name', 'size', 'modified'],
-                newSite: { name: '', isPlain: false, isLoading: false },
+                newSite: { name: '', isPlain: false, agent: true, isLoading: false },
                 snackbar: { visible: false, message: '', isError: false, timer: null },
                 // Persistent dismissible banners for newly-created sites — the
                 // snackbar only lives ~3.5s, not long enough to reach for the
@@ -3807,7 +3862,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     try {
                         const r = await fetch('api.php?action=list_sites');
                         const data = await r.json();
-                        this.sites = data.map(s => ({ ...s, isLoggingIn: false }));
+                        this.sites = data.map(s => ({ ...s, isLoggingIn: false, isPreparingAgent: false }));
                     } catch (e) {
                         this.showSnack('Could not fetch sites.', true);
                     } finally {
@@ -3820,8 +3875,9 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     this.newSite.isLoading = true;
                     const name = this.newSite.name;
                     const isPlain = this.newSite.isPlain;
+                    const agent = isPlain ? false : this.newSite.agent;
 
-                    const add = await this.apiPost('add_site', { site_name: name, is_plain: isPlain });
+                    const add = await this.apiPost('add_site', { site_name: name, is_plain: isPlain, agent });
                     if (add.success) {
                         // Optimistic insert: we already know every field the row
                         // template uses. No auto-refresh — the Caddy reload that
@@ -3940,6 +3996,18 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         this.showSnack('Login link opened in a new tab.');
                     }
                     site.isLoggingIn = false;
+                },
+
+                async prepareAgent(site) {
+                    if (site.isPreparingAgent) return;
+                    site.isPreparingAgent = true;
+                    const res = await this.apiPost('prepare_agent', { site_name: site.name });
+                    site.isPreparingAgent = false;
+                    const last = (res.message || '').split('\n').filter(Boolean).pop() || '';
+                    this.showSnack(res.success ? (last.replace(/^(Success|Error|Warning): /, '') || 'Agent ready.') : (last || 'Agent preparation failed.'), !res.success);
+                    if (res.success) {
+                        site.agent_ready = true;
+                    }
                 },
 
                 async copyPath(path) {
@@ -5349,12 +5417,14 @@ plak_site_add() (
     # Isolate cwd and cleanup traps from callers such as pull and the dashboard.
     # Every mandatory step is checked explicitly: main disables errexit for
     # legacy site commands, and an outer conditional can disable it too.
-    local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=false arg
+    local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=""
+    local agent_flag="" arg
     for arg in "$@"; do
         case "$arg" in
             --plain) site_type="plain" ;;
             --no-reload) no_reload_flag=true ;;
-            --agent) agent_mode=true ;;
+            --agent) agent_mode=true agent_flag="true" ;;
+            --no-agent) agent_mode=false agent_flag="false" ;;
             --help|-h) plak_display_command_help add; exit 0 ;;
             -*) echo "Error: unknown option '$arg'." >&2; exit 1 ;;
             *)
@@ -5366,9 +5436,18 @@ plak_site_add() (
                 ;;
         esac
     done
-    if [ "$agent_mode" = true ] && [ "$site_type" = plain ]; then
+    if [ "$agent_flag" = "true" ] && [ "$site_type" = plain ]; then
         echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --plain." >&2
         exit 1
+    fi
+    # Default: a new WordPress site becomes agent-ready when wp-mcp-cli is
+    # available, without anyone having to remember --agent. --no-agent opts out.
+    if [ -z "$agent_flag" ] && [ "$site_type" = wordpress ]; then
+        if plak_agent_wpmcp_available; then
+            agent_mode=true
+        else
+            agent_mode=false
+        fi
     fi
     if ! plak_validate_site_name "$site_name"; then
         echo "Error: a site name of 1–63 lowercase letters, numbers or hyphens is required; it cannot start or end with a hyphen." >&2
@@ -5757,6 +5836,12 @@ plak_site_clone() {
             echo "Error: clone '$full_hostname' was created, but server reload failed. Run 'plak reload' to retry." >&2
             return 1
         fi
+    fi
+
+    # A clone of an agent-ready site should stay agent-ready; prepare when
+    # possible and otherwise say how, without failing the clone.
+    if [ "$is_wordpress" = true ]; then
+        plak_agent_maybe_prepare "$destination"
     fi
 
     echo "✅ Site '$full_hostname' cloned successfully!"
@@ -6764,6 +6849,12 @@ plak_site_import() {
             echo "Error: site imported, but server reload failed. Run 'plak reload' to retry." >&2
             return 1
         }
+    fi
+
+    # An imported WordPress site should be usable by agents too; prepare it when
+    # possible and otherwise say how, without failing the import.
+    if [ "$site_type" != plain ]; then
+        plak_agent_maybe_prepare "$site_name"
     fi
 
     echo "Site '$site_name.localhost' imported successfully."
@@ -7903,6 +7994,7 @@ plak_site_list() {
                     "domain" => "https://" . $item . $port_suffix,
                     "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Plain",
                     "size" => $size,
+                    "agent_ready" => file_exists($site_path . "/agent-ready"),
                 ];
             }
         }
@@ -7936,7 +8028,9 @@ plak_site_list() {
         $domain_width = max($domain_width, 6) + $gap;
         
         $type_width = $show_totals ? 9 + $gap : 10; // "WordPress" + gap or padding
-        
+
+        $agent_width = 7 + $gap; // "Agent" column
+
         $size_width = $show_totals ? 11 : 0;
 
         // ANSI colors
@@ -7949,7 +8043,7 @@ plak_site_list() {
         $h = "─"; $v = "│";
 
         // Calculate total width
-        $inner_width = $name_width + $domain_width + $type_width;
+        $inner_width = $name_width + $domain_width + $type_width + $agent_width;
         if ($show_totals) {
             $inner_width += $size_width;
         }
@@ -7960,7 +8054,7 @@ plak_site_list() {
         $bot_line = $pink . $bl . str_repeat($h, $inner_width) . $br . $reset;
 
         // Header row (white text)
-        $header = $pink . $v . $reset . " " . str_pad("Name", $name_width - 1) . str_pad("Domain", $domain_width) . str_pad("Type", $type_width);
+        $header = $pink . $v . $reset . " " . str_pad("Name", $name_width - 1) . str_pad("Domain", $domain_width) . str_pad("Type", $type_width) . str_pad("Agent", $agent_width);
         if ($show_totals) {
             $header .= str_pad("Size", $size_width);
         }
@@ -7975,6 +8069,7 @@ plak_site_list() {
             $row = $pink . $v . $reset . " " . str_pad($site["name"], $name_width - 1);
             $row .= str_pad($site["domain"], $domain_width);
             $row .= str_pad($site["type"], $type_width);
+            $row .= str_pad($site["agent_ready"] ? "ready" : "-", $agent_width);
             if ($show_totals) {
                 $row .= str_pad($site["size"] ?? "N/A", $size_width);
             }

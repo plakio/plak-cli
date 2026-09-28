@@ -92,6 +92,10 @@ plak_site_import demo "$tmpdir/plak.zip" --yes
 grep -q URLS_REWRITTEN "$import_log" || fail "import did not request URL rewriting"
 grep -q RELOAD "$import_log" || fail "successful import did not regenerate the server config"
 
+# An imported WordPress site is offered agent readiness (CLI-33).
+grep -q 'plak_agent_maybe_prepare "\$site_name"' commands/site/import \
+    || fail "import does not prepare agents"
+
 # --- Local-style archive with a top-level app/public directory ---
 rm -rf "$SITES_DIR/demo2.localhost"
 mkdir -p "$tmpdir/local-export/app/public/wp-content/themes"

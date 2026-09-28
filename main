@@ -183,10 +183,14 @@ HELP
             echo "Usage: plak status"
             ;;
         add)
-            echo "Usage: plak add <name> [--plain] [--agent] [--no-reload]"
+            echo "Usage: plak add <name> [--plain] [--agent|--no-agent] [--no-reload]"
             echo ""
-            echo "  --agent  Install and activate WP-MCP and HTML Editor, then register"
-            echo "           the site with wp-mcp-cli. WordPress only."
+            echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
+            echo "              register the site with wp-mcp-cli). WordPress only."
+            echo "  --no-agent  Skip agent preparation even when wp-mcp-cli is installed."
+            echo ""
+            echo "  WordPress sites become agent-ready by default when wp-mcp-cli is"
+            echo "  installed; use --no-agent to opt out."
             ;;
         agent)
             echo "Usage: plak agent <site> [--json]"

@@ -304,6 +304,37 @@ if ./plak.sh add bad --agent --plain >/dev/null 2>&1; then fail 'accepted --agen
 [ -f "$TEST_PLUGINS/wp-mcp" ] || fail 'add --agent did not install wp-mcp'
 grep -q 'Agent ready' "$tmpdir/add.out" || fail 'add --agent did not report readiness'
 
+# --- agent-ready is the default when wp-mcp-cli is available (CLI-33) --------
+rm -f "$TEST_PLUGINS/wp-mcp" "$TEST_PLUGINS/html-editor"
+./plak.sh add autodefault --no-reload >"$tmpdir/auto.out" 2>"$tmpdir/auto.err" || fail "add without --agent failed: $(cat "$tmpdir/auto.err")"
+[ -f "$TEST_PLUGINS/wp-mcp" ] || fail 'default add did not prepare WP-MCP'
+grep -q 'Agent ready' "$tmpdir/auto.out" || fail 'default add did not report readiness'
+[ -f "$SITES_DIR/autodefault.localhost/agent-ready" ] || fail 'default add did not record the agent-ready marker'
+
+# --- --no-agent opts out -----------------------------------------------------
+rm -f "$TEST_PLUGINS/wp-mcp" "$TEST_PLUGINS/html-editor"
+./plak.sh add noagent --no-agent --no-reload >"$tmpdir/noagent.out" 2>"$tmpdir/noagent.err" || fail "add --no-agent failed: $(cat "$tmpdir/noagent.err")"
+[ ! -f "$TEST_PLUGINS/wp-mcp" ] || fail '--no-agent still installed WP-MCP'
+[ ! -f "$SITES_DIR/noagent.localhost/agent-ready" ] || fail '--no-agent recorded an agent-ready marker'
+
+# --- without wp-mcp installed, add must not attempt preparation --------------
+mv "$HOME/.local/bin/wp-mcp" "$tmpdir/wp-mcp.hidden"
+hash -r
+./plak.sh add nomcp --no-reload >"$tmpdir/nomcp.out" 2>"$tmpdir/nomcp.err" || fail "add without wp-mcp failed: $(cat "$tmpdir/nomcp.err")"
+grep -q 'created successfully' "$tmpdir/nomcp.out" || fail 'add without wp-mcp did not succeed'
+grep -q 'Agent ready' "$tmpdir/nomcp.out" && fail 'add claimed agent readiness without wp-mcp'
+mv "$tmpdir/wp-mcp.hidden" "$HOME/.local/bin/wp-mcp"
+hash -r
+
+# --- agent-ready state is discoverable --------------------------------------
+# The marker files drive both `plak list` and the dashboard listing.
+[ -f "$SITES_DIR/autodefault.localhost/agent-ready" ] || fail 'agent-ready marker missing for the default add'
+[ -f "$SITES_DIR/agentlive.localhost/agent-ready" ] || fail 'agent-ready marker missing for add --agent'
+[ ! -f "$SITES_DIR/noagent.localhost/agent-ready" ] || fail 'agent-ready marker present for add --no-agent'
+# The listing exposes the field derived from that marker.
+grep -q '"agent_ready" => file_exists' commands/site/list || fail 'plak list does not expose agent_ready'
+grep -q "'agent_ready' => file_exists" shared/site/runtime || fail 'dashboard list does not expose agent_ready'
+
 # A failed preparation keeps the created site and tells the agent how to retry.
 rm -f "$TEST_PLUGINS/wp-mcp" "$TEST_PLUGINS/html-editor"
 if CURL_BLOCK_PAGE=1 ./plak.sh add agentfail --agent --no-reload >"$tmpdir/fail.out" 2>"$tmpdir/fail.err"; then

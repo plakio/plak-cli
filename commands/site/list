@@ -57,6 +57,7 @@ plak_site_list() {
                     "domain" => "https://" . $item . $port_suffix,
                     "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Plain",
                     "size" => $size,
+                    "agent_ready" => file_exists($site_path . "/agent-ready"),
                 ];
             }
         }
@@ -90,7 +91,9 @@ plak_site_list() {
         $domain_width = max($domain_width, 6) + $gap;
         
         $type_width = $show_totals ? 9 + $gap : 10; // "WordPress" + gap or padding
-        
+
+        $agent_width = 7 + $gap; // "Agent" column
+
         $size_width = $show_totals ? 11 : 0;
 
         // ANSI colors
@@ -103,7 +106,7 @@ plak_site_list() {
         $h = "─"; $v = "│";
 
         // Calculate total width
-        $inner_width = $name_width + $domain_width + $type_width;
+        $inner_width = $name_width + $domain_width + $type_width + $agent_width;
         if ($show_totals) {
             $inner_width += $size_width;
         }
@@ -114,7 +117,7 @@ plak_site_list() {
         $bot_line = $pink . $bl . str_repeat($h, $inner_width) . $br . $reset;
 
         // Header row (white text)
-        $header = $pink . $v . $reset . " " . str_pad("Name", $name_width - 1) . str_pad("Domain", $domain_width) . str_pad("Type", $type_width);
+        $header = $pink . $v . $reset . " " . str_pad("Name", $name_width - 1) . str_pad("Domain", $domain_width) . str_pad("Type", $type_width) . str_pad("Agent", $agent_width);
         if ($show_totals) {
             $header .= str_pad("Size", $size_width);
         }
@@ -129,6 +132,7 @@ plak_site_list() {
             $row = $pink . $v . $reset . " " . str_pad($site["name"], $name_width - 1);
             $row .= str_pad($site["domain"], $domain_width);
             $row .= str_pad($site["type"], $type_width);
+            $row .= str_pad($site["agent_ready"] ? "ready" : "-", $agent_width);
             if ($show_totals) {
                 $row .= str_pad($site["size"] ?? "N/A", $size_width);
             }

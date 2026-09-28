@@ -182,6 +182,12 @@ plak_site_import() {
         }
     fi
 
+    # An imported WordPress site should be usable by agents too; prepare it when
+    # possible and otherwise say how, without failing the import.
+    if [ "$site_type" != plain ]; then
+        plak_agent_maybe_prepare "$site_name"
+    fi
+
     echo "Site '$site_name.localhost' imported successfully."
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
         "✅ Imported" "URL: $(plak_terminal_link "$local_home")"

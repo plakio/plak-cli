@@ -1608,6 +1608,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                         'full_path' => $site_path,
                         'size_bytes' => isset($size_cache[$item]) ? (int) $size_cache[$item] : null,
                         'modified_at' => $mtime ?: null,
+                        'agent_ready' => file_exists($site_path . '/agent-ready'),
                     ];
                 }
             }
@@ -1659,11 +1660,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     switch ($action) {
         case 'add_site':
             if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
-                $type_flag = ($input['is_plain'] ?? false) ? '--plain' : '';
-                $command = sprintf('HOME=%s %s add %s %s --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), $type_flag);
+                $is_plain = (bool) ($input['is_plain'] ?? false);
+                $type_flag = $is_plain ? '--plain' : '';
+                // Agent readiness is opt-in from the dashboard checkbox; the
+                // CLI defaults it on, so the explicit flag is only added when
+                // the user unchecked it for a WordPress site.
+                $agent_flag = (!$is_plain && isset($input['agent']) && !$input['agent']) ? '--no-agent' : '';
+                $command = sprintf('HOME=%s %s add %s %s %s --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), $type_flag, $agent_flag);
                 // Remember we're adding so the post-exec block below can
                 // measure the new site's size and fold it into the cache.
                 $add_site_target = $site_name;
+            } else { $response['message'] = 'Invalid site name provided.'; }
+            break;
+        case 'prepare_agent':
+            // Run the same idempotent preparation as `plak agent`.
+            if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                $command = sprintf('HOME=%s %s agent %s 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name));
             } else { $response['message'] = 'Invalid site name provided.'; }
             break;
         case 'delete_site':
@@ -2255,6 +2267,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .comp-badge.active { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
         .comp-badge.mu { background: var(--pill-static-bg); color: var(--pill-static-fg); }
         .comp-badge.update { background: var(--accent); color: var(--accent-fg); }
+        .agent-badge { font-size: 0.7rem; border-radius: var(--radius-pill); padding: 0.15rem 0.55rem; background: var(--pill-wp-bg); color: var(--pill-wp-fg); white-space: nowrap; }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -2331,6 +2344,10 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         <input type="checkbox" x-model="newSite.isPlain" :disabled="newSite.isLoading">
                         plain (no WordPress)
                     </label>
+                    <label class="plain-toggle" x-show="!newSite.isPlain" x-cloak title="Install WP-MCP and register the site with wp-mcp-cli">
+                        <input type="checkbox" x-model="newSite.agent" :disabled="newSite.isLoading">
+                        agent-ready (WP-MCP)
+                    </label>
                     <button class="pill primary" type="submit" :disabled="!newSite.name || newSite.isLoading">
                         <span class="btn-spinner" x-show="newSite.isLoading" aria-hidden="true" style="display: none;"></span>
                         <span x-text="newSite.isLoading ? 'creating…' : 'create'"></span>
@@ -2346,6 +2363,15 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
                         <div class="site-actions">
+                            <template x-if="site.type === 'WordPress' && !site.agent_ready">
+                                <button class="site-action-btn" :class="{ loading: site.isPreparingAgent }" @click.stop="prepareAgent(site)" :disabled="site.isPreparingAgent" :title="'Make ' + site.name + ' agent-ready (WP-MCP)'">
+                                    <span class="btn-label" x-text="site.isPreparingAgent ? 'preparing…' : 'agent'"></span>
+                                    <span class="btn-spinner" aria-hidden="true"></span>
+                                </button>
+                            </template>
+                            <template x-if="site.type === 'WordPress' && site.agent_ready">
+                                <span class="agent-badge" title="Agent-ready (WP-MCP)">agent ✓</span>
+                            </template>
                             <template x-if="site.type === 'WordPress'">
                                 <button class="site-action-btn" :class="{ loading: site.isLoggingIn }" @click.stop="getLoginLink(site.name)" :disabled="site.isLoggingIn" :title="'One-time admin login for ' + site.name">
                                     <span class="btn-label">login</span>
@@ -2553,7 +2579,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
                 sort: 'name',
                 sortModes: ['name', 'size', 'modified'],
-                newSite: { name: '', isPlain: false, isLoading: false },
+                newSite: { name: '', isPlain: false, agent: true, isLoading: false },
                 snackbar: { visible: false, message: '', isError: false, timer: null },
                 // Persistent dismissible banners for newly-created sites — the
                 // snackbar only lives ~3.5s, not long enough to reach for the
@@ -2879,7 +2905,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     try {
                         const r = await fetch('api.php?action=list_sites');
                         const data = await r.json();
-                        this.sites = data.map(s => ({ ...s, isLoggingIn: false }));
+                        this.sites = data.map(s => ({ ...s, isLoggingIn: false, isPreparingAgent: false }));
                     } catch (e) {
                         this.showSnack('Could not fetch sites.', true);
                     } finally {
@@ -2892,8 +2918,9 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     this.newSite.isLoading = true;
                     const name = this.newSite.name;
                     const isPlain = this.newSite.isPlain;
+                    const agent = isPlain ? false : this.newSite.agent;
 
-                    const add = await this.apiPost('add_site', { site_name: name, is_plain: isPlain });
+                    const add = await this.apiPost('add_site', { site_name: name, is_plain: isPlain, agent });
                     if (add.success) {
                         // Optimistic insert: we already know every field the row
                         // template uses. No auto-refresh — the Caddy reload that
@@ -3012,6 +3039,18 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         this.showSnack('Login link opened in a new tab.');
                     }
                     site.isLoggingIn = false;
+                },
+
+                async prepareAgent(site) {
+                    if (site.isPreparingAgent) return;
+                    site.isPreparingAgent = true;
+                    const res = await this.apiPost('prepare_agent', { site_name: site.name });
+                    site.isPreparingAgent = false;
+                    const last = (res.message || '').split('\n').filter(Boolean).pop() || '';
+                    this.showSnack(res.success ? (last.replace(/^(Success|Error|Warning): /, '') || 'Agent ready.') : (last || 'Agent preparation failed.'), !res.success);
+                    if (res.success) {
+                        site.agent_ready = true;
+                    }
                 },
 
                 async copyPath(path) {

@@ -111,6 +111,10 @@ grep -q 'dest.localhost' "$CUSTOM_CADDY_DIR/dest.localhost" || fail "cloned dire
 [ ! -f "$dst/mappings" ] || fail "clone copied exclusive domains"
 grep -q RELOAD "$clone_log" || fail "clone did not regenerate the server config"
 
+# A clone of a WordPress site is offered agent readiness (CLI-33).
+grep -q 'plak_agent_maybe_prepare "\$destination"' commands/site/clone \
+    || fail "clone does not prepare agents"
+
 # --- The source is untouched ---
 [ -f "$src/public/wp-config.php" ] || fail "clone removed source files"
 [ -f "$src/logs/app.log" ] || fail "clone removed source logs"
