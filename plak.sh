@@ -11337,23 +11337,50 @@ plak_site_wp() {
 }
 
 # Source: commands/site/wsl-hosts
+# Build the PowerShell that replaces Plak's managed block in the Windows hosts
+# file. Idempotent: any previous Plak block is removed before writing the new
+# one, so repeated runs update the WSL IP instead of duplicating lines. Only
+# lines between the markers are touched.
+plak_wsl_hosts_ps_command() {
+    local wsl_ip="$1" hostnames="$2"
+    local entry="### plak begin ###"
+    local entry_end="### plak end ###"
+    # The whole replacement is one PowerShell program submitted via -Command.
+    cat <<POWERSHELL
+\$hosts = "\$env:SystemRoot\System32\drivers\etc\hosts";
+\$lines = Get-Content -LiteralPath \$hosts -ErrorAction SilentlyContinue;
+\$kept = @(); \$inside = \$false;
+foreach (\$line in \$lines) {
+    if (\$line -match '^### plak (begin|end) ###') {
+        if (\$line -match 'begin') { \$inside = \$true }
+        if (\$line -match 'end') { \$inside = \$false }
+        continue
+    }
+    if (-not \$inside) { \$kept += \$line }
+}
+\$block = @('### plak begin ###', '$wsl_ip $hostnames', '### plak end ###');
+(\$kept + \$block) | Set-Content -LiteralPath \$hosts -Encoding ASCII;
+Write-Host 'Plak hosts entries updated.'
+POWERSHELL
+}
+
 plak_site_wsl_hosts() {
     if [ "$IS_WSL" != true ]; then
         echo "This command is only available in WSL environments."
         exit 1
     fi
-    
+
     local wsl_ip
     wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    
+
     if [ -z "$wsl_ip" ]; then
         gum style --foreground red "❌ Could not determine WSL IP address."
         exit 1
     fi
-    
+
     # Build list of all hostnames
     local hostnames="plak.localhost db.plak.localhost mail.plak.localhost"
-    
+
     # Add all site hostnames
     if [ -d "$SITES_DIR" ]; then
         for site_path in "$SITES_DIR"/*; do
@@ -11361,7 +11388,7 @@ plak_site_wsl_hosts() {
                 local site_hostname
                 site_hostname=$(basename "$site_path")
                 hostnames="$hostnames $site_hostname"
-                
+
                 # Also add any custom mappings
                 if [ -f "$site_path/mappings" ]; then
                     while IFS= read -r mapping || [ -n "$mapping" ]; do
@@ -11373,41 +11400,68 @@ plak_site_wsl_hosts() {
             fi
         done
     fi
-    
+
     # Find Caddy's CA certificate path
     local ca_cert="$HOME/.local/share/caddy/pki/authorities/local/root.crt"
     local windows_cert_path=""
-    
+
     # Convert WSL path to Windows path for the certificate
     if [ -f "$ca_cert" ]; then
         windows_cert_path=$(wslpath -w "$ca_cert" 2>/dev/null || echo "")
     fi
-    
+
     echo ""
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
         "WSL Setup Helper" \
         "" \
         "WSL IP Address: $wsl_ip"
-    
+
+    # Mirrored networking makes *.localhost resolve without editing hosts.
+    local mirrored="false"
+    if command -v wslinfo >/dev/null 2>&1 && wslinfo --networking-mode 2>/dev/null | grep -qi mirrored; then
+        mirrored="true"
+    fi
+
     # --- STEP 1: Hosts File ---
     echo ""
     gum style --foreground 212 "━━━ Step 1: Update Windows Hosts File ━━━"
     echo ""
-    echo "Run this command in PowerShell (as Administrator):"
+
+    if [ "$mirrored" = true ]; then
+        gum style --foreground green "✅ WSL is using mirrored networking: *.localhost already resolves on Windows."
+        echo "   You can skip this step."
+    fi
+
+    # One idempotent command that replaces Plak's block instead of appending.
+    local ps_command
+    ps_command=$(plak_wsl_hosts_ps_command "$wsl_ip" "$hostnames")
+
+    echo "Run this in PowerShell (as Administrator):"
     echo ""
-    gum style --foreground cyan "Add-Content -Path C:\\Windows\\System32\\drivers\\etc\\hosts -Value \"\`n$wsl_ip $hostnames\""
+    gum style --foreground cyan "$ps_command"
     echo ""
-    echo "Or manually add this line to C:\\Windows\\System32\\drivers\\etc\\hosts:"
-    echo ""
-    gum style --foreground cyan "$wsl_ip $hostnames"
-    
+    echo "It replaces Plak's managed block (between the ### plak begin/end ###"
+    echo "markers) with the current WSL IP, so re-running never duplicates lines."
+
+    # Offer to apply it directly when the Windows PowerShell bridge is present.
+    if command -v powershell.exe >/dev/null 2>&1; then
+        echo ""
+        if gum confirm "Apply it now from here? (needs Administrator PowerShell)"; then
+            if powershell.exe -NoProfile -Command "$ps_command"; then
+                gum style --foreground green "✅ Windows hosts file updated."
+            else
+                gum style --foreground red "❌ Could not update the hosts file. Run the command above in an Administrator PowerShell."
+            fi
+        fi
+    fi
+
     # --- STEP 2: Certificate Trust ---
     echo ""
     gum style --foreground 212 "━━━ Step 2: Trust Caddy's CA Certificate ━━━"
     echo ""
     echo "To remove browser certificate warnings, install Caddy's root CA in Windows."
     echo ""
-    
+
     if [ -n "$windows_cert_path" ]; then
         echo "The certificate is located at:"
         gum style --foreground cyan "$windows_cert_path"
@@ -11428,9 +11482,9 @@ plak_site_wsl_hosts() {
         echo "Certificate not found at: $ca_cert"
         echo "Make sure Caddy has been started at least once with 'plak enable'."
     fi
-    
+
     echo ""
-    gum style --foreground yellow "Note: WSL IP may change on restart. Run 'plak wsl-hosts' again to get updated info."
+    gum style --foreground yellow "Note: WSL IP may change on restart. Run 'plak wsl-hosts' again to refresh the managed block."
     echo ""
 }
 
