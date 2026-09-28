@@ -224,6 +224,79 @@ if [ -s "$TEST_PASSWORDS" ]; then fail 'left an orphan Application Password afte
 # A failed ability discovery is reported as failure, not success.
 if WPMCP_DISCOVER_RC=1 plak_agent_prepare agent >/dev/null 2>&1; then fail 'prepare ignored a discovery failure'; fi
 
+# --- Homebrew-on-Linux CA trust (CLI-34) ------------------------------------
+# When the system bundle carries a Caddy local authority, wp-mcp calls must
+# receive SSL_CERT_FILE/CURL_CA_BUNDLE so Homebrew's curl trusts the local site.
+fake_bundle="$tmpdir/ca-certificates.crt"
+printf -- '-----BEGIN CERTIFICATE-----\nCaddy Local Authority - 2026 ECC Root\n-----END CERTIFICATE-----\n' > "$fake_bundle"
+
+: > "$WPMCP_ENV_LOG"
+cat > "$HOME/.local/bin/wp-mcp" <<'WPMCP_CA'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$WPMCP_LOG"
+printf 'ssl=%s\ncurl_ca=%s\n' "${SSL_CERT_FILE:-}" "${CURL_CA_BUNDLE:-}" >> "$WPMCP_ENV_LOG"
+case "$*" in
+    *discover*)
+        [ "${WPMCP_DISCOVER_RC:-0}" = 0 ] || exit 1
+        echo '{"ok":true,"data":{"abilities":[]}}'
+        ;;
+    *"auth login"*)
+        if [ "${WPMCP_LOGIN_RC:-0}" != 0 ]; then
+            echo 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2
+            exit 60
+        fi
+        echo '{"ok":true,"data":{"name":"x"}}'
+        ;;
+esac
+exit 0
+WPMCP_CA
+chmod +x "$HOME/.local/bin/wp-mcp"
+
+PLAK_AGENT_CA_BUNDLE="$fake_bundle" plak_agent_prepare agent >/dev/null 2>&1 \
+    || fail 'prepare failed with the Caddy CA bundle available'
+grep -q "^ssl=$fake_bundle$" "$WPMCP_ENV_LOG" || fail 'SSL_CERT_FILE was not exported to wp-mcp'
+grep -q "^curl_ca=$fake_bundle$" "$WPMCP_ENV_LOG" || fail 'CURL_CA_BUNDLE was not exported to wp-mcp'
+
+# Without a Caddy entry in the bundle, no override is injected.
+plain_bundle="$tmpdir/plain-ca.crt"
+printf -- '-----BEGIN CERTIFICATE-----\nSome Other Root\n-----END CERTIFICATE-----\n' > "$plain_bundle"
+: > "$WPMCP_ENV_LOG"
+PLAK_AGENT_CA_BUNDLE="$plain_bundle" plak_agent_prepare agent >/dev/null 2>&1 \
+    || fail 'prepare failed without a Caddy CA bundle'
+if grep -q "^ssl=." "$WPMCP_ENV_LOG"; then
+    fail 'SSL_CERT_FILE was exported without a Caddy entry in the bundle'
+fi
+
+# A registration error is surfaced, not swallowed.
+: > "$TEST_PASSWORDS"
+if WPMCP_LOGIN_RC=1 plak_agent_prepare agent >"$tmpdir/reg.out" 2>"$tmpdir/reg.err"; then
+    fail 'prepare ignored a registration failure with output'
+fi
+grep -qi 'curl: (60)\|SSL certificate problem' "$tmpdir/reg.err" \
+    || grep -qi 'Could not register' "$tmpdir/reg.err" \
+    || fail 'registration failure did not produce a visible error'
+
+# restore the standard wp-mcp fake for later tests
+cat > "$HOME/.local/bin/wp-mcp" <<'WPMCP'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$WPMCP_LOG"
+printf 'user=%s\npass=%s\n' "${WPMCP_USERNAME:-}" "${WPMCP_PASSWORD:-}" >> "$WPMCP_ENV_LOG"
+case "$*" in
+    *discover*)
+        [ "${WPMCP_DISCOVER_RC:-0}" = 0 ] || exit 1
+        echo '{"ok":true,"data":{"abilities":[]}}'
+        ;;
+    *"auth login"*)
+        [ "${WPMCP_LOGIN_RC:-0}" = 0 ] || exit 1
+        echo '{"ok":true,"data":{"name":"x"}}'
+        ;;
+esac
+exit 0
+WPMCP
+chmod +x "$HOME/.local/bin/wp-mcp"
+
 # --- router tests -----------------------------------------------------------
 if ./plak.sh add bad --agent --plain >/dev/null 2>&1; then fail 'accepted --agent with --plain'; fi
 

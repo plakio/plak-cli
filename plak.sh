@@ -509,6 +509,21 @@ plak_agent_wpmcp_available() {
     plak_command_exists wp-mcp
 }
 
+# wp-mcp talks HTTPS to the site with its own curl/OpenSSL. Homebrew's curl on
+# Linux does not read the system CA store, so the Caddy local root installed by
+# `plak trust` is invisible to it (curl exit 60). When the system bundle exists
+# and actually contains a Caddy local authority, point the subprocess at it.
+# This is a no-op on macOS, where Homebrew curl uses the system keychain.
+plak_agent_curl_ca_env() {
+    PLAK_AGENT_CA_ENV=()
+    [ "$(uname -s)" = "Linux" ] || return 0
+    local bundle="${PLAK_AGENT_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+    [ -s "$bundle" ] || return 0
+    if grep -qi 'Caddy Local Authority' "$bundle" 2>/dev/null; then
+        PLAK_AGENT_CA_ENV=("SSL_CERT_FILE=$bundle" "CURL_CA_BUNDLE=$bundle")
+    fi
+}
+
 # Install wp-mcp-cli and its jq dependency. Homebrew on macOS, the pinned
 # release script elsewhere. Never installs an unpinned "main" build.
 plak_agent_install_cli() {
@@ -753,12 +768,18 @@ plak_agent_create_password() {
 
 # Register (or refresh) the wp-mcp-cli profile. The secret travels through the
 # environment, never argv, so it cannot leak via process listings or logs.
+# Errors are surfaced rather than swallowed, so the real cause (e.g. a TLS trust
+# failure) is visible instead of a generic "could not register".
 plak_agent_register_profile() {
     local site_name="$1" user="$2" pass="$3"
     local url
     url=$(url_for "$site_name.localhost")
-    if ! WPMCP_USERNAME="$user" WPMCP_PASSWORD="$pass" \
-        wp-mcp --json auth login "$url" --name "$site_name" >/dev/null; then
+    plak_agent_curl_ca_env
+    local output
+    if ! output=$(WPMCP_USERNAME="$user" WPMCP_PASSWORD="$pass" \
+        env ${PLAK_AGENT_CA_ENV[@]+"${PLAK_AGENT_CA_ENV[@]}"} \
+        wp-mcp --json auth login "$url" --name "$site_name" 2>&1); then
+        [ -n "$output" ] && plak_ui_error "$output"
         return 1
     fi
     return 0
@@ -766,7 +787,9 @@ plak_agent_register_profile() {
 
 plak_agent_verify() {
     local site_name="$1"
-    wp-mcp --json --site "$site_name" discover >/dev/null 2>&1
+    plak_agent_curl_ca_env
+    env ${PLAK_AGENT_CA_ENV[@]+"${PLAK_AGENT_CA_ENV[@]}"} \
+        wp-mcp --json --site "$site_name" discover >/dev/null 2>&1
 }
 
 plak_agent_site_reachable() {
@@ -10818,6 +10841,41 @@ plak_site_tailscale() {
 }
 
 # Source: commands/site/trust
+# Locate the current Caddy local root certificate, preferring the one Caddy
+# keeps in the user profile and falling back to the system-trust copy.
+plak_site_caddy_root_cert() {
+    local root_cert
+    root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
+        -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
+    if [ -z "$root_cert" ]; then
+        root_cert=$(find /usr/local/share/ca-certificates \
+            -maxdepth 1 -name 'Caddy_Local_Authority*.crt' 2>/dev/null | head -1)
+    fi
+    [ -n "$root_cert" ] && [ -r "$root_cert" ] && printf '%s\n' "$root_cert"
+}
+
+# Append the Caddy root to every Homebrew CA bundle that exists. Idempotent by
+# marker: Plak owns the Caddy root, so a bundle already carrying one is left
+# alone. Homebrew's curl/OpenSSL reads these instead of the system store.
+plak_site_trust_linuxbrew_bundles() {
+    local brew_prefix="$1" root_cert="$2"
+    local bundle
+    for bundle in \
+        "$brew_prefix/etc/ca-certificates/cert.pem" \
+        "$brew_prefix/opt/openssl@3/etc/openssl@3/cert.pem" \
+        "$brew_prefix/etc/openssl@3/cert.pem"; do
+        [ -f "$bundle" ] || continue
+        if grep -q 'Caddy Local Authority' "$bundle" 2>/dev/null; then
+            continue
+        fi
+        if cat "$root_cert" >> "$bundle" 2>/dev/null; then
+            echo "   - Added Caddy root to Homebrew CA bundle: $bundle"
+        else
+            gum style --foreground yellow "⚠️ Could not update Homebrew CA bundle: $bundle"
+        fi
+    done
+}
+
 plak_site_trust() {
     echo "🔐 Installing Plak's local root certificate..."
 
@@ -10891,6 +10949,18 @@ plak_site_trust() {
                 -name 'cert9.db' 2>/dev/null)
         else
             gum style --foreground yellow "⚠️ Could not locate Caddy root.crt — snap Firefox/Chromium trust skipped."
+        fi
+    fi
+
+    # Linuxbrew ships its own curl/OpenSSL with a CA bundle that ignores the
+    # system store, so tools like wp-mcp fail with curl exit 60 even after the
+    # root is trusted system-wide. Append the Caddy root to Homebrew's bundle.
+    if [ "$OS" = "linux" ] && command -v brew &>/dev/null; then
+        local brew_prefix_linux brew_root
+        brew_prefix_linux=$(brew --prefix 2>/dev/null || true)
+        brew_root=$(plak_site_caddy_root_cert)
+        if [ -n "$brew_prefix_linux" ] && [ -n "$brew_root" ]; then
+            plak_site_trust_linuxbrew_bundles "$brew_prefix_linux" "$brew_root"
         fi
     fi
 

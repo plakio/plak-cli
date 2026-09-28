@@ -24,6 +24,21 @@ plak_agent_wpmcp_available() {
     plak_command_exists wp-mcp
 }
 
+# wp-mcp talks HTTPS to the site with its own curl/OpenSSL. Homebrew's curl on
+# Linux does not read the system CA store, so the Caddy local root installed by
+# `plak trust` is invisible to it (curl exit 60). When the system bundle exists
+# and actually contains a Caddy local authority, point the subprocess at it.
+# This is a no-op on macOS, where Homebrew curl uses the system keychain.
+plak_agent_curl_ca_env() {
+    PLAK_AGENT_CA_ENV=()
+    [ "$(uname -s)" = "Linux" ] || return 0
+    local bundle="${PLAK_AGENT_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+    [ -s "$bundle" ] || return 0
+    if grep -qi 'Caddy Local Authority' "$bundle" 2>/dev/null; then
+        PLAK_AGENT_CA_ENV=("SSL_CERT_FILE=$bundle" "CURL_CA_BUNDLE=$bundle")
+    fi
+}
+
 # Install wp-mcp-cli and its jq dependency. Homebrew on macOS, the pinned
 # release script elsewhere. Never installs an unpinned "main" build.
 plak_agent_install_cli() {
@@ -268,12 +283,18 @@ plak_agent_create_password() {
 
 # Register (or refresh) the wp-mcp-cli profile. The secret travels through the
 # environment, never argv, so it cannot leak via process listings or logs.
+# Errors are surfaced rather than swallowed, so the real cause (e.g. a TLS trust
+# failure) is visible instead of a generic "could not register".
 plak_agent_register_profile() {
     local site_name="$1" user="$2" pass="$3"
     local url
     url=$(url_for "$site_name.localhost")
-    if ! WPMCP_USERNAME="$user" WPMCP_PASSWORD="$pass" \
-        wp-mcp --json auth login "$url" --name "$site_name" >/dev/null; then
+    plak_agent_curl_ca_env
+    local output
+    if ! output=$(WPMCP_USERNAME="$user" WPMCP_PASSWORD="$pass" \
+        env ${PLAK_AGENT_CA_ENV[@]+"${PLAK_AGENT_CA_ENV[@]}"} \
+        wp-mcp --json auth login "$url" --name "$site_name" 2>&1); then
+        [ -n "$output" ] && plak_ui_error "$output"
         return 1
     fi
     return 0
@@ -281,7 +302,9 @@ plak_agent_register_profile() {
 
 plak_agent_verify() {
     local site_name="$1"
-    wp-mcp --json --site "$site_name" discover >/dev/null 2>&1
+    plak_agent_curl_ca_env
+    env ${PLAK_AGENT_CA_ENV[@]+"${PLAK_AGENT_CA_ENV[@]}"} \
+        wp-mcp --json --site "$site_name" discover >/dev/null 2>&1
 }
 
 plak_agent_site_reachable() {

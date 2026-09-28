@@ -111,6 +111,7 @@ bash ./tests/dashboard.sh
 bash ./tests/install-db-port.sh
 bash ./tests/path-prelude.sh
 bash ./tests/wsl-hosts.sh
+bash ./tests/trust-linuxbrew.sh
 bash ./tests/wp-cli.sh
 bash ./tests/agent.sh
 

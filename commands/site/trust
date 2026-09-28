@@ -1,3 +1,38 @@
+# Locate the current Caddy local root certificate, preferring the one Caddy
+# keeps in the user profile and falling back to the system-trust copy.
+plak_site_caddy_root_cert() {
+    local root_cert
+    root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
+        -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
+    if [ -z "$root_cert" ]; then
+        root_cert=$(find /usr/local/share/ca-certificates \
+            -maxdepth 1 -name 'Caddy_Local_Authority*.crt' 2>/dev/null | head -1)
+    fi
+    [ -n "$root_cert" ] && [ -r "$root_cert" ] && printf '%s\n' "$root_cert"
+}
+
+# Append the Caddy root to every Homebrew CA bundle that exists. Idempotent by
+# marker: Plak owns the Caddy root, so a bundle already carrying one is left
+# alone. Homebrew's curl/OpenSSL reads these instead of the system store.
+plak_site_trust_linuxbrew_bundles() {
+    local brew_prefix="$1" root_cert="$2"
+    local bundle
+    for bundle in \
+        "$brew_prefix/etc/ca-certificates/cert.pem" \
+        "$brew_prefix/opt/openssl@3/etc/openssl@3/cert.pem" \
+        "$brew_prefix/etc/openssl@3/cert.pem"; do
+        [ -f "$bundle" ] || continue
+        if grep -q 'Caddy Local Authority' "$bundle" 2>/dev/null; then
+            continue
+        fi
+        if cat "$root_cert" >> "$bundle" 2>/dev/null; then
+            echo "   - Added Caddy root to Homebrew CA bundle: $bundle"
+        else
+            gum style --foreground yellow "⚠️ Could not update Homebrew CA bundle: $bundle"
+        fi
+    done
+}
+
 plak_site_trust() {
     echo "🔐 Installing Plak's local root certificate..."
 
@@ -71,6 +106,18 @@ plak_site_trust() {
                 -name 'cert9.db' 2>/dev/null)
         else
             gum style --foreground yellow "⚠️ Could not locate Caddy root.crt — snap Firefox/Chromium trust skipped."
+        fi
+    fi
+
+    # Linuxbrew ships its own curl/OpenSSL with a CA bundle that ignores the
+    # system store, so tools like wp-mcp fail with curl exit 60 even after the
+    # root is trusted system-wide. Append the Caddy root to Homebrew's bundle.
+    if [ "$OS" = "linux" ] && command -v brew &>/dev/null; then
+        local brew_prefix_linux brew_root
+        brew_prefix_linux=$(brew --prefix 2>/dev/null || true)
+        brew_root=$(plak_site_caddy_root_cert)
+        if [ -n "$brew_prefix_linux" ] && [ -n "$brew_root" ]; then
+            plak_site_trust_linuxbrew_bundles "$brew_prefix_linux" "$brew_root"
         fi
     fi
 
