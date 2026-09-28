@@ -1191,18 +1191,6 @@ db_port_has_conflict() {
     return 0
 }
 
-next_free_db_port() {
-    local candidate="${1:-3307}"
-    while [ "$candidate" -le 65535 ]; do
-        if ! db_port_has_conflict "$candidate"; then
-            echo "$candidate"
-            return 0
-        fi
-        candidate=$((candidate + 1))
-    done
-    return 1
-}
-
 # Interactive prompt that asks for HTTP and HTTPS ports, validates each, and
 # re-prompts until both are free. Sets HTTP_PORT / HTTPS_PORT globals on
 # success. Called by the install and plak ports flows.
@@ -1243,25 +1231,9 @@ prompt_custom_ports() {
     done
 }
 
-prompt_custom_db_port() {
-    local suggest_port="${1:-3307}"
-    local candidate
-    while true; do
-        candidate=$(gum input --value "$suggest_port" --prompt "MariaDB port: ")
-        if [[ ! "$candidate" =~ ^[0-9]+$ ]] || [ "$candidate" -lt 1 ] || [ "$candidate" -gt 65535 ]; then
-            gum style --foreground red "   ❌ Invalid port number."
-            continue
-        fi
-        if db_port_has_conflict "$candidate"; then
-            gum style --foreground red "   ❌ Port $candidate is in use by: $(port_listening_app "$candidate")"
-            suggest_port=$(next_free_db_port "$((candidate + 1))" || echo "$suggest_port")
-            continue
-        fi
-        DB_PORT="$candidate"
-        break
-    done
-}
-
+# Reconfigure an existing MariaDB server to listen on DB_PORT. Not called by
+# `plak install` (it would rewrite a system/Homebrew-managed config); kept as
+# the basis for an explicit port-change command. See the CLI ticket for it.
 plak_site_configure_mariadb_port() {
     DB_HOST="${DB_HOST:-127.0.0.1}"
     DB_PORT="${DB_PORT:-3306}"
@@ -7192,41 +7164,33 @@ plak_site_install() {
         app=$(port_listening_app "$DB_PORT")
         echo "   Port ${DB_PORT} is in use by: ${app:-another process}"
         echo ""
-        echo "Plak needs a MariaDB port. How would you like to proceed?"
+        # Plak does not move an existing MariaDB server, so a port is only
+        # useful to it when a MariaDB already answers there. Offering a free-but
+        # empty port would just make the readiness loop time out (see CLI-29).
+        if ! db_port_is_mariadb "$DB_PORT"; then
+            gum style --foreground red "❌ No MariaDB answers on port ${DB_PORT}."
+            gum style --foreground yellow "   That port is held by another service. Plak does not reconfigure an existing MariaDB server."
+            gum style --foreground yellow "   Free port ${DB_PORT} or point MariaDB at it, then re-run 'plak install'."
+            gum style --foreground yellow "   Configure MariaDB for a different port manually if you need to keep ${DB_PORT} busy."
+            exit 1
+        fi
+        echo "Plak found MariaDB reachable on ${DB_PORT}. How would you like to proceed?"
         echo ""
 
         local db_choice
         if $auto_yes; then
-            db_choice="Use alternative port"
+            db_choice="Proceed with"
         else
             db_choice=$(gum choose \
-                "Use alternative port (3307) — run alongside another MySQL service" \
-                "Pick custom port" \
                 "Proceed with ${DB_PORT} anyway" \
                 "Cancel installation")
         fi
 
         case "$db_choice" in
-            "Use alternative port"*)
-                DB_PORT=3307
-                if db_port_has_conflict "$DB_PORT"; then
-                    if $auto_yes; then
-                        gum style --foreground red "❌ Ports 3306 and 3307 are both in use. Re-run without --yes to pick a custom MariaDB port."
-                        exit 1
-                    fi
-                    gum style --foreground yellow \
-                        "⚠️  3307 is also in use — please pick a custom port."
-                    prompt_custom_db_port "$(next_free_db_port 3307)"
-                fi
-                ;;
-            "Pick custom port")
-                prompt_custom_db_port "$(next_free_db_port 3307)"
-                ;;
             "Proceed with"*)
-                gum style --foreground yellow \
-                    "⚠️  MariaDB may fail to bind on ${DB_PORT}."
+                : # MariaDB already answers here; keep the configured port.
                 ;;
-            "Cancel installation")
+            *)
                 echo "🚫 Installation cancelled."
                 exit 1
                 ;;
@@ -7241,8 +7205,7 @@ plak_site_install() {
         local db_choice
         db_choice=$(gum choose \
             "Keep current MariaDB port (${DB_PORT})" \
-            "Switch to default port (3306)" \
-            "Pick different MariaDB port")
+            "Switch to default port (3306)")
 
         case "$db_choice" in
             "Keep current"*)
@@ -7251,13 +7214,10 @@ plak_site_install() {
             "Switch to default"*)
                 DB_PORT=3306
                 if db_port_has_conflict "$DB_PORT"; then
-                    gum style --foreground yellow \
-                        "⚠️  3306 is in use — please pick a custom MariaDB port."
-                    prompt_custom_db_port "$(next_free_db_port 3307)"
+                    gum style --foreground red "❌ Port 3306 is in use and no MariaDB answers there."
+                    gum style --foreground yellow "   Free port 3306 or set MariaDB to use it, then re-run 'plak install'."
+                    exit 1
                 fi
-                ;;
-            "Pick different"*)
-                prompt_custom_db_port "$(next_free_db_port 3307)"
                 ;;
         esac
         db_port_choice_made=true

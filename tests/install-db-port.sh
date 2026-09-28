@@ -74,4 +74,16 @@ fi
 grep -q 'MariaDB did not become available on' commands/site/install || fail "timeout message lacks the host/port"
 grep -q "ssl-verify-server-cert" commands/site/install || fail "timeout path does not filter the SSL warning"
 
+# --- A real conflict never offers a free-but-empty alternative port ---
+# The install flow must not hand out a port where no MariaDB answers (that was
+# the CLI-29 failure); it aborts with actionable guidance instead.
+grep -q "Plak does not reconfigure an existing MariaDB server" commands/site/install \
+    || fail "conflict path does not explain that MariaDB is not moved"
+if grep -q 'Use alternative port (3307)' commands/site/install; then
+    fail "conflict path still offers an empty alternative port"
+fi
+if grep -q 'prompt_custom_db_port' plak.sh; then
+    fail "dead custom-db-port prompt is still referenced"
+fi
+
 echo "Install db-port regression tests passed."
