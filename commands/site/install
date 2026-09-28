@@ -622,11 +622,17 @@ INI
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Configuring MariaDB"
         echo "   - Waiting for MariaDB service..."
         i=0
-        while ! mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping --silent; do
+        while ! mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping --silent 2>/dev/null; do
             sleep 1;
             i=$((i+1))
             if [ $i -ge 20 ]; then
-                gum style --foreground red "❌ MariaDB did not become available in time."
+                gum style --foreground red "❌ MariaDB did not become available on ${DB_HOST}:${DB_PORT} in time."
+                # Show the real connection error, not the SSL warning the
+                # --silent flag otherwise leaves as the only visible output.
+                local db_err
+                db_err=$(mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping 2>&1 | grep -v 'ssl-verify-server-cert' | tail -1)
+                [ -n "$db_err" ] && gum style --foreground red "   ${db_err}"
+                gum style --foreground yellow "   Check that MariaDB is listening on port ${DB_PORT}: ss -tlnp | grep ${DB_PORT}"
                 exit 1
             fi
         done

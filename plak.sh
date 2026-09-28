@@ -1142,6 +1142,17 @@ port_is_own() {
     [ -n "$app" ] && { [[ "$app" == *"$CADDY_CMD"* ]] || [[ "$app" == *frankenph* ]]; }
 }
 
+# True when a MariaDB/MySQL server answers on $1. Connect rather than inspect
+# the process: without root, lsof/ss cannot see a server owned by another uid
+# (the apt MariaDB runs as the `mysql` user), so a process-name check would
+# misread our own database as a foreign conflict. `mysqladmin ping` works for
+# any reachable server and is the same probe the install readiness loop uses.
+db_port_is_mariadb() {
+    local port="$1"
+    command -v mysqladmin >/dev/null 2>&1 || return 1
+    mysqladmin -h 127.0.0.1 -P "$port" ping --silent >/dev/null 2>&1
+}
+
 # True if $1 is occupied by something that isn't one of our own services.
 port_has_conflict() {
     port_is_free "$1" && return 1
@@ -1165,8 +1176,15 @@ db_port_has_conflict() {
     local port="$1" app=""
     port_is_free "$port" && return 1
 
+    # The configured port answering as MariaDB is our own database, regardless
+    # of whether we can name its process without root (apt MariaDB runs as the
+    # `mysql` user, invisible to lsof/ss for a non-root caller).
+    if [ "$port" = "${DB_PORT:-3306}" ] && db_port_is_mariadb "$port"; then
+        return 1
+    fi
+
     app=$(port_listening_app "$port")
-    if [ "$port" = "${DB_PORT:-3306}" ] && [ -n "$app" ]; then
+    if [ -n "$app" ]; then
         [[ "$app" == *mariadbd* || "$app" == *mysqld* || "$app" == *mariadb* ]] && return 1
     fi
 
@@ -7364,11 +7382,17 @@ INI
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Configuring MariaDB"
         echo "   - Waiting for MariaDB service..."
         i=0
-        while ! mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping --silent; do
+        while ! mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping --silent 2>/dev/null; do
             sleep 1;
             i=$((i+1))
             if [ $i -ge 20 ]; then
-                gum style --foreground red "❌ MariaDB did not become available in time."
+                gum style --foreground red "❌ MariaDB did not become available on ${DB_HOST}:${DB_PORT} in time."
+                # Show the real connection error, not the SSL warning the
+                # --silent flag otherwise leaves as the only visible output.
+                local db_err
+                db_err=$(mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping 2>&1 | grep -v 'ssl-verify-server-cert' | tail -1)
+                [ -n "$db_err" ] && gum style --foreground red "   ${db_err}"
+                gum style --foreground yellow "   Check that MariaDB is listening on port ${DB_PORT}: ss -tlnp | grep ${DB_PORT}"
                 exit 1
             fi
         done

@@ -244,6 +244,17 @@ port_is_own() {
     [ -n "$app" ] && { [[ "$app" == *"$CADDY_CMD"* ]] || [[ "$app" == *frankenph* ]]; }
 }
 
+# True when a MariaDB/MySQL server answers on $1. Connect rather than inspect
+# the process: without root, lsof/ss cannot see a server owned by another uid
+# (the apt MariaDB runs as the `mysql` user), so a process-name check would
+# misread our own database as a foreign conflict. `mysqladmin ping` works for
+# any reachable server and is the same probe the install readiness loop uses.
+db_port_is_mariadb() {
+    local port="$1"
+    command -v mysqladmin >/dev/null 2>&1 || return 1
+    mysqladmin -h 127.0.0.1 -P "$port" ping --silent >/dev/null 2>&1
+}
+
 # True if $1 is occupied by something that isn't one of our own services.
 port_has_conflict() {
     port_is_free "$1" && return 1
@@ -267,8 +278,15 @@ db_port_has_conflict() {
     local port="$1" app=""
     port_is_free "$port" && return 1
 
+    # The configured port answering as MariaDB is our own database, regardless
+    # of whether we can name its process without root (apt MariaDB runs as the
+    # `mysql` user, invisible to lsof/ss for a non-root caller).
+    if [ "$port" = "${DB_PORT:-3306}" ] && db_port_is_mariadb "$port"; then
+        return 1
+    fi
+
     app=$(port_listening_app "$port")
-    if [ "$port" = "${DB_PORT:-3306}" ] && [ -n "$app" ]; then
+    if [ -n "$app" ]; then
         [[ "$app" == *mariadbd* || "$app" == *mysqld* || "$app" == *mariadb* ]] && return 1
     fi
 

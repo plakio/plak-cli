@@ -108,6 +108,7 @@ bash ./tests/snapshots.sh
 bash ./tests/import.sh
 bash ./tests/clone.sh
 bash ./tests/dashboard.sh
+bash ./tests/install-db-port.sh
 bash ./tests/wp-cli.sh
 bash ./tests/agent.sh
 
