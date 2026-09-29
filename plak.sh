@@ -3173,6 +3173,207 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'note' => 'Local request metrics from the site access log — not unique visitors or production analytics.',
             ]);
             exit;
+        case 'mail_messages':
+        case 'mail_message':
+        case 'mail_seen':
+        case 'mail_delete':
+            // Mailpit is reached over its local API. PLAK_MAILPIT_URL lets a
+            // non-default port (or a test double) be used.
+            $__mail_base = getenv('PLAK_MAILPIT_URL') ?: 'http://127.0.0.1:8025';
+            $__mail = function ($method, $path, $body = null) use ($__mail_base) {
+                $opts = ['http' => [
+                    'method' => $method,
+                    'timeout' => 5,
+                    'ignore_errors' => true,
+                    'header' => "Content-Type: application/json\r\n",
+                ]];
+                if ($body !== null) $opts['http']['content'] = json_encode($body);
+                $data = @file_get_contents(rtrim($__mail_base, '/') . $path, false, stream_context_create($opts));
+                if ($data === false) return [null, 0];
+                $status = 0;
+                foreach (($http_response_header ?? []) as $h) {
+                    if (preg_match('#^HTTP/\S+\s+(\d+)#', $h, $m)) $status = (int) $m[1];
+                }
+                return [$data, $status];
+            };
+            $__addr = function ($a) {
+                if (!is_array($a)) return '';
+                $email = (string) ($a['Address'] ?? '');
+                $name = (string) ($a['Name'] ?? '');
+                return $name !== '' ? $name . ' <' . $email . '>' : $email;
+            };
+
+            // A message belongs to a site when any of its addresses, subject or
+            // snippet carries one of the site's domains. WordPress's default
+            // From is wordpress@<host>, so this catches ordinary site mail;
+            // anything unattributable stays in the global view.
+            $__site_domains = [];
+            if (is_dir($sitedir)) {
+                foreach (scandir($sitedir) as $item) {
+                    if ($item === '.' || $item === '..') continue;
+                    $sp = $sitedir . '/' . $item;
+                    if (!is_dir($sp)) continue;
+                    $base = preg_replace('/\.localhost$/', '', $item);
+                    if (!preg_match('/^[a-zA-Z0-9-]+$/', $base)) continue;
+                    if ($site_name !== '' && $base !== $site_name) continue; // per-site scope
+                    $doms = [strtolower($item)];
+                    $map_file = $sp . '/mappings';
+                    if (is_file($map_file)) {
+                        foreach (file($map_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
+                            $d = strtolower(trim($d));
+                            if ($d !== '') $doms[] = $d;
+                        }
+                    }
+                    $__site_domains[$base . '.localhost'] = $doms;
+                }
+            }
+            $__mail_site_of = function (array $m) use ($__site_domains) {
+                if (!$__site_domains) return null;
+                $hay = strtolower(json_encode($m));
+                foreach ($__site_domains as $host => $doms) {
+                    foreach ($doms as $d) {
+                        if (strpos($hay, $d) !== false) return $host;
+                    }
+                }
+                return null;
+            };
+
+            if ($action === 'mail_messages') {
+                $limit = (int) ($input['limit'] ?? 50);
+                if ($limit < 1 || $limit > 200) $limit = 50;
+                $start = max(0, (int) ($input['start'] ?? 0));
+                $search = trim((string) ($input['search'] ?? ''));
+                $scope = (string) ($input['scope'] ?? 'all'); // all | site
+                $query = 'limit=' . $limit . '&start=' . $start;
+                if ($search !== '') $query .= '&search=' . rawurlencode($search);
+                [$data, $status] = $__mail('GET', '/api/v1/messages?' . $query);
+                if ($data === null || $status >= 400) {
+                    echo json_encode(['success' => false, 'offline' => true, 'message' => 'Mailpit is not reachable.']);
+                    exit;
+                }
+                $payload = json_decode($data, true) ?: [];
+                $out = [];
+                foreach (($payload['messages'] ?? []) as $m) {
+                    $site = $__mail_site_of($m);
+                    if ($scope === 'site' && $site === null) continue;
+                    $to = [];
+                    foreach ((array) ($m['To'] ?? []) as $t) { $to[] = $__addr($t); }
+                    $out[] = [
+                        'id' => (string) ($m['ID'] ?? ''),
+                        'from' => $__addr($m['From'] ?? null),
+                        'to' => array_values(array_filter($to)),
+                        'subject' => (string) ($m['Subject'] ?? '(no subject)'),
+                        'created' => $m['Created'] ?? ($m['Date'] ?? null),
+                        'read' => (bool) ($m['Read'] ?? false),
+                        'size' => (int) ($m['Size'] ?? 0),
+                        'attachments' => (int) ($m['Attachments'] ?? 0),
+                        'snippet' => (string) ($m['Snippet'] ?? ''),
+                        'site' => $site,
+                    ];
+                }
+                echo json_encode([
+                    'success' => true,
+                    'offline' => false,
+                    'scope' => $scope,
+                    'total' => (int) ($payload['total'] ?? 0),
+                    'unread' => (int) ($payload['unread'] ?? 0),
+                    'messages' => $out,
+                    // Make the retention policy explicit instead of implying a
+                    // complete history: Mailpit caps what it keeps.
+                    'note' => 'Mailpit keeps up to its configured maximum (default 500 messages).',
+                ]);
+                exit;
+            }
+
+            if ($action === 'mail_message') {
+                $id = (string) ($input['id'] ?? '');
+                if ($id === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $id)) {
+                    echo json_encode(['success' => false, 'message' => 'Invalid message id.']);
+                    exit;
+                }
+                [$data, $status] = $__mail('GET', '/api/v1/message/' . rawurlencode($id));
+                if ($data === null || $status >= 400) {
+                    echo json_encode(['success' => false, 'offline' => true, 'message' => 'Mailpit is not reachable.']);
+                    exit;
+                }
+                $m = json_decode($data, true) ?: [];
+                $html = (string) ($m['HTML'] ?? '');
+                $text = (string) ($m['Text'] ?? '');
+
+                // Resolve cid: inline images to data: URIs server-side, so the
+                // sandboxed frame shows them without loading anything remote.
+                foreach ((array) ($m['Inline'] ?? []) as $part) {
+                    if (!isset($part['ContentID'], $part['PartID'])) continue;
+                    $cid = (string) $part['ContentID'];
+                    if ($cid === '' || strpos($html, 'cid:' . $cid) === false) continue;
+                    [$bytes, $pstatus] = $__mail('GET', '/api/v1/message/' . rawurlencode($id) . '/part/' . rawurlencode((string) $part['PartID']));
+                    if ($bytes !== null && $pstatus < 400 && strlen($bytes) < 2097152) {
+                        $ct = (string) ($part['ContentType'] ?? 'application/octet-stream');
+                        $html = str_replace('cid:' . $cid, 'data:' . $ct . ';base64,' . base64_encode($bytes), $html);
+                    }
+                }
+                // Strip anything executable before the HTML reaches the browser.
+                $html = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html);
+                $html = preg_replace('/\son\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $html);
+                $html = preg_replace('/\b(href|src)\s*=\s*(["\']?)\s*javascript:[^"\'>\s]*/i', '$1=$2#', $html);
+
+                $links = [];
+                if (preg_match_all('#https?://[^\s"\'<>]+#i', $html . ' ' . $text, $lm)) {
+                    foreach ($lm[0] as $u) {
+                        $u = html_entity_decode($u, ENT_QUOTES);
+                        if (!in_array($u, $links, true)) $links[] = $u;
+                    }
+                }
+                $to = [];
+                foreach ((array) ($m['To'] ?? []) as $t) { $to[] = $__addr($t); }
+
+                // Opening a message marks it read; failures are non-fatal.
+                $__mail('PUT', '/api/v1/messages', ['IDs' => [$id], 'Read' => true]);
+
+                echo json_encode([
+                    'success' => true,
+                    'id' => $id,
+                    'subject' => (string) ($m['Subject'] ?? '(no subject)'),
+                    'from' => $__addr($m['From'] ?? null),
+                    'to' => array_values(array_filter($to)),
+                    'date' => $m['Date'] ?? ($m['Created'] ?? null),
+                    'html' => $html,
+                    'text' => $text,
+                    'headers' => $m['Headers'] ?? null,
+                    'attachments' => $m['Attachments'] ?? [],
+                    'links' => array_slice(array_values(array_unique($links)), 0, 50),
+                    'site' => $__mail_site_of($m),
+                ]);
+                exit;
+            }
+
+            if ($action === 'mail_seen' || $action === 'mail_delete') {
+                $ids = $input['ids'] ?? [];
+                if (is_string($ids)) $ids = [$ids];
+                if (!is_array($ids) || !count($ids)) {
+                    echo json_encode(['success' => false, 'message' => 'No messages selected.']);
+                    exit;
+                }
+                $clean = [];
+                foreach ($ids as $i) {
+                    if (is_string($i) && preg_match('/^[A-Za-z0-9._-]+$/', $i)) $clean[] = $i;
+                }
+                if (!$clean) {
+                    echo json_encode(['success' => false, 'message' => 'Invalid message id.']);
+                    exit;
+                }
+                if ($action === 'mail_seen') {
+                    [$data, $status] = $__mail('PUT', '/api/v1/messages', ['IDs' => $clean, 'Read' => (bool) ($input['read'] ?? true)]);
+                } else {
+                    [$data, $status] = $__mail('DELETE', '/api/v1/messages', ['IDs' => $clean]);
+                }
+                if ($data === null || $status >= 400) {
+                    echo json_encode(['success' => false, 'offline' => true, 'message' => 'Mailpit is not reachable.']);
+                    exit;
+                }
+                echo json_encode(['success' => true, 'ids' => $clean]);
+                exit;
+            }
         case 'get_login_link':
             $response = ['success' => false, 'message' => 'An unknown error occurred.'];
             if (!empty($site_name)) {
@@ -3691,6 +3892,29 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .traffic-list li { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.78rem; }
         .traffic-list code { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .traffic-list span { color: var(--text-faint); font-family: var(--font-mono); flex: none; }
+
+        /* Mail inbox. */
+        .mail-modal { min-width: min(720px, 94vw); max-width: 860px; max-height: 86vh; display: flex; flex-direction: column; }
+        .mail-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.6rem; }
+        .mail-head h3 { margin: 0; }
+        .mail-scope { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.8rem; font-style: normal; }
+        .mail-head-actions { display: flex; align-items: center; gap: 0.4rem; }
+        .mail-controls { margin-bottom: 0.5rem; }
+        .mail-list { list-style: none; margin: 0; padding: 0; overflow: auto; max-height: 60vh; }
+        .mail-row { display: grid; grid-template-columns: 1fr auto; gap: 0.6rem; align-items: center; padding: 0.55rem 0; border-bottom: 1px solid var(--panel-border); }
+        .mail-row.unread .mail-subject { font-weight: 600; color: var(--text); }
+        .mail-open { display: flex; flex-direction: column; gap: 0.1rem; text-align: left; background: transparent; border: 0; color: inherit; cursor: pointer; padding: 0; min-width: 0; font: inherit; }
+        .mail-from { font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-dim); }
+        .mail-subject { font-size: 0.9rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mail-snippet { font-size: 0.78rem; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mail-row-meta { display: flex; align-items: center; gap: 0.4rem; flex: none; }
+        .mail-date { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-faint); white-space: nowrap; }
+        .mail-detail-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
+        .mail-detail-subject { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mail-detail-meta { font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-dim); margin: 0 0 0.5rem; word-break: break-word; }
+        .mail-links { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; max-height: 5.5rem; overflow: auto; }
+        .mail-imgtoggle { margin-bottom: 0.5rem; }
+        .mail-frame { width: 100%; height: 55vh; border: 1px solid var(--panel-border); border-radius: var(--radius-md); background: #fff; }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -3716,6 +3940,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         <svg class="pill-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="12" height="9" rx="1.5"/><path d="M2.5 5 8 9l5.5-4"/></svg>
                         mail
                     </a>
+                    <button class="pill" @click="openMail('all')" title="Read captured mail in the dashboard">inbox</button>
                     <button class="pill primary" @click="toggleAdd()" x-text="adding ? 'cancel' : '+ add site'"></button>
                 </div>
             </header>
@@ -3875,6 +4100,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     </template>
                     <a class="site-action-btn" :href="adminerUrl" target="_blank" rel="noopener">database</a>
                     <a class="site-action-btn" :href="mailpitUrl" target="_blank" rel="noopener">mail</a>
+                    <button class="site-action-btn" @click="openMail('site', detailSite.name)">inbox</button>
                     <template x-if="detailSite.type === 'WordPress'">
                         <button class="site-action-btn" :class="{ loading: detailLoading }" @click="loadSiteInfo(detailSite.name)" :disabled="detailLoading">
                             <span class="btn-label" x-text="detailLoading ? 'loading…' : 'refresh info'"></span>
@@ -4152,6 +4378,74 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
 
     <div x-show="snackbar.visible" x-transition.opacity.duration.200ms class="snackbar" :class="{ error: snackbar.isError }" x-text="snackbar.message" style="display: none;"></div>
 
+    <div x-show="showMail" x-transition.opacity class="modal-backdrop" @click.self="closeMail()" @keydown.escape.window="showMail && closeMail()" style="display: none;">
+        <div class="modal mail-modal">
+            <div class="mail-head">
+                <h3>Mail <span class="mail-scope" x-text="mailScope === 'site' ? '· ' + mailSiteName : '· all sites'"></span></h3>
+                <div class="mail-head-actions">
+                    <span class="comp-badge" x-show="mailUnread" x-cloak x-text="mailUnread + ' unread'"></span>
+                    <button class="pill" @click="loadMail()" :disabled="mailLoading" x-text="mailLoading ? '…' : 'refresh'"></button>
+                    <button class="pill" @click="closeMail()">close</button>
+                </div>
+            </div>
+
+            <template x-if="!mailSelected">
+                <div>
+                    <div class="mail-controls">
+                        <input type="text" class="filter-input log-search" x-model="mailSearch" @input.debounce.400ms="loadMail()" placeholder="search mail…" spellcheck="false" autocomplete="off" autocapitalize="off">
+                    </div>
+                    <p class="comp-error" x-show="mailError" x-text="mailError" x-cloak></p>
+                    <p class="comp-loading" x-show="mailOffline" x-cloak>Mailpit is not reachable. Start it with <code>plak install</code>.</p>
+                    <ul class="mail-list" x-show="!mailOffline" x-cloak>
+                        <template x-for="m in mailMessages" :key="m.id">
+                            <li class="mail-row" :class="{ unread: !m.read }">
+                                <button type="button" class="mail-open" @click="openMessage(m.id)">
+                                    <span class="mail-from" x-text="m.from"></span>
+                                    <span class="mail-subject" x-text="m.subject"></span>
+                                    <span class="mail-snippet" x-text="m.snippet"></span>
+                                </button>
+                                <div class="mail-row-meta">
+                                    <span class="comp-badge" x-show="m.site" x-cloak x-text="m.site"></span>
+                                    <span class="comp-badge" x-show="m.attachments" x-cloak x-text="'📎 ' + m.attachments"></span>
+                                    <span class="mail-date" x-text="m.created ? new Date(m.created).toLocaleString() : ''"></span>
+                                    <button type="button" class="site-action-btn" @click="toggleSeen(m)" x-text="m.read ? 'unread' : 'read'"></button>
+                                    <button type="button" class="site-action-btn danger" @click="deleteMail(m.id)">delete</button>
+                                </div>
+                            </li>
+                        </template>
+                        <li class="empty" x-show="mailMessages.length === 0" x-cloak>No messages.</li>
+                    </ul>
+                    <p class="comp-hint" x-text="mailNote"></p>
+                </div>
+            </template>
+
+            <template x-if="mailSelected">
+                <div class="mail-detail">
+                    <div class="mail-detail-head">
+                        <button class="site-action-btn" @click="closeMessage()">← back</button>
+                        <div class="mail-detail-subject" x-text="mailDetail ? mailDetail.subject : '…'"></div>
+                    </div>
+                    <p class="mail-detail-meta" x-show="mailDetail" x-cloak x-text="mailDetail && (mailDetail.from + '  →  ' + (mailDetail.to || []).join(', '))"></p>
+                    <p class="comp-error" x-show="mailDetailError" x-text="mailDetailError" x-cloak></p>
+                    <template x-if="mailDetail">
+                        <div>
+                            <div class="mail-links" x-show="mailDetail.links && mailDetail.links.length" x-cloak>
+                                <template x-for="l in mailDetail.links" :key="l">
+                                    <button type="button" class="console-hist-btn" @click="copyLink(l)" :title="'Copy ' + l" x-text="l"></button>
+                                </template>
+                            </div>
+                            <label class="plain-toggle mail-imgtoggle">
+                                <input type="checkbox" x-model="mailShowImages"> load remote images
+                            </label>
+                            <iframe class="mail-frame" sandbox="" referrerpolicy="no-referrer" :srcdoc="mailFrameHtml()" x-show="mailDetail.html" x-cloak></iframe>
+                            <pre class="console-out" x-show="!mailDetail.html" x-text="mailDetail.text"></pre>
+                        </div>
+                    </template>
+                </div>
+            </template>
+        </div>
+    </div>
+
     <script>
         const PORT_SUFFIX = '<?= $__plak_site_port_suffix ?>';
         const SITES_DIR = 'SITES_DIR_PLACEHOLDER';
@@ -4205,6 +4499,23 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 traffic: null,
                 trafficLoading: false,
                 trafficError: null,
+                // Mail inbox (global or filtered by the open site).
+                showMail: false,
+                mailScope: 'all',
+                mailSiteName: '',
+                mailMessages: [],
+                mailTotal: 0,
+                mailUnread: 0,
+                mailNote: '',
+                mailLoading: false,
+                mailError: null,
+                mailOffline: false,
+                mailSearch: '',
+                mailSelected: null,
+                mailDetail: null,
+                mailDetailError: null,
+                mailShowImages: false,
+                mailPoll: null,
                 isRefreshingSizes: false,
                 filter: '',
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
@@ -4604,6 +4915,113 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         return entry.method + ' ' + entry.uri + ' → ' + entry.status;
                     }
                     return entry.message + (entry.location ? '  —  ' + entry.location : '');
+                },
+
+                openMail(scope = 'all', siteName = null) {
+                    this.mailScope = scope;
+                    this.mailSiteName = siteName || (this.detailSite ? this.detailSite.name : '');
+                    this.showMail = true;
+                    this.mailSelected = null;
+                    this.mailDetail = null;
+                    this.mailDetailError = null;
+                    this.loadMail();
+                    this.startMailPoll();
+                },
+
+                closeMail() {
+                    this.showMail = false;
+                    this.stopMailPoll();
+                },
+
+                // Poll while the list is visible so new mail appears on its own.
+                // Skipped while a message is open or Mailpit is known offline.
+                startMailPoll() {
+                    this.stopMailPoll();
+                    this.mailPoll = setInterval(() => {
+                        if (this.showMail && !this.mailSelected && !this.mailOffline) this.loadMail(true);
+                    }, 5000);
+                },
+
+                stopMailPoll() {
+                    if (this.mailPoll) { clearInterval(this.mailPoll); this.mailPoll = null; }
+                },
+
+                async loadMail(silent = false) {
+                    if (!silent) this.mailLoading = true;
+                    const res = await this.apiPost('mail_messages', {
+                        scope: this.mailScope,
+                        site_name: this.mailScope === 'site' ? this.mailSiteName : '',
+                        search: this.mailSearch,
+                    });
+                    this.mailLoading = false;
+                    if (!res.success) {
+                        this.mailOffline = !!res.offline;
+                        this.mailError = res.offline ? null : (res.message || 'Could not read mail.');
+                        if (!silent) this.mailMessages = [];
+                        return;
+                    }
+                    this.mailOffline = false;
+                    this.mailError = null;
+                    this.mailMessages = res.messages || [];
+                    this.mailTotal = res.total || 0;
+                    this.mailUnread = res.unread || 0;
+                    this.mailNote = res.note || '';
+                },
+
+                async openMessage(id) {
+                    this.mailSelected = id;
+                    this.mailDetail = null;
+                    this.mailDetailError = null;
+                    this.mailShowImages = false;
+                    const res = await this.apiPost('mail_message', { id });
+                    if (this.mailSelected !== id) return;
+                    if (!res.success) {
+                        this.mailDetailError = res.message || 'Could not read the message.';
+                        return;
+                    }
+                    this.mailDetail = res;
+                    const row = this.mailMessages.find(m => m.id === id);
+                    if (row) row.read = true;
+                },
+
+                closeMessage() {
+                    this.mailSelected = null;
+                    this.mailDetail = null;
+                    this.loadMail(true);
+                },
+
+                // The message body is isolated in a sandboxed iframe. Remote
+                // images stay blocked by the CSP until the user opts in.
+                mailFrameHtml() {
+                    if (!this.mailDetail) return '';
+                    const csp = "default-src 'none'; style-src 'unsafe-inline'"
+                        + (this.mailShowImages ? '; img-src data: https:' : '; img-src data:');
+                    return '<!DOCTYPE html><html><head><meta charset="utf-8">'
+                        + '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
+                        + '<base target="_blank"></head><body>' + (this.mailDetail.html || '') + '</body></html>';
+                },
+
+                async toggleSeen(m) {
+                    const res = await this.apiPost('mail_seen', { ids: [m.id], read: !m.read });
+                    if (res.success) m.read = !m.read;
+                },
+
+                async deleteMail(id) {
+                    if (!confirm('Delete this message?')) return;
+                    const res = await this.apiPost('mail_delete', { ids: [id] });
+                    if (res.success) {
+                        this.mailMessages = this.mailMessages.filter(m => m.id !== id);
+                        this.showSnack('Message deleted.');
+                    }
+                },
+
+                async copyLink(url) {
+                    try {
+                        await navigator.clipboard.writeText(url);
+                        this.showSnack('Link copied.');
+                    } catch (e) {
+                        this.showSnack('Could not copy link.', true);
+                    }
                 },
 
                 applyTheme() {

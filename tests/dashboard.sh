@@ -9,8 +9,10 @@ cd "$ROOT_DIR"
 
 tmpdir=$(mktemp -d)
 server_pid=""
+mailpit_pid=""
 cleanup() {
     [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
+    [ -n "$mailpit_pid" ] && kill "$mailpit_pid" 2>/dev/null || true
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -138,6 +140,62 @@ chmod +x "$tmpdir/plak-wp-stub"
 sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/plak-wp-stub';|" "$GUI_DIR/api.php"
 export WP_CALLS="$tmpdir/wp-calls.log"
 : > "$WP_CALLS"
+
+# A Mailpit API double for the mail panel (CLI-15). Serves canned messages,
+# a HTML body (with a script and a cid: image), and records seen/delete calls.
+cat > "$tmpdir/mailpit.php" <<'MAILPIT'
+<?php
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$method = $_SERVER['REQUEST_METHOD'];
+if ($method === 'GET' && $path === '/api/v1/messages') {
+    header('Content-Type: application/json');
+    echo json_encode([
+        'total' => 2, 'unread' => 1, 'count' => 2, 'start' => 0,
+        'messages' => [
+            ['ID' => 'm1', 'From' => ['Name' => 'WordPress', 'Address' => 'wordpress@demo.localhost'], 'To' => [['Name' => '', 'Address' => 'admin@example.test']], 'Subject' => 'Reset password', 'Created' => '2026-09-29T10:00:00Z', 'Read' => false, 'Size' => 1234, 'Attachments' => 0, 'Snippet' => 'Click to reset'],
+            ['ID' => 'm2', 'From' => ['Name' => 'Other', 'Address' => 'noreply@other.test'], 'To' => [['Name' => '', 'Address' => 'x@y.test']], 'Subject' => 'Unattributed', 'Created' => '2026-09-29T11:00:00Z', 'Read' => true, 'Size' => 500, 'Attachments' => 1, 'Snippet' => 'hello'],
+        ],
+    ]);
+    exit;
+}
+if ($method === 'GET' && preg_match('#^/api/v1/message/([^/]+)$#', $path, $m)) {
+    header('Content-Type: application/json');
+    echo json_encode([
+        'ID' => $m[1],
+        'From' => ['Name' => 'WordPress', 'Address' => 'wordpress@demo.localhost'],
+        'To' => [['Name' => '', 'Address' => 'admin@example.test']],
+        'Subject' => 'Reset password',
+        'Date' => '2026-09-29T10:00:00Z',
+        'HTML' => '<p>Hi there</p><script>alert(1)</script><a href="https://demo.localhost/wp-login.php?key=abc">Reset</a><img src="cid:img1">',
+        'Text' => 'Reset: https://demo.localhost/wp-login.php?key=abc',
+        'Headers' => ['Subject' => 'Reset password'],
+        'Attachments' => [],
+        'Inline' => [['PartID' => '2', 'ContentType' => 'image/png', 'ContentID' => 'img1']],
+    ]);
+    exit;
+}
+if ($method === 'GET' && preg_match('#^/api/v1/message/([^/]+)/part/(\d+)$#', $path, $m)) {
+    header('Content-Type: image/png');
+    echo base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==');
+    exit;
+}
+if ($method === 'PUT' && $path === '/api/v1/messages') {
+    file_put_contents(getenv('MAILPIT_LOG'), 'PUT ' . file_get_contents('php://input') . "\n", FILE_APPEND);
+    header('Content-Type: application/json'); echo '{}'; exit;
+}
+if ($method === 'DELETE' && $path === '/api/v1/messages') {
+    file_put_contents(getenv('MAILPIT_LOG'), 'DELETE ' . file_get_contents('php://input') . "\n", FILE_APPEND);
+    header('Content-Type: application/json'); echo '{}'; exit;
+}
+http_response_code(404);
+echo '{}';
+MAILPIT
+export MAILPIT_LOG="$tmpdir/mailpit.log"
+: > "$MAILPIT_LOG"
+mailpit_port=$(( (RANDOM % 2000) + 22000 ))
+php -S 127.0.0.1:"$mailpit_port" "$tmpdir/mailpit.php" >/dev/null 2>&1 &
+mailpit_pid=$!
+export PLAK_MAILPIT_URL="http://127.0.0.1:$mailpit_port"
 
 # Serve the generated dashboard with PHP's built-in server so $_GET, $_SERVER
 # and php://input behave as they do under FrankenPHP.
@@ -320,6 +378,47 @@ traffic_1h=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localh
     -H 'Content-Type: application/json' --data "{\"action\":\"site_traffic\",\"site_name\":\"demo\",\"period\":\"1h\",\"csrf\":\"$token\"}" "$base/api.php")
 grep -q '"requests":6' <<<"$traffic_1h" || fail "traffic 1h window dropped recent requests"
 
+# --- CLI-15: mail list, attribution and the global fallback -----------------
+mail_all=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"mail_messages\",\"scope\":\"all\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'Reset password' <<<"$mail_all" || fail "mail_messages did not list mail: $mail_all"
+grep -q 'Unattributed' <<<"$mail_all" || fail "global mail view dropped unattributable mail"
+grep -q '"site":"demo.localhost"' <<<"$mail_all" || fail "mail attribution did not match the site domain"
+grep -q 'configured maximum' <<<"$mail_all" || fail "mail retention policy was not stated"
+
+mail_site=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"mail_messages\",\"scope\":\"site\",\"site_name\":\"demo\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'Reset password' <<<"$mail_site" || fail "per-site mail view dropped the site's mail: $mail_site"
+if grep -q 'Unattributed' <<<"$mail_site"; then fail "per-site mail view leaked unattributed mail"; fi
+
+# --- CLI-15: detail sanitizes HTML, extracts links, resolves cid: images ----
+: > "$MAILPIT_LOG"
+detail=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"mail_message\",\"id\":\"m1\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":true' <<<"$detail" || fail "mail_message failed: $detail"
+if grep -q 'alert(1)' <<<"$detail"; then fail "mail HTML was not sanitized"; fi
+grep -q 'base64,' <<<"$detail" || fail "inline cid image was not resolved to a data URI: $detail"
+grep -q 'wp-login.php?key=abc' <<<"$detail" || fail "message links were not extracted"
+grep -q 'PUT' "$MAILPIT_LOG" || fail "opening a message did not mark it read"
+
+# --- CLI-15: seen and delete go through Mailpit -----------------------------
+: > "$MAILPIT_LOG"
+curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"mail_seen\",\"ids\":[\"m2\"],\"read\":false,\"csrf\":\"$token\"}" "$base/api.php" >/dev/null
+grep -q '"IDs":\["m2"\]' "$MAILPIT_LOG" || fail "mail_seen did not reach Mailpit"
+grep -q '"Read":false' "$MAILPIT_LOG" || fail "mail_seen ignored the read flag"
+
+curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"mail_delete\",\"ids\":[\"m1\"],\"csrf\":\"$token\"}" "$base/api.php" >/dev/null
+grep -q 'DELETE' "$MAILPIT_LOG" || fail "mail_delete did not reach Mailpit"
+
+# --- CLI-15: a stopped Mailpit is reported as offline, not as empty --------
+kill "$mailpit_pid" 2>/dev/null || true
+mailpit_pid=""
+offline_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"mail_messages\",\"scope\":\"all\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"offline":true' <<<"$offline_out" || fail "a stopped Mailpit was not reported as offline: $offline_out"
+
 # --- add_site passes --no-agent only when the box is unchecked (CLI-33) ------
 : > "$WP_CALLS"
 add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
@@ -350,6 +449,8 @@ grep -q 'runConsole' "$GUI_DIR/index.php" || fail "index.php lacks the WP-CLI co
 grep -q "case 'site_users'" "$GUI_DIR/api.php" || fail "api.php lacks the site_users action"
 grep -q 'loadTraffic' "$GUI_DIR/index.php" || fail "index.php lacks the traffic panel"
 grep -q "case 'site_logs'" "$GUI_DIR/api.php" || fail "api.php lacks the site_logs action"
+grep -q 'openMail' "$GUI_DIR/index.php" || fail "index.php lacks the mail inbox"
+grep -q "case 'mail_messages'" "$GUI_DIR/api.php" || fail "api.php lacks the mail_messages action"
 
 # --- A public source address is rejected by the PHP guard ---
 API_FILE="$GUI_DIR/api.php" HOME="$HOME" php -r '
