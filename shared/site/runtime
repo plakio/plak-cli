@@ -547,11 +547,63 @@ read -r -d '' build_mu_plugin << 'heredoc'
  * Plugin Name: Plak CLI Helper
  * Plugin URI: https://github.com/plakio/plak-cli
  * Description: Collection of helper functions for Plak CLI (one-time logins, dynamic siteurl, auto-update email silencing).
- * Version: 0.4.0
+ * Version: 0.5.0
  * Author: Plak
  * Author URI: https://github.com/plakio/plak-cli
  * Text Domain: plak-cli-helper
  */
+
+/**
+ * Lifetime of a one-time login link, in seconds. Links are local-development
+ * credentials, so they stay short-lived even though they are single-use.
+ */
+if ( ! defined( 'PLAK_LOGIN_TOKEN_TTL' ) ) {
+	define( 'PLAK_LOGIN_TOKEN_TTL', 900 );
+}
+
+/**
+ * Store a fresh one-time login token for a user. The stored value carries its
+ * own expiry so a link cannot outlive PLAK_LOGIN_TOKEN_TTL even if it is never
+ * consumed.
+ */
+function plak_cli_store_login_token( $user_id, $token ) {
+	update_user_meta( $user_id, 'plak_site_login_token', ( time() + PLAK_LOGIN_TOKEN_TTL ) . '|' . $token );
+}
+
+/**
+ * Read a stored one-time login token. Returns [ token, expires ] or null.
+ * Tokens written by older Plak versions had no expiry; they are rejected so a
+ * link minted before the upgrade cannot be replayed indefinitely.
+ */
+function plak_cli_read_login_token( $user_id ) {
+	$raw = (string) get_user_meta( $user_id, 'plak_site_login_token', true );
+	if ( $raw === '' || strpos( $raw, '|' ) === false ) {
+		return null;
+	}
+	[ $exp, $token ] = explode( '|', $raw, 2 );
+	if ( ! ctype_digit( $exp ) || $token === '' ) {
+		return null;
+	}
+	return [ $token, (int) $exp ];
+}
+
+/**
+ * Build a one-time login URL for a user, storing a fresh token.
+ */
+function plak_cli_build_login_url( $user ) {
+	// Short token: sha1 is 40 hex chars; 7 is still 16^7 ≈ 268M combinations,
+	// plenty for a one-time-use local-dev login link, and short enough to fit
+	// a narrow terminal without wrapping.
+	$token = substr( sha1( wp_generate_password() ), 0, 7 );
+	plak_cli_store_login_token( $user->ID, $token );
+	return add_query_arg(
+		[
+			'user_id'               => $user->ID,
+			'plak_site_login_token' => $token,
+		],
+		wp_login_url()
+	);
+}
 
 /**
  * Registers AJAX callback for quick logins
@@ -567,19 +619,8 @@ function plak_cli_quick_login_action_callback() {
 
 	$post->user_login = str_replace( "%20", " ", $post->user_login );
 	$user     = get_user_by( 'login', $post->user_login );
-	$password = wp_generate_password();
-	// Short token: sha1 is 40 hex chars; 7 is still 16^7 ≈ 268M combinations,
-	// plenty for a one-time-use local-dev login link, and short enough to fit
-	// a narrow terminal without wrapping.
-	$token    = substr( sha1( $password ), 0, 7 );
 
-	update_user_meta( $user->ID, 'plak_site_login_token', $token );
-	$query_args = [
-			'user_id'          => $user->ID,
-			'plak_site_login_token' => $token,
-		];
-	$login_url    = wp_login_url();
-		$one_time_url = add_query_arg( $query_args, $login_url );
+	$one_time_url = plak_cli_build_login_url( $user );
 
 	echo $one_time_url;
 	wp_die();
@@ -609,11 +650,11 @@ function plak_cli_login_handle_token() {
 		wp_die( $error );
 	}
 
-	$token    = get_user_meta( $user->ID, 'plak_site_login_token', true );
+	$stored   = plak_cli_read_login_token( $user->ID );
 	$is_valid = false;
-		if ( hash_equals( $token, $_GET['plak_site_login_token'] ) ) {
-			$is_valid = true;
-		}
+	if ( $stored && time() <= $stored[1] && hash_equals( $stored[0], $_GET['plak_site_login_token'] ) ) {
+		$is_valid = true;
+	}
 
 	if ( ! $is_valid ) {
 		wp_die( $error );
@@ -663,23 +704,8 @@ if (defined('WP_CLI') && WP_CLI) {
             return;
         }
 
-        // Generate tokens. Short token (7 hex chars from sha1) keeps the
-        // one-time URL readable on narrow terminals while still leaving
-        // ~268M combinations for a one-time-use local-dev link.
-        $password = wp_generate_password();
-        $token    = substr( sha1( $password ), 0, 7 );
-
-        // Update user meta with the new token
-        update_user_meta( $user->ID, 'plak_site_login_token', $token );
-        // Construct the one-time login URL
-        $query_args = [
-            'user_id'          => $user->ID,
-            'plak_site_login_token' => $token,
-        ];
-        $login_url    = wp_login_url();
-        $one_time_url = add_query_arg($query_args, $login_url);
-        // Output the URL to the CLI
-        WP_CLI::log("$one_time_url");
+        // Output the one-time URL to the CLI. The token carries its own expiry.
+        WP_CLI::log( plak_cli_build_login_url( $user ) );
     }
 
     WP_CLI::add_command( 'user login', 'plak_cli_generate_login_link' );
@@ -1789,6 +1815,142 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'message' => trim($out) !== '' ? trim($out) : ($code === 0 ? 'Done.' : 'wp-cli failed (' . $code . ').'),
             ]);
             exit;
+        case 'site_users':
+        case 'site_user_login':
+        case 'site_cron':
+        case 'site_cron_run':
+        case 'site_wpcli':
+            // Site tools backed by WP-CLI. Arguments are built here from
+            // validated inputs and passed one per escapeshellarg through
+            // `plak wp`, so nothing the browser sends reaches a shell.
+            if (empty($site_name) || !preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid site name.']);
+                exit;
+            }
+            if (!is_file($sitedir . '/' . $site_name . '.localhost/public/wp-config.php')) {
+                echo json_encode(['success' => false, 'message' => 'Not a WordPress site.']);
+                exit;
+            }
+            $__wp = function (array $args) use ($user_home, $plak_site_path, $site_name) {
+                $cmd = 'HOME=' . escapeshellarg($user_home) . ' ' . escapeshellarg($plak_site_path) . ' wp ' . escapeshellarg($site_name);
+                foreach ($args as $a) $cmd .= ' ' . escapeshellarg((string) $a);
+                $t0 = microtime(true);
+                exec($cmd . ' 2>&1', $lines, $code);
+                $out = preg_replace('/\x1b\[[0-9;]*m/', '', implode("\n", $lines));
+                return [$out, (int) $code, round((microtime(true) - $t0) * 1000)];
+            };
+
+            if ($action === 'site_users') {
+                [$out, $code] = $__wp(['user', 'list', '--fields=ID,user_login,display_name,user_email,roles', '--format=json', '--skip-plugins', '--skip-themes']);
+                $users = json_decode(trim($out), true);
+                if (!is_array($users)) {
+                    echo json_encode(['success' => false, 'message' => trim($out) !== '' ? trim(substr($out, -600)) : 'wp-cli returned nothing.']);
+                    exit;
+                }
+                echo json_encode(['success' => true, 'items' => array_values($users)]);
+                exit;
+            }
+
+            if ($action === 'site_user_login') {
+                $login = (string) ($input['user_login'] ?? '');
+                if ($login === '' || !preg_match('/^[A-Za-z0-9._@-]+$/', $login)) {
+                    echo json_encode(['success' => false, 'message' => 'Invalid user.']);
+                    exit;
+                }
+                // `plak login` re-injects the helper and mints a token that
+                // expires and is single-use; --raw keeps the output parseable.
+                $command = sprintf(
+                    'HOME=%s %s login %s %s --raw 2>&1',
+                    escapeshellarg($user_home),
+                    escapeshellarg($plak_site_path),
+                    escapeshellarg($site_name),
+                    escapeshellarg($login)
+                );
+                exec($command, $lines, $rc);
+                $url = '';
+                foreach ($lines as $line) {
+                    if (strpos($line, 'https://') !== false && strpos($line, '/wp-login.php') !== false) {
+                        $url = trim(preg_replace('/[│└┌]/u', '', $line));
+                        break;
+                    }
+                }
+                if ($url !== '') {
+                    echo json_encode(['success' => true, 'url' => $url, 'user' => $login]);
+                } else {
+                    echo json_encode(['success' => false, 'message' => 'Could not generate a login link.', 'output' => implode("\n", $lines)]);
+                }
+                exit;
+            }
+
+            if ($action === 'site_cron') {
+                [$out, $code] = $__wp(['cron', 'event', 'list', '--fields=hook,next_run_gmt,recurrence,interval', '--format=json', '--skip-plugins', '--skip-themes']);
+                $events = json_decode(trim($out), true);
+                if (!is_array($events)) {
+                    echo json_encode(['success' => false, 'message' => trim($out) !== '' ? trim(substr($out, -600)) : 'wp-cli returned nothing.']);
+                    exit;
+                }
+                echo json_encode(['success' => true, 'items' => array_values($events)]);
+                exit;
+            }
+
+            if ($action === 'site_cron_run') {
+                // An allow-listed hook, or the literal --due-now sentinel.
+                $hook = (string) ($input['hook'] ?? '');
+                if ($hook === '--due-now') {
+                    $wp_args = ['cron', 'event', 'run', '--due-now', '--skip-plugins', '--skip-themes'];
+                } elseif ($hook !== '' && preg_match('/^[A-Za-z0-9._:\/-]+$/', $hook)) {
+                    $wp_args = ['cron', 'event', 'run', $hook, '--skip-plugins', '--skip-themes'];
+                } else {
+                    echo json_encode(['success' => false, 'message' => 'Invalid cron hook.']);
+                    exit;
+                }
+                [$out, $code, $ms] = $__wp($wp_args);
+                echo json_encode([
+                    'success' => $code === 0,
+                    'output' => trim($out),
+                    'exit_code' => $code,
+                    'duration_ms' => $ms,
+                    'message' => $code === 0 ? 'Cron event run.' : 'wp-cli failed (' . $code . ').',
+                ]);
+                exit;
+            }
+
+            // WP-CLI console: the browser sends an argv array, each element is
+            // quoted and appended to `plak wp <site>`. There is no shell string
+            // to inject into, so arguments are WP-CLI input, never shell input.
+            $raw_args = $input['args'] ?? [];
+            if (is_string($raw_args)) {
+                $raw_args = preg_split('/\s+/', trim($raw_args));
+            }
+            if (!is_array($raw_args) || count($raw_args) > 64) {
+                echo json_encode(['success' => false, 'message' => 'Invalid arguments.']);
+                exit;
+            }
+            $wp_args = [];
+            foreach ($raw_args as $a) {
+                if (!is_scalar($a)) {
+                    echo json_encode(['success' => false, 'message' => 'Invalid arguments.']);
+                    exit;
+                }
+                $a = (string) $a;
+                if (strlen($a) > 2000) {
+                    echo json_encode(['success' => false, 'message' => 'Argument too long.']);
+                    exit;
+                }
+                $wp_args[] = $a;
+            }
+            if (empty($wp_args)) {
+                echo json_encode(['success' => false, 'message' => 'No command provided.']);
+                exit;
+            }
+            [$out, $code, $ms] = $__wp($wp_args);
+            echo json_encode([
+                'success' => $code === 0,
+                'output' => $out,
+                'exit_code' => $code,
+                'duration_ms' => $ms,
+            ]);
+            exit;
         case 'get_login_link':
             $response = ['success' => false, 'message' => 'An unknown error occurred.'];
             if (!empty($site_name)) {
@@ -2268,6 +2430,15 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .comp-badge.mu { background: var(--pill-static-bg); color: var(--pill-static-fg); }
         .comp-badge.update { background: var(--accent); color: var(--accent-fg); }
         .agent-badge { font-size: 0.7rem; border-radius: var(--radius-pill); padding: 0.15rem 0.55rem; background: var(--pill-wp-bg); color: var(--pill-wp-fg); white-space: nowrap; }
+
+        /* WP-CLI console inside a site's tools panel. */
+        .console-form { display: flex; align-items: center; gap: 0.5rem; margin: 0.25rem 0 0.6rem; }
+        .console-input { background: var(--input-bg); border: 1px solid var(--panel-border); border-radius: var(--radius-md); padding: 0.5rem 0.7rem; }
+        .console-input:focus { border-color: var(--accent); }
+        .console-out { background: var(--input-bg); border: 1px solid var(--panel-border); border-radius: var(--radius-md); padding: 0.8rem 0.9rem; margin: 0 0 0.7rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 22rem; overflow: auto; }
+        .console-history { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .console-hist-btn { background: var(--pill-bg); color: var(--text-dim); border: 0; border-radius: var(--radius-pill); padding: 0.2rem 0.6rem; cursor: pointer; font-family: var(--font-mono); font-size: 0.72rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .console-hist-btn:hover { color: var(--text); background: var(--panel-hover); }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -2518,6 +2689,89 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         </ul>
                     </div>
                 </template>
+
+                <template x-if="detailSite.type === 'WordPress'">
+                    <div class="components tools">
+                        <div class="components-head">
+                            <div class="components-tabs">
+                                <button type="button" class="comp-tab" :class="{ active: toolTab === 'users' }" @click="setToolTab('users')">users</button>
+                                <button type="button" class="comp-tab" :class="{ active: toolTab === 'cron' }" @click="setToolTab('cron')">cron</button>
+                                <button type="button" class="comp-tab" :class="{ active: toolTab === 'console' }" @click="setToolTab('console')">console</button>
+                            </div>
+                            <button type="button" class="site-action-btn" x-show="toolTab !== 'console'" :class="{ loading: toolLoading }" @click="loadTool(detailSite.name)" :disabled="toolLoading">
+                                <span class="btn-label" x-text="toolLoading ? 'loading…' : 'refresh'"></span>
+                            </button>
+                        </div>
+
+                        <p class="comp-error" x-show="toolError" x-text="toolError" x-cloak></p>
+                        <p class="comp-loading" x-show="toolLoading && toolTab !== 'console'" x-cloak>Reading <span x-text="toolTab"></span>…</p>
+
+                        <ul class="comp-list" x-show="toolTab === 'users' && !toolLoading && !toolError" x-cloak>
+                            <template x-for="u in toolItems" :key="u.ID">
+                                <li class="comp-row">
+                                    <div class="comp-main">
+                                        <span class="comp-title" x-text="u.display_name || u.user_login"></span>
+                                        <span class="comp-slug" x-text="u.user_login"></span>
+                                        <span class="comp-badge active" x-text="u.roles || '—'"></span>
+                                        <span class="comp-version" x-text="u.user_email"></span>
+                                    </div>
+                                    <span class="comp-version" x-text="'#' + u.ID"></span>
+                                    <div class="comp-actions">
+                                        <button type="button" class="site-action-btn" :disabled="toolBusy[u.user_login]" @click="userLogin(u)" :title="'One-time login for ' + u.user_login">login</button>
+                                    </div>
+                                </li>
+                            </template>
+                            <li class="empty" x-show="toolItems.length === 0" x-cloak>No users.</li>
+                        </ul>
+
+                        <ul class="comp-list" x-show="toolTab === 'cron' && !toolLoading && !toolError" x-cloak>
+                            <li class="comp-row" x-show="toolItems.length > 0">
+                                <div class="comp-main"><span class="comp-title">All due events</span></div>
+                                <span class="comp-version"></span>
+                                <div class="comp-actions">
+                                    <button type="button" class="site-action-btn" :disabled="toolBusy['--due-now']" @click="runCron('--due-now')">run due now</button>
+                                </div>
+                            </li>
+                            <template x-for="e in toolItems" :key="e.hook + '|' + e.next_run_gmt">
+                                <li class="comp-row">
+                                    <div class="comp-main">
+                                        <span class="comp-title" x-text="e.hook"></span>
+                                        <span class="comp-badge" x-text="e.recurrence || 'one-off'"></span>
+                                    </div>
+                                    <span class="comp-version" x-text="e.next_run_gmt"></span>
+                                    <div class="comp-actions">
+                                        <button type="button" class="site-action-btn" :disabled="toolBusy[e.hook]" @click="runCron(e.hook)">run</button>
+                                    </div>
+                                </li>
+                            </template>
+                            <li class="empty" x-show="toolItems.length === 0" x-cloak>No scheduled events.</li>
+                        </ul>
+
+                        <div class="console" x-show="toolTab === 'console'" x-cloak>
+                            <p class="comp-hint">Runs WP-CLI inside this site. Arguments are passed to WP-CLI, not to a shell.</p>
+                            <form class="console-form" @submit.prevent="runConsole()">
+                                <input type="text" class="filter-input console-input" x-model="consoleInput"
+                                    placeholder="plugin list --format=table" spellcheck="false" autocomplete="off"
+                                    autocapitalize="off" autocorrect="off" :disabled="toolLoading"
+                                    aria-label="WP-CLI command">
+                                <button class="pill primary" type="submit" :disabled="toolLoading || !consoleInput.trim()">
+                                    <span class="btn-spinner" x-show="toolLoading" aria-hidden="true" style="display: none;"></span>
+                                    <span x-text="toolLoading ? 'running…' : 'run'"></span>
+                                </button>
+                            </form>
+                            <p class="comp-hint" x-show="consoleResult" x-cloak>
+                                exit <span x-text="consoleResult && consoleResult.exit_code"></span> ·
+                                <span x-text="consoleResult && consoleResult.duration_ms"></span> ms
+                            </p>
+                            <pre class="console-out" x-show="consoleResult" x-text="consoleOutput" x-cloak></pre>
+                            <div class="console-history" x-show="consoleHistory.length" x-cloak>
+                                <template x-for="(h, i) in consoleHistory" :key="i">
+                                    <button type="button" class="console-hist-btn" @click="consoleInput = h" x-text="h"></button>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </template>
             </div>
         </template>
     </section>
@@ -2574,6 +2828,16 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 compBusy: {},
                 compArm: null,
                 compArmTimer: null,
+                // Tools panel (users / cron / WP-CLI console) for the open site.
+                toolTab: 'users',
+                toolItems: [],
+                toolLoading: false,
+                toolError: null,
+                toolBusy: {},
+                consoleInput: '',
+                consoleOutput: '',
+                consoleResult: null,
+                consoleHistory: [],
                 isRefreshingSizes: false,
                 filter: '',
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
@@ -2680,6 +2944,16 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                             this.compChecked = false;
                             this.compBusy = {};
                             this.compArm = null;
+                            // Reset the tools panel and load its default tab.
+                            this.toolTab = 'users';
+                            this.toolItems = [];
+                            this.toolError = null;
+                            this.toolBusy = {};
+                            this.consoleInput = '';
+                            this.consoleOutput = '';
+                            this.consoleResult = null;
+                            this.consoleHistory = [];
+                            if (this.detailSite.type === 'WordPress') this.loadTool(name);
                         }
                     } else {
                         this.detailSite = null;
@@ -2696,6 +2970,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         this.detailSite = null;
                         this.detailInfo = null;
                         this.compItems = [];
+                        this.toolItems = [];
                     }
                 },
 
@@ -2791,6 +3066,96 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     this.compArm = null;
                     clearTimeout(this.compArmTimer);
                     this.componentOp(tab, item, 'delete');
+                },
+
+                setToolTab(tab) {
+                    if (this.toolTab === tab) return;
+                    this.toolTab = tab;
+                    this.toolItems = [];
+                    this.toolError = null;
+                    this.toolBusy = {};
+                    if (tab !== 'console' && this.detailSite) this.loadTool(this.detailSite.name);
+                },
+
+                // Users and cron both read from WP-CLI; the active tab decides
+                // which action runs. Never fired on page load.
+                async loadTool(name) {
+                    this.toolLoading = true;
+                    this.toolError = null;
+                    const action = this.toolTab === 'cron' ? 'site_cron' : 'site_users';
+                    const res = await this.apiPost(action, { site_name: name });
+                    if (!this.detailSite || this.detailSite.name !== name) return;
+                    this.toolLoading = false;
+                    if (!res.success) {
+                        this.toolError = res.message || 'wp-cli failed.';
+                        this.toolItems = [];
+                        return;
+                    }
+                    this.toolItems = res.items || [];
+                },
+
+                async userLogin(user) {
+                    if (this.toolBusy[user.user_login]) return;
+                    this.toolBusy = { ...this.toolBusy, [user.user_login]: true };
+                    const res = await this.apiPost('site_user_login', { site_name: this.detailSite.name, user_login: user.user_login });
+                    const busy = { ...this.toolBusy };
+                    delete busy[user.user_login];
+                    this.toolBusy = busy;
+                    if (res.success && res.url) {
+                        window.open(res.url, '_blank');
+                        this.showSnack('Login link opened in a new tab.');
+                    }
+                },
+
+                async runCron(hook) {
+                    if (this.toolBusy[hook]) return;
+                    this.toolBusy = { ...this.toolBusy, [hook]: true };
+                    const res = await this.apiPost('site_cron_run', { site_name: this.detailSite.name, hook });
+                    const busy = { ...this.toolBusy };
+                    delete busy[hook];
+                    this.toolBusy = busy;
+                    const last = (res.output || res.message || '').split('\n').filter(Boolean).pop() || '';
+                    this.showSnack(res.success ? (last || 'Cron event run.') : (last || 'Cron run failed.'), !res.success);
+                    if (res.success) this.loadTool(this.detailSite.name);
+                },
+
+                // Split a console line into argv, honouring single/double quotes
+                // so values with spaces stay a single argument.
+                tokenizeConsole(input) {
+                    const args = [];
+                    let cur = '';
+                    let quote = null;
+                    let has = false;
+                    for (let i = 0; i < input.length; i++) {
+                        const c = input[i];
+                        if (quote) {
+                            if (c === quote) { quote = null; }
+                            else if (c === '\\' && quote === '"' && i + 1 < input.length) { cur += input[++i]; }
+                            else { cur += c; }
+                        } else if (c === '"' || c === "'") {
+                            quote = c; has = true;
+                        } else if (/\s/.test(c)) {
+                            if (has) { args.push(cur); cur = ''; has = false; }
+                        } else {
+                            cur += c; has = true;
+                        }
+                    }
+                    if (has) args.push(cur);
+                    return args;
+                },
+
+                async runConsole() {
+                    const args = this.tokenizeConsole(this.consoleInput);
+                    if (!args.length || this.toolLoading) return;
+                    this.toolLoading = true;
+                    const res = await this.apiPost('site_wpcli', { site_name: this.detailSite.name, args });
+                    this.toolLoading = false;
+                    this.consoleResult = res;
+                    this.consoleOutput = String(res.output || res.message || '').replace(/\s+$/, '');
+                    const line = this.consoleInput.trim();
+                    if (line) {
+                        this.consoleHistory = [line, ...this.consoleHistory.filter(h => h !== line)].slice(0, 10);
+                    }
                 },
 
                 applyTheme() {

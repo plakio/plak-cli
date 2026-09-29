@@ -36,7 +36,7 @@ plak_site_login() {
         exit 1
     fi
 
-    local admin_to_login
+    local user_to_login
     if [ -n "$user_identifier" ]; then
         echo "🔎 Verifying user '$user_identifier' for '$site_name.localhost'..."
         local user_roles
@@ -47,22 +47,19 @@ plak_site_login() {
             exit 1
         fi
 
-        if ! echo "$user_roles" | grep -q "administrator"; then
-            gum style --foreground red "❌ Error: User '$user_identifier' is not an administrator."
-            exit 1
-        fi
-
-        admin_to_login="$user_identifier"
-        echo "✅ User '$admin_to_login' verified."
+        # Any role is allowed: the dashboard uses this to hand out links to
+        # editors, authors and other non-administrator accounts.
+        user_to_login="$user_identifier"
+        echo "✅ User '$user_to_login' verified."
     else
         echo "🔎 Finding an administrator for '$site_name.localhost'..."
-        admin_to_login=$( (cd "$public_dir" && $wp_cmd user list --role=administrator --field=user_login --format=csv --skip-plugins --skip-themes | head -n 1) )
+        user_to_login=$( (cd "$public_dir" && $wp_cmd user list --role=administrator --field=user_login --format=csv --skip-plugins --skip-themes | head -n 1) )
 
-        if [ -z "$admin_to_login" ]; then
+        if [ -z "$user_to_login" ]; then
             gum style --foreground red "❌ Error: Could not find any administrator users for this site."
             exit 1
         fi
-        echo "✅ Found admin: '$admin_to_login'."
+        echo "✅ Found admin: '$user_to_login'."
     fi
 
     # 3. Refresh the MU-plugin before generating the URL. Always overwrite
@@ -74,14 +71,14 @@ plak_site_login() {
     # 4. Generate the login URL.
     echo "   Generating login link..."
     local login_url
-    login_url=$( (cd "$public_dir" && $wp_cmd user login "$admin_to_login" --skip-plugins --skip-themes) )
+    login_url=$( (cd "$public_dir" && $wp_cmd user login "$user_to_login" --skip-plugins --skip-themes) )
 
     # 5. Display the final URL or an error message.
     if [ -n "$login_url" ]; then
         if [ "$raw_mode" = true ]; then
             printf '%s\n' "$login_url"
         else
-            gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "🔗 One-Time Login URL for '$admin_to_login'" "$login_url"
+            gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "🔗 One-Time Login URL for '$user_to_login'" "$login_url"
         fi
     else
         gum style --foreground red "❌ Error: Failed to generate the login link after all checks."

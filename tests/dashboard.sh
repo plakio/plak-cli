@@ -67,6 +67,11 @@ grep -q "IS_WSL_PLACEHOLDER" "$GUI_DIR/api.php" && fail "IS_WSL placeholder was 
 # Point the executable at a no-op stub so actions never touch the real stack.
 cat > "$tmpdir/plak-stub" <<'STUB'
 #!/usr/bin/env bash
+case " $* " in
+    *" login "*)
+        echo "https://demo.localhost/wp-login.php?user_id=7&plak_site_login_token=abc1234"
+        ;;
+esac
 exit 0
 STUB
 chmod +x "$tmpdir/plak-stub"
@@ -88,6 +93,18 @@ case "$*" in
         ;;
     *"theme list"*)
         echo '[{"name":"twentytwentyfour","title":"Twenty Twenty-Four","status":"active","version":"1.2","update":"available","update_version":"1.3"},{"name":"twentytwentythree","title":"Twenty Twenty-Three","status":"inactive","version":"1.1","update":"none"}]'
+        ;;
+    *"user list"*)
+        echo '[{"ID":"1","user_login":"admin","display_name":"Admin","user_email":"admin@example.test","roles":"administrator"},{"ID":"7","user_login":"editor","display_name":"Ed","user_email":"ed@example.test","roles":"editor"}]'
+        ;;
+    *"cron event list"*)
+        echo '[{"hook":"wp_version_check","next_run_gmt":"2026-09-29 18:00:00","recurrence":"twicedaily","interval":43200},{"hook":"my_single_task","next_run_gmt":"2026-09-29 19:00:00","recurrence":false,"interval":false}]'
+        ;;
+    *"cron event run"*)
+        echo "Success: Ran 1 of 1 events."
+        ;;
+    *"login demo"*)
+        echo "https://demo.localhost/wp-login.php?user_id=7&plak_site_login_token=abc1234"
         ;;
     *"plugin deactivate"*) echo "Success: Deactivated." ;;
 esac
@@ -189,6 +206,49 @@ mu_out=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' 
     -H 'Content-Type: application/json' --data "{\"action\":\"site_plugin_op\",\"site_name\":\"demo\",\"slug\":\"plak-helper\",\"op\":\"deactivate\",\"status\":\"must-use\",\"csrf\":\"$token\"}" "$base/api.php")
 grep -q 'Must-use' <<<"$mu_out" || fail "api.php allowed deactivating a must-use plugin"
 
+# --- CLI-13: users list keeps identity and roles ----------------------------
+users_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_users\",\"site_name\":\"demo\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"user_login":"editor"' <<<"$users_out" || fail "site_users did not list the editor: $users_out"
+grep -q '"roles":"editor"' <<<"$users_out" || fail "site_users dropped non-administrator roles: $users_out"
+
+# --- CLI-13: one-time login link can target a non-administrator -------------
+: > "$WP_CALLS"
+login_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_user_login\",\"site_name\":\"demo\",\"user_login\":\"editor\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":true' <<<"$login_out" || fail "site_user_login failed for a non-admin: $login_out"
+grep -q '/wp-login.php' <<<"$login_out" || fail "site_user_login did not return a login URL: $login_out"
+
+# --- CLI-13: cron listing and controlled runs -------------------------------
+cron_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_cron\",\"site_name\":\"demo\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"hook":"wp_version_check"' <<<"$cron_out" || fail "site_cron did not list events: $cron_out"
+
+: > "$WP_CALLS"
+cron_run=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_cron_run\",\"site_name\":\"demo\",\"hook\":\"wp_version_check\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":true' <<<"$cron_run" || fail "site_cron_run failed: $cron_run"
+grep -q 'cron event run wp_version_check' "$WP_CALLS" || fail "site_cron_run did not run the requested hook"
+
+curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_cron_run\",\"site_name\":\"demo\",\"hook\":\"--due-now\",\"csrf\":\"$token\"}" "$base/api.php" >/dev/null
+grep -q 'cron event run --due-now' "$WP_CALLS" || fail "site_cron_run did not support --due-now"
+
+bad_cron=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_cron_run\",\"site_name\":\"demo\",\"hook\":\"x; rm -rf /\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'Invalid cron hook' <<<"$bad_cron" || fail "api.php accepted an unsafe cron hook"
+
+# --- CLI-13: WP-CLI console passes arguments as data ------------------------
+: > "$WP_CALLS"
+console_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_wpcli\",\"site_name\":\"demo\",\"args\":[\"option\",\"get\",\"siteurl; rm -rf /\"],\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"exit_code":0' <<<"$console_out" || fail "site_wpcli did not report the exit code: $console_out"
+grep -Fq "option get siteurl; rm -rf /" "$WP_CALLS" || fail "site_wpcli did not pass arguments as a single argv element"
+
+empty_console=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_wpcli\",\"site_name\":\"demo\",\"args\":[],\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'No command provided' <<<"$empty_console" || fail "site_wpcli accepted an empty command"
+
 # --- add_site passes --no-agent only when the box is unchecked (CLI-33) ------
 : > "$WP_CALLS"
 add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
@@ -214,6 +274,9 @@ grep -q 'const CSRF_TOKEN' "$GUI_DIR/index.php" || fail "index.php did not expos
 grep -q 'loadSiteInfo' "$GUI_DIR/index.php" || fail "index.php lacks the on-demand site info loader"
 grep -q 'componentOp' "$GUI_DIR/index.php" || fail "index.php lacks the component op handler"
 grep -q 'canDelete' "$GUI_DIR/index.php" || fail "index.php lacks the invalid-action guard"
+grep -q 'setToolTab' "$GUI_DIR/index.php" || fail "index.php lacks the site tools panel"
+grep -q 'runConsole' "$GUI_DIR/index.php" || fail "index.php lacks the WP-CLI console"
+grep -q "case 'site_users'" "$GUI_DIR/api.php" || fail "api.php lacks the site_users action"
 
 # --- A public source address is rejected by the PHP guard ---
 API_FILE="$GUI_DIR/api.php" HOME="$HOME" php -r '
