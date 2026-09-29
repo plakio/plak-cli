@@ -86,6 +86,7 @@ Commands:
   list        List local sites
   login       Generate a one-time WordPress admin login link
   wp          Run WP-CLI inside a local WordPress site
+  core        Inspect or update WordPress core versions
   agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
   snapshot    Create, list, restore, export or delete site snapshots
@@ -104,6 +105,7 @@ Commands:
   lan         Manage LAN access for local sites
   tailscale   Expose sites to a Tailscale network
   status      Check local dependencies and paths
+  health      Diagnose services, disk and OPcache; tune cache and HTTP2
   install     Install required dependencies
   skill       Install the Plak agent skill
   upgrade     Upgrade the local site stack
@@ -182,8 +184,19 @@ HELP
         status)
             echo "Usage: plak status"
             ;;
+        health)
+            echo "Usage: plak health [--json]"
+            echo "       plak health opcache [--json]"
+            echo "       plak health opcache set <directive>=<value>... [--restart]"
+            echo "       plak health http2 [--json]"
+            echo ""
+            echo "  Reports services, FrankenPHP, disk, recent failure signals and"
+            echo "  abandoned resources without changing anything. 'opcache' reads the"
+            echo "  web process cache; 'opcache set' tunes validated directives and only"
+            echo "  applies them when asked. 'http2' probes protocol negotiation."
+            ;;
         add)
-            echo "Usage: plak add <name> [--plain] [--agent|--no-agent] [--no-reload]"
+            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--plain] [--agent|--no-agent] [--no-reload]"
             echo ""
             echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
             echo "              register the site with wp-mcp-cli). WordPress only."
@@ -211,6 +224,9 @@ HELP
         wp)
             echo "Usage: plak wp <site> <wp-cli arguments...>"
             echo "Arguments after <site> are passed unchanged to WP-CLI."
+            ;;
+        core)
+            plak_core_usage
             ;;
         db)
             echo "Usage: plak db <backup|list>"
@@ -275,7 +291,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health)
             set +e
             ;;
     esac
@@ -283,6 +299,9 @@ main() {
     case "$command" in
         wp)
             plak_site_wp "$@"
+            ;;
+        core)
+            plak_core "$@"
             ;;
         agent)
             check_dependencies
@@ -408,6 +427,9 @@ main() {
         status)
             check_dependencies
             plak_status "$@"
+            ;;
+        health)
+            plak_health "$@"
             ;;
         mappings)
             check_dependencies

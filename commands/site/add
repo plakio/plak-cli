@@ -19,9 +19,13 @@ plak_site_add() (
     # Every mandatory step is checked explicitly: main disables errexit for
     # legacy site commands, and an outer conditional can disable it too.
     local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=""
-    local agent_flag="" arg
-    for arg in "$@"; do
+    local agent_flag="" arg wp_version="latest" version_flag=false
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
         case "$arg" in
+            --wp-version)
+                [ "$#" -ge 2 ] || { echo 'Error: --wp-version requires latest, nightly or a release number.' >&2; exit 1; }
+                wp_version="$2"; version_flag=true; shift ;;
             --plain) site_type="plain" ;;
             --no-reload) no_reload_flag=true ;;
             --agent) agent_mode=true agent_flag="true" ;;
@@ -36,7 +40,13 @@ plak_site_add() (
                 site_name="$arg"
                 ;;
         esac
+        shift
     done
+    plak_core_version_valid "$wp_version" || { echo "Error: invalid WordPress version '$wp_version'; use latest, nightly or a release such as 6.8.1." >&2; exit 1; }
+    if [ "$version_flag" = true ] && [ "$site_type" = plain ]; then
+        echo 'Error: --wp-version applies only to WordPress sites; omit it with --plain.' >&2
+        exit 1
+    fi
     if [ "$agent_flag" = "true" ] && [ "$site_type" = plain ]; then
         echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --plain." >&2
         exit 1
@@ -113,7 +123,10 @@ plak_site_add() (
         # each failure instead of returning only the last command's status.
         if ! (
             cd "$site_dir/public" || exit 1
-            "${PLAK_WP_COMMAND[@]}" core download --quiet || exit 1
+            "${PLAK_WP_COMMAND[@]}" core download --version="$wp_version" --quiet || {
+                echo "Error: WordPress '$wp_version' download failed; verify the release exists and network access is available." >&2
+                exit 1
+            }
             if [ ! -s wp-includes/version.php ] || [ ! -s wp-settings.php ]; then
                 echo "Error: WP-CLI reported a download but WordPress core files are missing." >&2
                 exit 1

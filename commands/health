@@ -1,0 +1,173 @@
+# Read-only probes; mutations always require an explicit subcommand/flag.
+plak_health() {
+    case "${1:-}" in
+        opcache) shift; plak_health_opcache "$@" ;;
+        http2) shift; plak_health_http2 "$@" ;;
+        -h|--help) plak_display_command_help health ;;
+        *) plak_health_report "$@" ;;
+    esac
+}
+
+plak_health_web() {
+    local format="${1:-json}" response
+    response=$(curl --noproxy '*' --resolve "plak.localhost:${HTTPS_PORT}:127.0.0.1" \
+        --connect-timeout 2 --max-time 5 -fksS \
+        "$(url_for plak.localhost)/health.php?format=$format" 2>/dev/null) || return 1
+    # A missing probe may route to dashboard HTML with HTTP 200. Do not embed
+    # that HTML as JSON or accidentally accept a CLI-cache response.
+    case "$format:$response" in
+        'json:{"source":"web",'*|'text:Web PHP: '*) printf '%s\n' "$response" ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_health_service() {
+    local service="$1" state
+    if [ "$service" = frankenphp ]; then
+        if is_caddy_running; then echo running; else echo stopped; fi
+    elif [ "$OS" = linux ] && command -v systemctl >/dev/null 2>&1; then
+        [ "$service" != mariadb ] || service=$(get_mariadb_service_name)
+        state=$(systemctl is-active "$service" 2>/dev/null) || true
+        case "$state" in
+            active) echo running ;;
+            inactive|failed) echo stopped ;;
+            *) echo unknown ;;
+        esac
+    elif [ "$OS" = macos ]; then
+        if [ "$service" = mariadb ] && command -v brew >/dev/null 2>&1; then
+            state=$(brew services list 2>/dev/null) || { echo unknown; return; }
+            if grep -q 'mariadb.*started' <<< "$state"; then echo running; else echo stopped; fi
+        elif [ "$service" = mailpit ] && command -v launchctl >/dev/null 2>&1; then
+            if launchctl list com.plak.mailpit >/dev/null 2>&1; then echo running; else echo stopped; fi
+        else echo unknown; fi
+    else echo unknown; fi
+}
+
+plak_health_report() {
+    local json=false
+    case "${1:-}" in --json) json=true; shift ;; esac
+    [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health [--json]'; return 1; }
+    local frank db mail version="" free=null used=null signals="" abandoned="" web=null item
+    frank=$(plak_health_service frankenphp)
+    db=$(plak_health_service mariadb)
+    mail=$(plak_health_service mailpit)
+    if command -v "$CADDY_CMD" >/dev/null 2>&1; then
+        version=$("$CADDY_CMD" version 2>/dev/null) || version=""
+    fi
+    if [ -d "$PLAK_SITE_DIR" ]; then
+        used=$(du -sk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==1 {printf "%.0f", $1*1024}')
+        free=$(df -Pk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==2 {printf "%.0f", $4*1024}')
+    fi
+    for item in caddy-process.log errors.log caddy-reload.log; do
+        if [ -r "$LOGS_DIR/$item" ]; then
+            signals+=$(tail -c 65536 "$LOGS_DIR/$item" | grep -Ei 'fatal|panic|error|failed' | tail -5 | sed "s/^/$item: /" || true)
+            signals+=$'\n'
+        fi
+    done
+    if [ "$OS" = linux ] && command -v journalctl >/dev/null 2>&1; then
+        signals+=$(journalctl -u plak.service --since '24 hours ago' -p err -n 5 --no-pager 2>/dev/null || true)
+    fi
+    # Age/recovery directories are candidates, not proof of abandonment.
+    if [ -d "$SITES_DIR" ]; then
+        abandoned=$(find "$SITES_DIR" -type d -name restore_recovery -print 2>/dev/null)
+    fi
+    if [ -d "$PLAK_SITE_DIR/cache/jobs" ]; then
+        abandoned+=$'\n'
+        abandoned+=$(find "$PLAK_SITE_DIR/cache/jobs" -type f -mtime +1 -print 2>/dev/null)
+    fi
+    if [ "$json" = true ]; then
+        web=$(plak_health_web json) || web=null
+        printf '{"platform":'; plak_json_string "$OS"
+        printf ',"services":{"frankenphp":"%s","mariadb":"%s","mailpit":"%s"},"frankenphp_version":' "$frank" "$db" "$mail"
+        if [ -n "$version" ]; then plak_json_string "$version"; else printf null; fi
+        printf ',"disk":{"used_bytes":%s,"free_bytes":%s},"failure_signals":' "${used:-null}" "${free:-null}"
+        plak_json_string "$signals"
+        printf ',"abandoned_candidates":'; plak_json_string "$abandoned"
+        printf ',"web_php":%s}\n' "${web:-null}"
+    else
+        plak_ui_title 'Plak health (read-only)'
+        printf 'Platform: %s\nFrankenPHP: %s (%s)\nMariaDB: %s\nMailpit: %s\n' "$OS" "$frank" "${version:-version unknown}" "$db" "$mail"
+        printf 'Disk: used=%s bytes; free=%s bytes (null = unknown)\n' "${used:-null}" "${free:-null}"
+        printf '\nAvailable failure signals (not proven crash causes):\n%s\n' "${signals:-none available}"
+        printf '\nRecovery/old-job candidates (inspect before removing):\n%s\n' "${abandoned:-none available}"
+        plak_health_web text || echo 'Web PHP/OPcache: unknown; start Plak and run plak reload to deploy the probe.'
+    fi
+}
+
+plak_health_opcache_valid() {
+    local key="$1" value="$2" min max
+    case "$key" in
+        opcache.enable|opcache.validate_timestamps) [[ "$value" = 0 || "$value" = 1 ]]; return ;;
+        opcache.memory_consumption) min=8; max=4096 ;;
+        opcache.interned_strings_buffer) min=1; max=1024 ;;
+        opcache.max_accelerated_files) min=200; max=1000000 ;;
+        opcache.revalidate_freq) min=0; max=3600 ;;
+        *) return 1 ;;
+    esac
+    [[ "$value" =~ ^(0|[1-9][0-9]{0,6})$ ]] || return 1
+    [ "$value" -ge "$min" ] && [ "$value" -le "$max" ]
+}
+
+plak_health_opcache() {
+    if [ "${1:-}" != set ]; then
+        local format=text
+        case "${1:-}" in --json) format=json; shift ;; esac
+        [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health opcache [--json]'; return 1; }
+        plak_health_web "$format" || { plak_ui_error 'Web OPcache unknown: probe unavailable (no CLI-cache fallback).'; return 1; }
+        return
+    fi
+    shift
+    local restart=false item key value tmp content
+    local -a settings=()
+    for item in "$@"; do
+        case "$item" in
+            --restart|--apply) restart=true ;;
+            --yes) : ;; # Not implicit permission to restart.
+            *=*)
+                key=${item%%=*}; value=${item#*=}
+                plak_health_opcache_valid "$key" "$value" || { plak_ui_error "Invalid OPcache setting: $item"; return 1; }
+                settings+=("$item") ;;
+            *) plak_ui_error "Unknown argument: $item"; return 1 ;;
+        esac
+    done
+    [ "${#settings[@]}" -gt 0 ] || { plak_ui_error 'Provide at least one directive=value.'; return 1; }
+    [ -f "$PHP_INI_FILE" ] || { plak_ui_error "Missing $PHP_INI_FILE; run plak install."; return 1; }
+    tmp=$(mktemp "$PHP_INI_FILE.XXXXXX") || return 1
+    cp -p "$PHP_INI_FILE" "$tmp" || { rm -f "$tmp"; return 1; }
+    for item in "${settings[@]}"; do
+        key=${item%%=*}; value=${item#*=}
+        content=$(awk -F= -v key="$key" '{k=$1; gsub(/^[ \t]+|[ \t]+$/, "", k); if(k!=key) print}' "$tmp") || { rm -f "$tmp"; return 1; }
+        printf '%s\n%s = %s\n' "$content" "$key" "$value" > "$tmp" || { rm -f "$tmp"; return 1; }
+    done
+    mv "$tmp" "$PHP_INI_FILE" || return 1
+    if [ "$restart" = true ]; then
+        local SUDO_CMD="${SUDO_CMD:-}"
+        # Explicit restart permission does not authorize an unattended password
+        # prompt. sudo must fail actionably instead of waiting for input.
+        if ! plak_has_tty && [ -n "$SUDO_CMD" ]; then SUDO_CMD="$SUDO_CMD -n"; fi
+        regenerate_caddyfile || return 1
+        start_caddy_service || return 1
+        echo 'OPcache settings saved; FrankenPHP restarted. Verify with plak health opcache.'
+    else
+        echo 'OPcache settings saved; no reload/restart performed. Apply with the same command plus --restart.'
+    fi
+}
+
+plak_health_http2() {
+    local json=false negotiated=unknown configured
+    case "${1:-}" in --json) json=true; shift ;; esac
+    [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health http2 [--json]'; return 1; }
+    configured=$(plak_config_get HTTP2_ENABLED 0)
+    if curl --version 2>/dev/null | grep -q HTTP2; then
+        negotiated=$(curl --noproxy '*' --resolve "plak.localhost:${HTTPS_PORT}:127.0.0.1" \
+            --http2 --connect-timeout 2 --max-time 5 -fksS -o /dev/null -w '%{http_version}' \
+            "$(url_for plak.localhost)/health.php" 2>/dev/null) || negotiated=unknown
+    fi
+    if [ "$json" = true ]; then
+        printf '{"configured_h2":%s,"negotiated":' "$([ "$configured" = 1 ] && echo true || echo false)"
+        plak_json_string "$negotiated"; printf '}\n'
+    else
+        printf 'HTTP/2 configured: %s; negotiated: %s\n' "$configured" "$negotiated"
+        echo 'A protocol probe is not a performance evaluation; see docs/health.md.'
+    fi
+}

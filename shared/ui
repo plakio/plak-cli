@@ -32,3 +32,23 @@ plak_ui_success() {
         echo "$1"
     fi
 }
+
+# Emit a JSON string literal (including the surrounding quotes) with the
+# backslash and control characters JSON requires. Hand-rolled because Plak
+# has no jq dependency at runtime.
+plak_json_string() {
+    local s="${1:-}"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    local code char oct escaped
+    for code in {1..31}; do
+        printf -v oct '%03o' "$code"
+        printf -v char '%b' "\\$oct"
+        printf -v escaped '\\u%04x' "$code"
+        s=${s//"$char"/"$escaped"}
+    done
+    printf '"%s"' "$s"
+}

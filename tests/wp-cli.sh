@@ -44,6 +44,7 @@ if [ "${FAIL_STAGE:-}" = "$stage" ]; then
 fi
 case "$stage" in
     'core download')
+        printf '%s\n' "$@" > "$WP_ARGV_LOG.download"
         [ "${FAIL_STAGE:-}" != empty-download ] || exit 0
         mkdir -p wp-includes
         printf '<?php\n' > wp-includes/version.php
@@ -228,6 +229,16 @@ test -d "$TEST_DATABASES/$db_name" || fail 'cleaned successful database'
 grep -q 'created successfully' "$tmpdir/out" || fail 'no success after valid install'
 ./plak.sh add landing --plain --no-reload >"$tmpdir/out" 2>"$tmpdir/err"
 test -s "$SITES_DIR/landing.localhost/public/index.php" || fail 'static creation regressed'
+for version in latest 6.8.1 nightly; do
+    name="version-${version//./-}"
+    ./plak.sh add "$name" --wp-version "$version" --no-reload >"$tmpdir/out" 2>"$tmpdir/err"
+    grep -q -- "--version=$version" "$WP_ARGV_LOG.download" || fail 'lost selected version'
+done
+for version in nope ../6.8 --force; do
+    if ./plak.sh add invalid --wp-version "$version" --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted invalid version'; fi
+    [ ! -e "$SITES_DIR/invalid.localhost" ] || fail 'created invalid-version resources'
+done
+if ./plak.sh add invalid --plain --wp-version nightly --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted WP version with plain'; fi
 
 # Failure after a completed install must keep the valid site for reload retry.
 regenerate_caddyfile() { return 19; }

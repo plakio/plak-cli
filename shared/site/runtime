@@ -201,11 +201,22 @@ plak_site_random_password() {
 plak_site_ini_get() {
     local key="$1" fallback="$2" val=""
     if [ -f "$PHP_INI_FILE" ]; then
-        val=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$PHP_INI_FILE" 2>/dev/null \
-            | tail -1 \
-            | sed -E "s|^[[:space:]]*${key}[[:space:]]*=[[:space:]]*||" \
-            | tr -d '"' \
-            | sed -E 's/[[:space:]]+$//')
+        val=$(awk -F= -v key="$key" '
+            { k=$1; gsub(/^[ \t]+|[ \t]+$/, "", k)
+              if(k==key) value=substr($0,index($0,"=")+1) }
+            END {gsub(/"/, "", value); gsub(/^[ \t]+|[ \t]+$/, "", value); print value}
+        ' "$PHP_INI_FILE")
+    fi
+    echo "${val:-$fallback}"
+}
+
+# Reads KEY from ~/Plak/config (last-wins, quotes trimmed) and returns the
+# fallback when missing. Avoids sourcing the file so callers can read one
+# setting without clobbering their own environment.
+plak_config_get() {
+    local key="$1" fallback="${2:-}" val=""
+    if [ -f "$CONFIG_FILE" ]; then
+        val=$(grep -E "^${key}=" "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"")
     fi
     echo "${val:-$fallback}"
 }
@@ -1200,6 +1211,13 @@ regenerate_caddyfile() {
     local local_only='remote_ip 127.0.0.1 ::1'
     [ "$IS_WSL" = true ] && local_only='remote_ip private_ranges'
 
+    # Keep the historical h1 default pending live load evaluation (docs/health.md).
+    # HTTP/1.1 always stays enabled if the opt-in setting is used for evaluation.
+    local protocols_value="h1"
+    if [ "$(plak_config_get HTTP2_ENABLED 0)" = "1" ]; then
+        protocols_value="h1 h2"
+    fi
+
     # Write the static header of the Caddyfile
     cat > "$CADDYFILE_PATH" <<- EOM
 {
@@ -1212,6 +1230,15 @@ ${port_directives}    frankenphp {
         php_ini memory_limit $(plak_site_ini_get memory_limit 1G)
         php_ini upload_max_filesize $(plak_site_ini_get upload_max_filesize 1G)
         php_ini post_max_size $(plak_site_ini_get post_max_size 1G)
+        # OPcache for the web process only; enable_cli stays 0 so wp-cli is
+        # never served a stale cache. Tuned with `plak health opcache set`.
+        php_ini opcache.enable $(plak_site_ini_get opcache.enable 1)
+        php_ini opcache.enable_cli $(plak_site_ini_get opcache.enable_cli 0)
+        php_ini opcache.memory_consumption $(plak_site_ini_get opcache.memory_consumption 128)
+        php_ini opcache.interned_strings_buffer $(plak_site_ini_get opcache.interned_strings_buffer 16)
+        php_ini opcache.max_accelerated_files $(plak_site_ini_get opcache.max_accelerated_files 10000)
+        php_ini opcache.validate_timestamps $(plak_site_ini_get opcache.validate_timestamps 1)
+        php_ini opcache.revalidate_freq $(plak_site_ini_get opcache.revalidate_freq 2)
         # User-owned session dir. Linux apt's php.ini points sessions at
         # /var/lib/php-zts/session (owned by the frankenphp user); since
         # Plak runs FrankenPHP as the invoking user, that path is
@@ -1221,7 +1248,7 @@ ${port_directives}    frankenphp {
     }
     order php_server before file_server
     servers {
-        protocols h1
+        protocols $protocols_value
     }
 }
 
@@ -4822,6 +4849,51 @@ EOM
 
     sed -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
         "$GUI_DIR/index.php.tmp" > "$GUI_DIR/index.php"
+
+    # health.php reports the web process's PHP/OPcache state to `plak health`.
+    # Read-only, served from the same local-only plak.localhost block as the
+    # dashboard, and free of placeholders (no paths to substitute).
+    cat > "$GUI_DIR/health.php" << 'EOM'
+<?php
+// Read-only PHP/OPcache probe for `plak health`. It reports, never changes.
+if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
+    http_response_code(403);
+    exit;
+}
+header('Cache-Control: no-store');
+header('Content-Type: application/json');
+$status = function_exists('opcache_get_status') ? @opcache_get_status(false) : null;
+$config = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : null;
+$report = [
+    'source' => PHP_SAPI === 'cli' ? 'cli' : 'web',
+    'sapi' => PHP_SAPI,
+    'php_version' => PHP_VERSION,
+    'opcache_extension_loaded' => extension_loaded('Zend OPcache'),
+    'opcache_enabled' => (bool) ini_get('opcache.enable'),
+    'opcache_status' => $status ?: null,
+    'opcache_configuration' => $config ? ($config['directives'] ?? null) : null,
+];
+if (($_GET['format'] ?? '') === 'text') {
+    header('Content-Type: text/plain');
+    echo ($report['source'] === 'web' ? 'Web PHP: ' : 'CLI PHP: ') . PHP_VERSION . ' (' . PHP_SAPI . ")\n";
+    if (!$status) {
+        echo "Web OPcache: unavailable/disabled (not the CLI cache)\n";
+    } else {
+        echo 'Web OPcache cache_full: ' . ($status['cache_full'] ? 'yes' : 'no') . "\n";
+        foreach (['memory_usage', 'opcache_statistics'] as $section) {
+            foreach (($status[$section] ?? []) as $key => $value) {
+                if (is_scalar($value)) echo "$key: $value\n";
+            }
+        }
+        foreach (['opcache.memory_consumption', 'opcache.interned_strings_buffer', 'opcache.max_accelerated_files'] as $key) {
+            echo $key . ': ' . ($config['directives'][$key] ?? 'unknown') . "\n";
+        }
+        if ($status['cache_full']) echo "Recommendation: inspect usage and raise validated limits explicitly; no automatic restart.\n";
+    }
+} else {
+    echo json_encode($report, JSON_PARTIAL_OUTPUT_ON_ERROR);
+}
+EOM
 
     # Clean up temp files
     rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"

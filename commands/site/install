@@ -546,6 +546,15 @@ plak_site_install() {
 memory_limit = 1G
 display_errors = 0
 error_reporting = 6143
+; OPcache for the web process. enable_cli stays 0 so wp-cli and one-off PHP
+; runs are never served a stale cache; tune with `plak health opcache set`.
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 128
+opcache.interned_strings_buffer = 16
+opcache.max_accelerated_files = 10000
+opcache.validate_timestamps = 1
+opcache.revalidate_freq = 2
 INI
     echo "🗃️ Downloading Adminer 5.4.2..."
     curl -sL "https://github.com/vrana/adminer/releases/download/v5.4.2/adminer-5.4.2.php" -o "$ADMINER_DIR/adminer-core.php"
@@ -563,8 +572,7 @@ INI
     # httpd_exec_t file context. On Fedora/RHEL that triggers an exec-time
     # domain transition into httpd_t — a confined web-server domain that:
     #   - can't read files labeled user_home_t (fails to open ~/Plak/Caddyfile
-
-    Pero #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
+    #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
     #   - silently RSTs TLS connections under some configs (TCP accepts but
     #     the TLS ClientHello gets no response)
     # Neither failure logs an AVC — both are dontaudit'd. Retagging the binary

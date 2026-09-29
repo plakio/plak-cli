@@ -371,3 +371,27 @@ plak sshkey delete
 - Interactive commands require a real terminal because `gum` opens TUI prompts.
 - Non-interactive list/status commands fall back to plain output for scripts and tests.
 - `plak.sh` is generated from `main`, `shared/`, and `commands/`.
+## WordPress core versions and stack health
+
+```bash
+plak add compatibility --wp-version 6.8.1
+plak add development --wp-version nightly
+plak core list                    # Installed versions; works offline
+plak core compatibility --check   # Also query published WordPress.org version
+plak core update compatibility --version 6.8.2
+plak core update compatibility --version 6.8.1 --allow-downgrade
+plak core update --all --version 6.8.2
+plak health
+plak health opcache --json
+```
+
+Core updates retain `wp-content` and `wp-config.php`, run the database schema
+update and report the effective version. Snapshot first: neither failed updates
+nor downgrades automatically restore the database. Nightly/development-build
+transitions also require `--allow-downgrade` because their direction may be unknown.
+Batch updates report each site and return failure if any site fails. Remote
+version checks have a 10-second timeout; an offline check still shows local
+versions, but updating to `latest` requires resolving the published release.
+
+See [stack health](docs/health.md) for OPcache tuning and the pending live HTTP/2
+evaluation. Run `plak reload` after upgrading to deploy the web-process probe.

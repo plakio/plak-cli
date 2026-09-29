@@ -86,6 +86,7 @@ Commands:
   list        List local sites
   login       Generate a one-time WordPress admin login link
   wp          Run WP-CLI inside a local WordPress site
+  core        Inspect or update WordPress core versions
   agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
   snapshot    Create, list, restore, export or delete site snapshots
@@ -104,6 +105,7 @@ Commands:
   lan         Manage LAN access for local sites
   tailscale   Expose sites to a Tailscale network
   status      Check local dependencies and paths
+  health      Diagnose services, disk and OPcache; tune cache and HTTP2
   install     Install required dependencies
   skill       Install the Plak agent skill
   upgrade     Upgrade the local site stack
@@ -182,8 +184,19 @@ HELP
         status)
             echo "Usage: plak status"
             ;;
+        health)
+            echo "Usage: plak health [--json]"
+            echo "       plak health opcache [--json]"
+            echo "       plak health opcache set <directive>=<value>... [--restart]"
+            echo "       plak health http2 [--json]"
+            echo ""
+            echo "  Reports services, FrankenPHP, disk, recent failure signals and"
+            echo "  abandoned resources without changing anything. 'opcache' reads the"
+            echo "  web process cache; 'opcache set' tunes validated directives and only"
+            echo "  applies them when asked. 'http2' probes protocol negotiation."
+            ;;
         add)
-            echo "Usage: plak add <name> [--plain] [--agent|--no-agent] [--no-reload]"
+            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--plain] [--agent|--no-agent] [--no-reload]"
             echo ""
             echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
             echo "              register the site with wp-mcp-cli). WordPress only."
@@ -211,6 +224,9 @@ HELP
         wp)
             echo "Usage: plak wp <site> <wp-cli arguments...>"
             echo "Arguments after <site> are passed unchanged to WP-CLI."
+            ;;
+        core)
+            plak_core_usage
             ;;
         db)
             echo "Usage: plak db <backup|list>"
@@ -275,7 +291,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install)
+        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health)
             set +e
             ;;
     esac
@@ -283,6 +299,9 @@ main() {
     case "$command" in
         wp)
             plak_site_wp "$@"
+            ;;
+        core)
+            plak_core "$@"
             ;;
         agent)
             check_dependencies
@@ -408,6 +427,9 @@ main() {
         status)
             check_dependencies
             plak_status "$@"
+            ;;
+        health)
+            plak_health "$@"
             ;;
         mappings)
             check_dependencies
@@ -1158,11 +1180,22 @@ plak_site_random_password() {
 plak_site_ini_get() {
     local key="$1" fallback="$2" val=""
     if [ -f "$PHP_INI_FILE" ]; then
-        val=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$PHP_INI_FILE" 2>/dev/null \
-            | tail -1 \
-            | sed -E "s|^[[:space:]]*${key}[[:space:]]*=[[:space:]]*||" \
-            | tr -d '"' \
-            | sed -E 's/[[:space:]]+$//')
+        val=$(awk -F= -v key="$key" '
+            { k=$1; gsub(/^[ \t]+|[ \t]+$/, "", k)
+              if(k==key) value=substr($0,index($0,"=")+1) }
+            END {gsub(/"/, "", value); gsub(/^[ \t]+|[ \t]+$/, "", value); print value}
+        ' "$PHP_INI_FILE")
+    fi
+    echo "${val:-$fallback}"
+}
+
+# Reads KEY from ~/Plak/config (last-wins, quotes trimmed) and returns the
+# fallback when missing. Avoids sourcing the file so callers can read one
+# setting without clobbering their own environment.
+plak_config_get() {
+    local key="$1" fallback="${2:-}" val=""
+    if [ -f "$CONFIG_FILE" ]; then
+        val=$(grep -E "^${key}=" "$CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "'\"")
     fi
     echo "${val:-$fallback}"
 }
@@ -2157,6 +2190,13 @@ regenerate_caddyfile() {
     local local_only='remote_ip 127.0.0.1 ::1'
     [ "$IS_WSL" = true ] && local_only='remote_ip private_ranges'
 
+    # Keep the historical h1 default pending live load evaluation (docs/health.md).
+    # HTTP/1.1 always stays enabled if the opt-in setting is used for evaluation.
+    local protocols_value="h1"
+    if [ "$(plak_config_get HTTP2_ENABLED 0)" = "1" ]; then
+        protocols_value="h1 h2"
+    fi
+
     # Write the static header of the Caddyfile
     cat > "$CADDYFILE_PATH" <<- EOM
 {
@@ -2169,6 +2209,15 @@ ${port_directives}    frankenphp {
         php_ini memory_limit $(plak_site_ini_get memory_limit 1G)
         php_ini upload_max_filesize $(plak_site_ini_get upload_max_filesize 1G)
         php_ini post_max_size $(plak_site_ini_get post_max_size 1G)
+        # OPcache for the web process only; enable_cli stays 0 so wp-cli is
+        # never served a stale cache. Tuned with `plak health opcache set`.
+        php_ini opcache.enable $(plak_site_ini_get opcache.enable 1)
+        php_ini opcache.enable_cli $(plak_site_ini_get opcache.enable_cli 0)
+        php_ini opcache.memory_consumption $(plak_site_ini_get opcache.memory_consumption 128)
+        php_ini opcache.interned_strings_buffer $(plak_site_ini_get opcache.interned_strings_buffer 16)
+        php_ini opcache.max_accelerated_files $(plak_site_ini_get opcache.max_accelerated_files 10000)
+        php_ini opcache.validate_timestamps $(plak_site_ini_get opcache.validate_timestamps 1)
+        php_ini opcache.revalidate_freq $(plak_site_ini_get opcache.revalidate_freq 2)
         # User-owned session dir. Linux apt's php.ini points sessions at
         # /var/lib/php-zts/session (owned by the frankenphp user); since
         # Plak runs FrankenPHP as the invoking user, that path is
@@ -2178,7 +2227,7 @@ ${port_directives}    frankenphp {
     }
     order php_server before file_server
     servers {
-        protocols h1
+        protocols $protocols_value
     }
 }
 
@@ -5780,6 +5829,51 @@ EOM
     sed -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
         "$GUI_DIR/index.php.tmp" > "$GUI_DIR/index.php"
 
+    # health.php reports the web process's PHP/OPcache state to `plak health`.
+    # Read-only, served from the same local-only plak.localhost block as the
+    # dashboard, and free of placeholders (no paths to substitute).
+    cat > "$GUI_DIR/health.php" << 'EOM'
+<?php
+// Read-only PHP/OPcache probe for `plak health`. It reports, never changes.
+if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
+    http_response_code(403);
+    exit;
+}
+header('Cache-Control: no-store');
+header('Content-Type: application/json');
+$status = function_exists('opcache_get_status') ? @opcache_get_status(false) : null;
+$config = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : null;
+$report = [
+    'source' => PHP_SAPI === 'cli' ? 'cli' : 'web',
+    'sapi' => PHP_SAPI,
+    'php_version' => PHP_VERSION,
+    'opcache_extension_loaded' => extension_loaded('Zend OPcache'),
+    'opcache_enabled' => (bool) ini_get('opcache.enable'),
+    'opcache_status' => $status ?: null,
+    'opcache_configuration' => $config ? ($config['directives'] ?? null) : null,
+];
+if (($_GET['format'] ?? '') === 'text') {
+    header('Content-Type: text/plain');
+    echo ($report['source'] === 'web' ? 'Web PHP: ' : 'CLI PHP: ') . PHP_VERSION . ' (' . PHP_SAPI . ")\n";
+    if (!$status) {
+        echo "Web OPcache: unavailable/disabled (not the CLI cache)\n";
+    } else {
+        echo 'Web OPcache cache_full: ' . ($status['cache_full'] ? 'yes' : 'no') . "\n";
+        foreach (['memory_usage', 'opcache_statistics'] as $section) {
+            foreach (($status[$section] ?? []) as $key => $value) {
+                if (is_scalar($value)) echo "$key: $value\n";
+            }
+        }
+        foreach (['opcache.memory_consumption', 'opcache.interned_strings_buffer', 'opcache.max_accelerated_files'] as $key) {
+            echo $key . ': ' . ($config['directives'][$key] ?? 'unknown') . "\n";
+        }
+        if ($status['cache_full']) echo "Recommendation: inspect usage and raise validated limits explicitly; no automatic restart.\n";
+    }
+} else {
+    echo json_encode($report, JSON_PARTIAL_OUTPUT_ON_ERROR);
+}
+EOM
+
     # Clean up temp files
     rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"
 }
@@ -5838,6 +5932,10 @@ plak_snapshot_keep_safety() {
 # Source: shared/site/wp-cli
 # Run the PHP entry point behind `wp` with FrankenPHP and Plak's PHPRC.
 # No eval or shell execution is used to inspect wrappers.
+
+plak_core_version_valid() {
+    [ "${#1}" -le 32 ] && [[ "$1" = latest || "$1" = nightly || "$1" =~ ^[1-9][0-9]*\.[0-9]+(\.[0-9]+)?$ ]]
+}
 
 plak_wp_realpath() {
     local path="$1" target hops=0
@@ -5982,6 +6080,26 @@ plak_ui_success() {
     fi
 }
 
+# Emit a JSON string literal (including the surrounding quotes) with the
+# backslash and control characters JSON requires. Hand-rolled because Plak
+# has no jq dependency at runtime.
+plak_json_string() {
+    local s="${1:-}"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    local code char oct escaped
+    for code in {1..31}; do
+        printf -v oct '%03o' "$code"
+        printf -v char '%b' "\\$oct"
+        printf -v escaped '\\u%04x' "$code"
+        s=${s//"$char"/"$escaped"}
+    done
+    printf '"%s"' "$s"
+}
+
 # Source: shared/validate
 # Shared validation helpers for Plak Bash commands.
 
@@ -6001,6 +6119,181 @@ plak_validate_port() {
 }
 
 # --- Command Functions ---
+# Source: commands/health
+# Read-only probes; mutations always require an explicit subcommand/flag.
+plak_health() {
+    case "${1:-}" in
+        opcache) shift; plak_health_opcache "$@" ;;
+        http2) shift; plak_health_http2 "$@" ;;
+        -h|--help) plak_display_command_help health ;;
+        *) plak_health_report "$@" ;;
+    esac
+}
+
+plak_health_web() {
+    local format="${1:-json}" response
+    response=$(curl --noproxy '*' --resolve "plak.localhost:${HTTPS_PORT}:127.0.0.1" \
+        --connect-timeout 2 --max-time 5 -fksS \
+        "$(url_for plak.localhost)/health.php?format=$format" 2>/dev/null) || return 1
+    # A missing probe may route to dashboard HTML with HTTP 200. Do not embed
+    # that HTML as JSON or accidentally accept a CLI-cache response.
+    case "$format:$response" in
+        'json:{"source":"web",'*|'text:Web PHP: '*) printf '%s\n' "$response" ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_health_service() {
+    local service="$1" state
+    if [ "$service" = frankenphp ]; then
+        if is_caddy_running; then echo running; else echo stopped; fi
+    elif [ "$OS" = linux ] && command -v systemctl >/dev/null 2>&1; then
+        [ "$service" != mariadb ] || service=$(get_mariadb_service_name)
+        state=$(systemctl is-active "$service" 2>/dev/null) || true
+        case "$state" in
+            active) echo running ;;
+            inactive|failed) echo stopped ;;
+            *) echo unknown ;;
+        esac
+    elif [ "$OS" = macos ]; then
+        if [ "$service" = mariadb ] && command -v brew >/dev/null 2>&1; then
+            state=$(brew services list 2>/dev/null) || { echo unknown; return; }
+            if grep -q 'mariadb.*started' <<< "$state"; then echo running; else echo stopped; fi
+        elif [ "$service" = mailpit ] && command -v launchctl >/dev/null 2>&1; then
+            if launchctl list com.plak.mailpit >/dev/null 2>&1; then echo running; else echo stopped; fi
+        else echo unknown; fi
+    else echo unknown; fi
+}
+
+plak_health_report() {
+    local json=false
+    case "${1:-}" in --json) json=true; shift ;; esac
+    [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health [--json]'; return 1; }
+    local frank db mail version="" free=null used=null signals="" abandoned="" web=null item
+    frank=$(plak_health_service frankenphp)
+    db=$(plak_health_service mariadb)
+    mail=$(plak_health_service mailpit)
+    if command -v "$CADDY_CMD" >/dev/null 2>&1; then
+        version=$("$CADDY_CMD" version 2>/dev/null) || version=""
+    fi
+    if [ -d "$PLAK_SITE_DIR" ]; then
+        used=$(du -sk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==1 {printf "%.0f", $1*1024}')
+        free=$(df -Pk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==2 {printf "%.0f", $4*1024}')
+    fi
+    for item in caddy-process.log errors.log caddy-reload.log; do
+        if [ -r "$LOGS_DIR/$item" ]; then
+            signals+=$(tail -c 65536 "$LOGS_DIR/$item" | grep -Ei 'fatal|panic|error|failed' | tail -5 | sed "s/^/$item: /" || true)
+            signals+=$'\n'
+        fi
+    done
+    if [ "$OS" = linux ] && command -v journalctl >/dev/null 2>&1; then
+        signals+=$(journalctl -u plak.service --since '24 hours ago' -p err -n 5 --no-pager 2>/dev/null || true)
+    fi
+    # Age/recovery directories are candidates, not proof of abandonment.
+    if [ -d "$SITES_DIR" ]; then
+        abandoned=$(find "$SITES_DIR" -type d -name restore_recovery -print 2>/dev/null)
+    fi
+    if [ -d "$PLAK_SITE_DIR/cache/jobs" ]; then
+        abandoned+=$'\n'
+        abandoned+=$(find "$PLAK_SITE_DIR/cache/jobs" -type f -mtime +1 -print 2>/dev/null)
+    fi
+    if [ "$json" = true ]; then
+        web=$(plak_health_web json) || web=null
+        printf '{"platform":'; plak_json_string "$OS"
+        printf ',"services":{"frankenphp":"%s","mariadb":"%s","mailpit":"%s"},"frankenphp_version":' "$frank" "$db" "$mail"
+        if [ -n "$version" ]; then plak_json_string "$version"; else printf null; fi
+        printf ',"disk":{"used_bytes":%s,"free_bytes":%s},"failure_signals":' "${used:-null}" "${free:-null}"
+        plak_json_string "$signals"
+        printf ',"abandoned_candidates":'; plak_json_string "$abandoned"
+        printf ',"web_php":%s}\n' "${web:-null}"
+    else
+        plak_ui_title 'Plak health (read-only)'
+        printf 'Platform: %s\nFrankenPHP: %s (%s)\nMariaDB: %s\nMailpit: %s\n' "$OS" "$frank" "${version:-version unknown}" "$db" "$mail"
+        printf 'Disk: used=%s bytes; free=%s bytes (null = unknown)\n' "${used:-null}" "${free:-null}"
+        printf '\nAvailable failure signals (not proven crash causes):\n%s\n' "${signals:-none available}"
+        printf '\nRecovery/old-job candidates (inspect before removing):\n%s\n' "${abandoned:-none available}"
+        plak_health_web text || echo 'Web PHP/OPcache: unknown; start Plak and run plak reload to deploy the probe.'
+    fi
+}
+
+plak_health_opcache_valid() {
+    local key="$1" value="$2" min max
+    case "$key" in
+        opcache.enable|opcache.validate_timestamps) [[ "$value" = 0 || "$value" = 1 ]]; return ;;
+        opcache.memory_consumption) min=8; max=4096 ;;
+        opcache.interned_strings_buffer) min=1; max=1024 ;;
+        opcache.max_accelerated_files) min=200; max=1000000 ;;
+        opcache.revalidate_freq) min=0; max=3600 ;;
+        *) return 1 ;;
+    esac
+    [[ "$value" =~ ^(0|[1-9][0-9]{0,6})$ ]] || return 1
+    [ "$value" -ge "$min" ] && [ "$value" -le "$max" ]
+}
+
+plak_health_opcache() {
+    if [ "${1:-}" != set ]; then
+        local format=text
+        case "${1:-}" in --json) format=json; shift ;; esac
+        [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health opcache [--json]'; return 1; }
+        plak_health_web "$format" || { plak_ui_error 'Web OPcache unknown: probe unavailable (no CLI-cache fallback).'; return 1; }
+        return
+    fi
+    shift
+    local restart=false item key value tmp content
+    local -a settings=()
+    for item in "$@"; do
+        case "$item" in
+            --restart|--apply) restart=true ;;
+            --yes) : ;; # Not implicit permission to restart.
+            *=*)
+                key=${item%%=*}; value=${item#*=}
+                plak_health_opcache_valid "$key" "$value" || { plak_ui_error "Invalid OPcache setting: $item"; return 1; }
+                settings+=("$item") ;;
+            *) plak_ui_error "Unknown argument: $item"; return 1 ;;
+        esac
+    done
+    [ "${#settings[@]}" -gt 0 ] || { plak_ui_error 'Provide at least one directive=value.'; return 1; }
+    [ -f "$PHP_INI_FILE" ] || { plak_ui_error "Missing $PHP_INI_FILE; run plak install."; return 1; }
+    tmp=$(mktemp "$PHP_INI_FILE.XXXXXX") || return 1
+    cp -p "$PHP_INI_FILE" "$tmp" || { rm -f "$tmp"; return 1; }
+    for item in "${settings[@]}"; do
+        key=${item%%=*}; value=${item#*=}
+        content=$(awk -F= -v key="$key" '{k=$1; gsub(/^[ \t]+|[ \t]+$/, "", k); if(k!=key) print}' "$tmp") || { rm -f "$tmp"; return 1; }
+        printf '%s\n%s = %s\n' "$content" "$key" "$value" > "$tmp" || { rm -f "$tmp"; return 1; }
+    done
+    mv "$tmp" "$PHP_INI_FILE" || return 1
+    if [ "$restart" = true ]; then
+        local SUDO_CMD="${SUDO_CMD:-}"
+        # Explicit restart permission does not authorize an unattended password
+        # prompt. sudo must fail actionably instead of waiting for input.
+        if ! plak_has_tty && [ -n "$SUDO_CMD" ]; then SUDO_CMD="$SUDO_CMD -n"; fi
+        regenerate_caddyfile || return 1
+        start_caddy_service || return 1
+        echo 'OPcache settings saved; FrankenPHP restarted. Verify with plak health opcache.'
+    else
+        echo 'OPcache settings saved; no reload/restart performed. Apply with the same command plus --restart.'
+    fi
+}
+
+plak_health_http2() {
+    local json=false negotiated=unknown configured
+    case "${1:-}" in --json) json=true; shift ;; esac
+    [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health http2 [--json]'; return 1; }
+    configured=$(plak_config_get HTTP2_ENABLED 0)
+    if curl --version 2>/dev/null | grep -q HTTP2; then
+        negotiated=$(curl --noproxy '*' --resolve "plak.localhost:${HTTPS_PORT}:127.0.0.1" \
+            --http2 --connect-timeout 2 --max-time 5 -fksS -o /dev/null -w '%{http_version}' \
+            "$(url_for plak.localhost)/health.php" 2>/dev/null) || negotiated=unknown
+    fi
+    if [ "$json" = true ]; then
+        printf '{"configured_h2":%s,"negotiated":' "$([ "$configured" = 1 ] && echo true || echo false)"
+        plak_json_string "$negotiated"; printf '}\n'
+    else
+        printf 'HTTP/2 configured: %s; negotiated: %s\n' "$configured" "$negotiated"
+        echo 'A protocol probe is not a performance evaluation; see docs/health.md.'
+    fi
+}
+
 # Source: commands/hosts
 plak_hosts_entries() {
     local hosts_file="${1:-$PLAK_HOSTS_FILE}"
@@ -7136,9 +7429,13 @@ plak_site_add() (
     # Every mandatory step is checked explicitly: main disables errexit for
     # legacy site commands, and an outer conditional can disable it too.
     local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=""
-    local agent_flag="" arg
-    for arg in "$@"; do
+    local agent_flag="" arg wp_version="latest" version_flag=false
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
         case "$arg" in
+            --wp-version)
+                [ "$#" -ge 2 ] || { echo 'Error: --wp-version requires latest, nightly or a release number.' >&2; exit 1; }
+                wp_version="$2"; version_flag=true; shift ;;
             --plain) site_type="plain" ;;
             --no-reload) no_reload_flag=true ;;
             --agent) agent_mode=true agent_flag="true" ;;
@@ -7153,7 +7450,13 @@ plak_site_add() (
                 site_name="$arg"
                 ;;
         esac
+        shift
     done
+    plak_core_version_valid "$wp_version" || { echo "Error: invalid WordPress version '$wp_version'; use latest, nightly or a release such as 6.8.1." >&2; exit 1; }
+    if [ "$version_flag" = true ] && [ "$site_type" = plain ]; then
+        echo 'Error: --wp-version applies only to WordPress sites; omit it with --plain.' >&2
+        exit 1
+    fi
     if [ "$agent_flag" = "true" ] && [ "$site_type" = plain ]; then
         echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --plain." >&2
         exit 1
@@ -7230,7 +7533,10 @@ plak_site_add() (
         # each failure instead of returning only the last command's status.
         if ! (
             cd "$site_dir/public" || exit 1
-            "${PLAK_WP_COMMAND[@]}" core download --quiet || exit 1
+            "${PLAK_WP_COMMAND[@]}" core download --version="$wp_version" --quiet || {
+                echo "Error: WordPress '$wp_version' download failed; verify the release exists and network access is available." >&2
+                exit 1
+            }
             if [ ! -s wp-includes/version.php ] || [ ! -s wp-settings.php ]; then
                 echo "Error: WP-CLI reported a download but WordPress core files are missing." >&2
                 exit 1
@@ -7566,6 +7872,136 @@ plak_site_clone() {
     gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
         "✅ Clone created" "URL: $(plak_terminal_link "$(url_for "$full_hostname")")"
 }
+
+# Source: commands/site/core
+# shellcheck disable=SC2030,SC2031 # Per-site child subshells inherit the resolved argv array from plak_core.
+# Compare numeric releases without sort -V (not available in macOS sort).
+plak_core_version_compare() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        split(a,x,"."); split(b,y,".");
+        for(i=1;i<=3;i++) {if(x[i]+0>y[i]+0){print 1;exit} if(x[i]+0<y[i]+0){print -1;exit}}
+        print 0
+    }'
+}
+
+# Bounded remote query; failures are explicit and do not prevent local inspection.
+plak_core_latest() {
+    local response version
+    response=$(curl --connect-timeout 3 --max-time 10 -fsS 'https://api.wordpress.org/core/version-check/1.7/' 2>/dev/null) || return 1
+    # shellcheck disable=SC2016 # PHP code, not shell variable expansion.
+    version=$(printf '%s' "$response" | "$CADDY_CMD" php-cli -r '
+        $data=json_decode(stream_get_contents(STDIN),true);
+        foreach (($data["offers"] ?? []) as $offer) {
+            if (($offer["response"] ?? "") === "upgrade") {echo $offer["version"]; exit;}
+        }
+        exit(1);
+    ' 2>/dev/null) || return 1
+    plak_core_version_valid "$version" && [[ "$version" != latest && "$version" != nightly ]] || return 1
+    printf '%s\n' "$version"
+}
+
+plak_core_usage() {
+    echo 'Usage: plak core [list|<site>] [--check]'
+    echo '       plak core update <site>|--all [--version latest|nightly|<version>] [--allow-downgrade]'
+}
+
+plak_core() (
+    local action=show site="" all=false check=false target=latest allow=false arg latest="" result=0 path
+    case "${1:-}" in
+        -h|--help) plak_core_usage; return 0 ;;
+        update) action=update; shift ;;
+        list) all=true; shift ;;
+    esac
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
+        case "$arg" in
+            --all) all=true ;;
+            --check) check=true ;;
+            --allow-downgrade) allow=true ;;
+            --version)
+                [ "$#" -ge 2 ] || { plak_ui_error '--version requires a value.'; return 1; }
+                target="$2"; shift ;;
+            -*) plak_ui_error "Unknown option: $arg"; return 1 ;;
+            *) [ -z "$site" ] || { plak_core_usage >&2; return 1; }; site="${arg%.localhost}" ;;
+        esac
+        shift
+    done
+    if [ -n "$site" ] && [ "$all" = true ]; then
+        plak_ui_error 'Choose one site or --all, not both.'; return 1
+    fi
+    if [ "$action" = update ] && [ -z "$site" ] && [ "$all" = false ]; then
+        plak_ui_error 'Updating requires a site or explicit --all.'; return 1
+    fi
+    plak_core_version_valid "$target" || { plak_ui_error "Invalid version '$target': use latest, nightly or a release number."; return 1; }
+    local -a sites=() PLAK_WP_COMMAND=()
+    if [ -n "$site" ]; then
+        plak_validate_site_name "$site" || { plak_ui_error 'Invalid site name.'; return 1; }
+        sites+=("$site")
+    else
+        for path in "$SITES_DIR"/*.localhost/public/wp-includes/version.php; do
+            [ -f "$path" ] || continue
+            path=${path%/public/wp-includes/version.php}; sites+=("$(basename "$path" .localhost)")
+        done
+    fi
+    [ "${#sites[@]}" -gt 0 ] || { echo 'No WordPress sites found.'; return 0; }
+    plak_wp_resolve_command || return 1
+    if [ "$check" = true ] || { [ "$action" = update ] && [ "$target" = latest ]; }; then
+        latest=$(plak_core_latest) || latest=""
+        if [ -z "$latest" ]; then
+            echo 'WordPress.org status unknown: remote query unavailable (10-second timeout).' >&2
+            if [ "$action" = update ] && [ "$target" = latest ]; then return 1; fi
+        elif [ "$action" = update ] && [ "$target" = latest ]; then target="$latest"; fi
+    fi
+    echo "Affected WordPress sites (${#sites[@]}): ${sites[*]}"
+    for site in "${sites[@]}"; do
+        if ! plak_core_one "$site" "$action" "$target" "$allow" "$latest"; then
+            echo "$site.localhost: FAILED" >&2
+            result=1
+        fi
+    done
+    return "$result"
+)
+
+plak_core_one() (
+    local site="$1" action="$2" target="$3" allow="$4" latest="$5" installed effective force=false multisite="" status=unknown comparison
+    local public="$SITES_DIR/$site.localhost/public"
+    if [ ! -f "$public/wp-config.php" ] || [ ! -f "$public/wp-includes/version.php" ]; then
+        plak_ui_error "WordPress site '$site.localhost' not found or incomplete."; return 1
+    fi
+    cd "$public" || return 1
+    installed=$("${PLAK_WP_COMMAND[@]}" core version) || return 1
+    [ -n "$installed" ] || { plak_ui_error 'Installed version unavailable.'; return 1; }
+    if [ -n "$latest" ]; then
+        comparison=$(plak_core_version_compare "$installed" "$latest")
+        case "$comparison" in -1) status="update available ($latest)" ;; 0) status="current ($latest)" ;; 1) status="ahead of published $latest" ;; esac
+    fi
+    echo "$site.localhost: installed=$installed; published=$status"
+    [ "$action" = update ] || return 0
+    if [ "$target" = nightly ] || ! [[ "$installed" =~ ^[1-9][0-9]*\.[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "$site.localhost: development build transition ($installed -> $target); direction may be unknown."
+        [ "$allow" = true ] || { plak_ui_error 'Use --allow-downgrade to explicitly authorize this transition.'; return 1; }
+        force=true
+    elif [ "$(plak_core_version_compare "$target" "$installed")" = -1 ]; then
+        echo "$site.localhost: DOWNGRADE $installed -> $target"
+        [ "$allow" = true ] || { plak_ui_error 'Downgrade requires --allow-downgrade; snapshot first.'; return 1; }
+        force=true
+    fi
+    local -a flags=("--version=$target")
+    [ "$force" = false ] || flags+=(--force)
+    echo "$site.localhost: updating core to $target (wp-content and wp-config.php retained)."
+    "${PLAK_WP_COMMAND[@]}" core update "${flags[@]}" || return 1
+    multisite=$("${PLAK_WP_COMMAND[@]}" eval 'echo is_multisite() ? "1" : "0";' --skip-plugins --skip-themes) || return 1
+    [[ "$multisite" = 0 || "$multisite" = 1 ]] || { plak_ui_error 'Could not determine single-site/network schema mode.'; return 1; }
+    flags=()
+    [[ "$multisite" != 1 && "$multisite" != true ]] || flags+=(--network)
+    "${PLAK_WP_COMMAND[@]}" core update-db "${flags[@]}" || return 1
+    effective=$("${PLAK_WP_COMMAND[@]}" core version) || return 1
+    [ -n "$effective" ] || { plak_ui_error 'Effective version unavailable after update.'; return 1; }
+    echo "$site.localhost: effective=$effective"
+    if [ "$target" != nightly ] && { ! [[ "$effective" =~ ^[1-9][0-9]*\.[0-9]+(\.[0-9]+)?$ ]] || [ "$(plak_core_version_compare "$target" "$effective")" != 0 ]; }; then
+        plak_ui_error "Effective version '$effective' does not match requested '$target'."; return 1
+    fi
+)
 
 # Source: commands/site/db
 plak_site_db_backup() {
@@ -9129,6 +9565,15 @@ plak_site_install() {
 memory_limit = 1G
 display_errors = 0
 error_reporting = 6143
+; OPcache for the web process. enable_cli stays 0 so wp-cli and one-off PHP
+; runs are never served a stale cache; tune with `plak health opcache set`.
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 128
+opcache.interned_strings_buffer = 16
+opcache.max_accelerated_files = 10000
+opcache.validate_timestamps = 1
+opcache.revalidate_freq = 2
 INI
     echo "🗃️ Downloading Adminer 5.4.2..."
     curl -sL "https://github.com/vrana/adminer/releases/download/v5.4.2/adminer-5.4.2.php" -o "$ADMINER_DIR/adminer-core.php"
@@ -9146,8 +9591,7 @@ INI
     # httpd_exec_t file context. On Fedora/RHEL that triggers an exec-time
     # domain transition into httpd_t — a confined web-server domain that:
     #   - can't read files labeled user_home_t (fails to open ~/Plak/Caddyfile
-
-    Pero #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
+    #     and ~/.local/share/caddy/pki/.../root.crt with "permission denied")
     #   - silently RSTs TLS connections under some configs (TCP accepts but
     #     the TLS ClientHello gets no response)
     # Neither failure logs an AVC — both are dontaudit'd. Retagging the binary
