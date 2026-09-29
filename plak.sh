@@ -2908,6 +2908,271 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'duration_ms' => $ms,
             ]);
             exit;
+        case 'site_logs':
+        case 'site_traffic':
+            // Logs and traffic are read from the same per-site files. Reading
+            // is bounded to the last chunk of each file so a multi-hundred-MB
+            // access log never has to be loaded to answer a request.
+            if (empty($site_name) || !preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid site name.']);
+                exit;
+            }
+            $__site_dir = $sitedir . '/' . $site_name . '.localhost';
+            if (!is_dir($__site_dir)) {
+                echo json_encode(['success' => false, 'message' => 'Site not found.']);
+                exit;
+            }
+            $__tail = function ($path, $max_bytes) {
+                if (!is_file($path)) return null;
+                $size = filesize($path);
+                $fh = @fopen($path, 'rb');
+                if (!$fh) return null;
+                $start = max(0, $size - $max_bytes);
+                if ($start > 0) fseek($fh, $start);
+                $data = stream_get_contents($fh);
+                fclose($fh);
+                return [$data, $start > 0, $size];
+            };
+
+            if ($action === 'site_logs') {
+                $source = (string) ($input['source'] ?? 'php');
+                $q = trim((string) ($input['q'] ?? ''));
+                $limit = (int) ($input['limit'] ?? 200);
+                if ($limit < 1) $limit = 200;
+                if ($limit > 500) $limit = 500;
+                $min_level = strtolower((string) ($input['level'] ?? 'all'));
+
+                $log_sources = [
+                    'php'    => $user_home . '/Plak/Logs/errors.log',
+                    'debug'  => $__site_dir . '/public/wp-content/debug.log',
+                    'access' => $__site_dir . '/logs/caddy.log',
+                ];
+                if (!array_key_exists($source, $log_sources)) {
+                    echo json_encode(['success' => false, 'message' => 'Unknown log source.']);
+                    exit;
+                }
+                $available = [];
+                foreach ($log_sources as $k => $p) { $available[$k] = is_file($p); }
+
+                $tail = $__tail($log_sources[$source], 1048576);
+                if ($tail === null) {
+                    echo json_encode(['success' => true, 'source' => $source, 'available' => $available, 'items' => [], 'truncated' => false, 'missing' => true]);
+                    exit;
+                }
+                [$data, $truncated, $file_size] = $tail;
+                $lines = preg_split('/\r?\n/', $data);
+                if ($truncated && count($lines) > 0) array_shift($lines);
+
+                $severity = [
+                    'deprecated' => 1, 'notice' => 1, 'strict standards' => 1,
+                    'warning' => 2,
+                    'parse error' => 3, 'fatal error' => 3, 'recoverable fatal error' => 3,
+                ];
+                $min_sev = ($min_level === 'all') ? 0 : ($severity[$min_level] ?? 0);
+                $items = [];
+
+                if ($source === 'access') {
+                    foreach ($lines as $line) {
+                        $line = trim($line);
+                        if ($line === '' || $line[0] !== '{') continue;
+                        $row = json_decode($line, true);
+                        if (!is_array($row) || !isset($row['request']['uri'])) continue;
+                        $status = (int) ($row['status'] ?? 0);
+                        $level = $status >= 500 ? 'error' : ($status >= 400 ? 'warn' : 'info');
+                        $uri = $row['request']['uri'] ?? '';
+                        $method = $row['request']['method'] ?? '';
+                        if ($min_sev > 0 && $level === 'info') continue;
+                        if ($q !== '' && stripos($uri . ' ' . $method . ' ' . $status, $q) === false) continue;
+                        $item = [
+                            'level' => $level,
+                            'ts' => isset($row['ts']) ? (float) $row['ts'] : null,
+                            'time' => isset($row['ts']) ? gmdate('c', (int) $row['ts']) : null,
+                            'method' => $method,
+                            'uri' => $uri,
+                            'status' => $status,
+                            'duration_ms' => isset($row['duration']) ? round(((float) $row['duration']) * 1000, 1) : null,
+                            'size' => (int) ($row['size'] ?? 0),
+                            'remote_ip' => $row['request']['remote_ip'] ?? '',
+                        ];
+                        $last = $items ? $items[count($items) - 1] : null;
+                        if ($last && $last['uri'] === $item['uri'] && $last['method'] === $item['method'] && $last['status'] === $item['status']) {
+                            $items[count($items) - 1]['count'] = ($last['count'] ?? 1) + 1;
+                            $items[count($items) - 1]['time'] = $item['time'];
+                            $items[count($items) - 1]['ts'] = $item['ts'];
+                            continue;
+                        }
+                        $item['count'] = 1;
+                        $items[] = $item;
+                    }
+                } else {
+                    // PHP error log / debug.log share one line format; stack
+                    // traces are continuation lines attached to the entry above.
+                    $current = null;
+                    $push = function () use (&$items, &$current) {
+                        if ($current === null) return;
+                        $last = $items ? $items[count($items) - 1] : null;
+                        if ($last && $last['level'] === $current['level'] && $last['message'] === $current['message'] && $last['location'] === $current['location']) {
+                            $items[count($items) - 1]['count'] = ($last['count'] ?? 1) + 1;
+                            $items[count($items) - 1]['time'] = $current['time'];
+                            return;
+                        }
+                        $items[] = $current;
+                    };
+                    foreach ($lines as $line) {
+                        if (!preg_match('/^\[([^\]]+)\]\s*(.*)$/', $line, $m)) {
+                            if ($current !== null && trim($line) !== '') $current['trace'][] = rtrim($line);
+                            continue;
+                        }
+                        if (!preg_match('/^PHP ([a-zA-Z ]+?):\s*(.*)$/', $m[2], $mm)) {
+                            if ($current !== null && trim($line) !== '') $current['trace'][] = rtrim($line);
+                            continue;
+                        }
+                        $push();
+                        $rest = $mm[2];
+                        $location = '';
+                        if (preg_match('/^(.*?) in (.+?) on line (\d+)$/s', $rest, $lm)) {
+                            $rest = $lm[1];
+                            $location = $lm[2] . ':' . $lm[3];
+                        }
+                        $current = [
+                            'level' => strtolower(trim($mm[1])),
+                            'time' => $m[1],
+                            'message' => $rest,
+                            'location' => $location,
+                            'trace' => [],
+                            'count' => 1,
+                        ];
+                    }
+                    $push();
+
+                    if ($source === 'php') {
+                        // The PHP error log is shared by every site; keep only
+                        // entries whose location/trace points at this site.
+                        $needle = $__site_dir . '/';
+                        $items = array_values(array_filter($items, function ($it) use ($needle) {
+                            if ($it['location'] !== '' && strpos($it['location'], $needle) !== false) return true;
+                            if (strpos($it['message'], $needle) !== false) return true;
+                            foreach ($it['trace'] as $t) {
+                                if (strpos($t, $needle) !== false) return true;
+                            }
+                            return false;
+                        }));
+                    }
+                    if ($q !== '') {
+                        $items = array_values(array_filter($items, function ($it) use ($q) {
+                            return stripos($it['message'] . ' ' . $it['location'] . ' ' . implode(' ', $it['trace']), $q) !== false;
+                        }));
+                    }
+                    if ($min_sev > 0) {
+                        $items = array_values(array_filter($items, function ($it) use ($severity, $min_sev) {
+                            return ($severity[$it['level']] ?? 0) >= $min_sev;
+                        }));
+                    }
+                }
+
+                $items = array_values(array_reverse($items));
+                $total = count($items);
+                if ($total > $limit) $items = array_slice($items, 0, $limit);
+                echo json_encode([
+                    'success' => true,
+                    'source' => $source,
+                    'available' => $available,
+                    'items' => $items,
+                    'truncated' => $truncated,
+                    'file_bytes' => $file_size,
+                    'total' => $total,
+                ]);
+                exit;
+            }
+
+            // site_traffic: aggregate the site access log over a time window.
+            $period = (string) ($input['period'] ?? '24h');
+            $windows = ['1h' => 3600, '24h' => 86400, '7d' => 604800];
+            $cutoff = isset($windows[$period]) ? time() - $windows[$period] : 0;
+            $log = $__site_dir . '/logs/caddy.log';
+            if (!is_file($log)) {
+                echo json_encode([
+                    'success' => true, 'period' => $period, 'available' => false,
+                    'summary' => ['requests' => 0, 'errors' => 0, 'server_errors' => 0, 'bytes' => 0, 'avg_ms' => 0, 'p95_ms' => 0, 'max_ms' => 0],
+                    'classes' => ['pages' => 0, 'assets' => 0, 'admin' => 0, 'ajax_rest' => 0, 'cron' => 0, 'other' => 0],
+                    'top_paths' => [], 'slow' => [],
+                ]);
+                exit;
+            }
+            $tail = $__tail($log, 8 * 1024 * 1024);
+            [$data, $truncated, $file_size] = $tail;
+            $lines = preg_split('/\r?\n/', $data);
+            if ($truncated && count($lines) > 0) array_shift($lines);
+
+            $classify = function ($path) {
+                if (strpos($path, '/wp-cron.php') !== false) return 'cron';
+                if (strpos($path, '/wp-json') === 0 || strpos($path, 'admin-ajax.php') !== false) return 'ajax_rest';
+                if (strpos($path, '/wp-admin') === 0 || strpos($path, '/wp-login.php') !== false) return 'admin';
+                $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+                if (in_array($ext, ['css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif', 'ico', 'woff', 'woff2', 'ttf', 'otf', 'map', 'mp4', 'webm', 'pdf'], true)) return 'assets';
+                if (strpos($path, '/wp-content/') === 0 || strpos($path, '/wp-includes/') === 0) return 'assets';
+                if ($path === '/' || $ext === '' || in_array($ext, ['php', 'html', 'htm'], true)) return 'pages';
+                return 'other';
+            };
+
+            $requests = 0; $errors = 0; $server_errors = 0; $bytes = 0;
+            $classes = ['pages' => 0, 'assets' => 0, 'admin' => 0, 'ajax_rest' => 0, 'cron' => 0, 'other' => 0];
+            $paths = []; $slow = []; $durations = [];
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '' || $line[0] !== '{') continue;
+                $row = json_decode($line, true);
+                if (!is_array($row) || !isset($row['request']['uri'])) continue;
+                $ts = isset($row['ts']) ? (float) $row['ts'] : 0;
+                if ($cutoff && $ts < $cutoff) continue;
+                $status = (int) ($row['status'] ?? 0);
+                $uri = (string) $row['request']['uri'];
+                $path = explode('?', $uri, 2)[0];
+                $duration = isset($row['duration']) ? (float) $row['duration'] : 0.0;
+                $requests++;
+                if ($status >= 400) $errors++;
+                if ($status >= 500) $server_errors++;
+                $bytes += (int) ($row['size'] ?? 0);
+                $durations[] = $duration;
+                $paths[$path] = ($paths[$path] ?? 0) + 1;
+                $classes[$classify($path)]++;
+                $slow[] = ['uri' => $uri, 'duration_ms' => round($duration * 1000, 1), 'status' => $status, 'time' => gmdate('c', (int) $ts)];
+            }
+            arsort($paths);
+            $top_paths = [];
+            foreach (array_slice($paths, 0, 10, true) as $p => $c) {
+                $top_paths[] = ['path' => $p, 'count' => $c];
+            }
+            usort($slow, function ($a, $b) { return $b['duration_ms'] <=> $a['duration_ms']; });
+            $slow_top = array_slice($slow, 0, 10);
+            sort($durations);
+            $avg = count($durations) ? round(array_sum($durations) / count($durations) * 1000, 1) : 0;
+            $p95 = 0; $max = 0;
+            if (count($durations)) {
+                $p95 = round($durations[(int) floor((count($durations) - 1) * 0.95)] * 1000, 1);
+                $max = round($durations[count($durations) - 1] * 1000, 1);
+            }
+            echo json_encode([
+                'success' => true,
+                'period' => $period,
+                'available' => true,
+                'truncated' => $truncated,
+                'file_bytes' => $file_size,
+                'summary' => [
+                    'requests' => $requests,
+                    'errors' => $errors,
+                    'server_errors' => $server_errors,
+                    'bytes' => $bytes,
+                    'avg_ms' => $avg,
+                    'p95_ms' => $p95,
+                    'max_ms' => $max,
+                ],
+                'classes' => $classes,
+                'top_paths' => $top_paths,
+                'slow' => $slow_top,
+                'note' => 'Local request metrics from the site access log — not unique visitors or production analytics.',
+            ]);
+            exit;
         case 'get_login_link':
             $response = ['success' => false, 'message' => 'An unknown error occurred.'];
             if (!empty($site_name)) {
@@ -3396,6 +3661,36 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .console-history { display: flex; flex-wrap: wrap; gap: 0.35rem; }
         .console-hist-btn { background: var(--pill-bg); color: var(--text-dim); border: 0; border-radius: var(--radius-pill); padding: 0.2rem 0.6rem; cursor: pointer; font-family: var(--font-mono); font-size: 0.72rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .console-hist-btn:hover { color: var(--text); background: var(--panel-hover); }
+
+        /* Logs and traffic inside a site's diagnostics panel. */
+        .log-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+        .log-select { background: var(--input-bg); border: 1px solid var(--panel-border); color: var(--text); font-family: var(--font-mono); font-size: 0.76rem; border-radius: var(--radius-md); padding: 0.3rem 0.5rem; }
+        .log-search { background: var(--input-bg); border: 1px solid var(--panel-border); border-radius: var(--radius-md); padding: 0.35rem 0.6rem; flex: 1; min-width: 120px; }
+        .log-search:focus { border-color: var(--accent); outline: 0; }
+        .log-list { list-style: none; margin: 0; padding: 0; max-height: 26rem; overflow: auto; }
+        .log-entry { padding: 0.45rem 0; border-bottom: 1px solid var(--panel-border); font-family: var(--font-mono); font-size: 0.78rem; }
+        .log-line { display: flex; align-items: baseline; gap: 0.55rem; flex-wrap: wrap; }
+        .log-level { text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.06em; padding: 0.05rem 0.4rem; border-radius: var(--radius-pill); background: var(--pill-bg); color: var(--text-dim); flex: none; }
+        .log-entry.lvl-fatal\.error .log-level, .log-entry.lvl-error .log-level { background: var(--danger); color: #fff; }
+        .log-entry.lvl-warning .log-level, .log-entry.lvl-warn .log-level { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .log-time { color: var(--text-faint); flex: none; }
+        .log-count { color: var(--accent); flex: none; }
+        .log-msg { color: var(--text); word-break: break-word; }
+        .log-trace { margin: 0.3rem 0 0; }
+        .log-trace summary { color: var(--text-dim); cursor: pointer; font-size: 0.72rem; }
+        .log-trace pre { margin: 0.3rem 0 0; padding: 0.5rem 0.7rem; background: var(--input-bg); border-radius: var(--radius-md); overflow-x: auto; font-size: 0.72rem; color: var(--text-dim); }
+        .traffic-cards { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.8rem; }
+        .traffic-card { background: var(--input-bg); border: 1px solid var(--panel-border); border-radius: var(--radius-md); padding: 0.55rem 0.8rem; min-width: 88px; display: flex; flex-direction: column; gap: 0.1rem; }
+        .traffic-num { font-family: var(--font-mono); font-size: 1.05rem; color: var(--text); }
+        .traffic-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+        .traffic-classes { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }
+        .traffic-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+        @media (max-width: 620px) { .traffic-cols { grid-template-columns: 1fr; } }
+        .traffic-h { font-size: 0.8rem; font-family: var(--font-sans); font-weight: 600; color: var(--text-dim); margin: 0 0 0.35rem; text-transform: uppercase; letter-spacing: 0.04em; }
+        .traffic-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+        .traffic-list li { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.78rem; }
+        .traffic-list code { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .traffic-list span { color: var(--text-faint); font-family: var(--font-mono); flex: none; }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -3729,6 +4024,107 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         </div>
                     </div>
                 </template>
+
+                <div class="components diag">
+                    <div class="components-head">
+                        <div class="components-tabs">
+                            <button type="button" class="comp-tab" :class="{ active: diagTab === 'logs' }" @click="setDiagTab('logs')">logs</button>
+                            <button type="button" class="comp-tab" :class="{ active: diagTab === 'traffic' }" @click="setDiagTab('traffic')">traffic</button>
+                        </div>
+                        <button type="button" class="site-action-btn" :class="{ loading: diagLoading }" @click="reloadDiag()" :disabled="diagLoading">
+                            <span class="btn-label" x-text="diagLoading ? 'loading…' : 'refresh'"></span>
+                        </button>
+                    </div>
+
+                    <template x-if="diagTab === 'logs'">
+                        <div>
+                            <div class="log-controls">
+                                <div class="components-tabs">
+                                    <button type="button" class="comp-tab" :class="{ active: logSource === 'php' }" :disabled="logAvailable.php === false" @click="setLogSource('php')">php errors</button>
+                                    <button type="button" class="comp-tab" :class="{ active: logSource === 'debug' }" :disabled="logAvailable.debug === false" @click="setLogSource('debug')">debug.log</button>
+                                    <button type="button" class="comp-tab" :class="{ active: logSource === 'access' }" :disabled="logAvailable.access === false" @click="setLogSource('access')">access</button>
+                                </div>
+                                <select class="log-select" x-model="logLevel" @change="loadLogs(detailSite.name)" aria-label="Minimum level">
+                                    <option value="all">all levels</option>
+                                    <option value="warning">warning+</option>
+                                    <option value="fatal error">fatal only</option>
+                                </select>
+                                <input type="text" class="filter-input log-search" x-model="logQuery" @input.debounce.400ms="loadLogs(detailSite.name)" placeholder="filter…" spellcheck="false" autocomplete="off">
+                            </div>
+                            <p class="comp-error" x-show="logError" x-text="logError" x-cloak></p>
+                            <p class="comp-loading" x-show="logLoading" x-cloak>Reading logs…</p>
+                            <ul class="log-list" x-show="!logLoading" x-cloak>
+                                <template x-for="(entry, i) in logItems" :key="i">
+                                    <li class="log-entry" :class="'lvl-' + entry.level">
+                                        <div class="log-line">
+                                            <span class="log-level" x-text="entry.level"></span>
+                                            <span class="log-time" x-text="entry.time"></span>
+                                            <span class="log-count" x-show="entry.count > 1" x-cloak x-text="'×' + entry.count"></span>
+                                            <span class="log-msg" x-text="logEntryText(entry)"></span>
+                                        </div>
+                                        <template x-if="entry.trace && entry.trace.length">
+                                            <details class="log-trace"><summary>trace</summary><pre x-text="entry.trace.join('\n')"></pre></details>
+                                        </template>
+                                    </li>
+                                </template>
+                                <li class="empty" x-show="logItems.length === 0" x-cloak>No entries.</li>
+                            </ul>
+                            <p class="comp-hint" x-show="logTruncated" x-cloak>Showing the tail of a large log file.</p>
+                        </div>
+                    </template>
+
+                    <template x-if="diagTab === 'traffic'">
+                        <div>
+                            <div class="log-controls">
+                                <div class="components-tabs">
+                                    <template x-for="p in ['1h','24h','7d','all']" :key="p">
+                                        <button type="button" class="comp-tab" :class="{ active: trafficPeriod === p }" @click="setTrafficPeriod(p)" x-text="p === 'all' ? 'all time' : p"></button>
+                                    </template>
+                                </div>
+                            </div>
+                            <p class="comp-error" x-show="trafficError" x-text="trafficError" x-cloak></p>
+                            <p class="comp-loading" x-show="trafficLoading" x-cloak>Aggregating…</p>
+                            <template x-if="traffic && !trafficLoading">
+                                <div class="traffic">
+                                    <div class="traffic-cards">
+                                        <div class="traffic-card"><span class="traffic-num" x-text="traffic.summary.requests"></span><span class="traffic-label">requests</span></div>
+                                        <div class="traffic-card"><span class="traffic-num" x-text="traffic.summary.errors"></span><span class="traffic-label">errors</span></div>
+                                        <div class="traffic-card"><span class="traffic-num" x-text="formatSize(traffic.summary.bytes)"></span><span class="traffic-label">bytes</span></div>
+                                        <div class="traffic-card"><span class="traffic-num" x-text="traffic.summary.avg_ms + ' ms'"></span><span class="traffic-label">avg</span></div>
+                                        <div class="traffic-card"><span class="traffic-num" x-text="traffic.summary.p95_ms + ' ms'"></span><span class="traffic-label">p95</span></div>
+                                        <div class="traffic-card"><span class="traffic-num" x-text="traffic.summary.max_ms + ' ms'"></span><span class="traffic-label">max</span></div>
+                                    </div>
+                                    <div class="traffic-classes">
+                                        <template x-for="(n, k) in traffic.classes" :key="k">
+                                            <span class="comp-badge" x-text="k + ': ' + n"></span>
+                                        </template>
+                                    </div>
+                                    <p class="comp-hint" x-text="traffic.note"></p>
+                                    <div class="traffic-cols">
+                                        <div>
+                                            <h4 class="traffic-h">Top paths</h4>
+                                            <ul class="traffic-list">
+                                                <template x-for="p in traffic.top_paths" :key="p.path">
+                                                    <li><code x-text="p.path"></code><span x-text="p.count"></span></li>
+                                                </template>
+                                                <li class="empty" x-show="!traffic.top_paths.length">No requests.</li>
+                                            </ul>
+                                        </div>
+                                        <div>
+                                            <h4 class="traffic-h">Slowest</h4>
+                                            <ul class="traffic-list">
+                                                <template x-for="s in traffic.slow" :key="s.time + s.uri">
+                                                    <li><code x-text="s.uri"></code><span x-text="s.duration_ms + ' ms'"></span></li>
+                                                </template>
+                                                <li class="empty" x-show="!traffic.slow.length">No requests.</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
             </div>
         </template>
     </section>
@@ -3795,6 +4191,20 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 consoleOutput: '',
                 consoleResult: null,
                 consoleHistory: [],
+                // Diagnostics panel (logs / traffic) for the open site.
+                diagTab: 'logs',
+                logSource: 'php',
+                logLevel: 'all',
+                logQuery: '',
+                logItems: [],
+                logAvailable: {},
+                logLoading: false,
+                logError: null,
+                logTruncated: false,
+                trafficPeriod: '24h',
+                traffic: null,
+                trafficLoading: false,
+                trafficError: null,
                 isRefreshingSizes: false,
                 filter: '',
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
@@ -3811,6 +4221,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
 
                 get adminerUrl() { return 'https://db.plak.localhost' + PORT_SUFFIX; },
                 get mailpitUrl() { return 'https://mail.plak.localhost' + PORT_SUFFIX; },
+                get diagLoading() { return this.logLoading || this.trafficLoading; },
                 get totalBytes() { return this.sites.reduce((t, s) => t + (s.size_bytes || 0), 0); },
                 get filteredSites() {
                     // Two independent filters ANDed together: typeFilter (chip,
@@ -3910,7 +4321,19 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                             this.consoleOutput = '';
                             this.consoleResult = null;
                             this.consoleHistory = [];
+                            // Reset diagnostics and load logs for the new site.
+                            this.diagTab = 'logs';
+                            this.logSource = 'php';
+                            this.logLevel = 'all';
+                            this.logQuery = '';
+                            this.logItems = [];
+                            this.logError = null;
+                            this.logTruncated = false;
+                            this.logAvailable = {};
+                            this.traffic = null;
+                            this.trafficError = null;
                             if (this.detailSite.type === 'WordPress') this.loadTool(name);
+                            this.loadLogs(name);
                         }
                     } else {
                         this.detailSite = null;
@@ -4113,6 +4536,74 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     if (line) {
                         this.consoleHistory = [line, ...this.consoleHistory.filter(h => h !== line)].slice(0, 10);
                     }
+                },
+
+                setDiagTab(tab) {
+                    if (this.diagTab === tab) return;
+                    this.diagTab = tab;
+                    if (!this.detailSite) return;
+                    if (tab === 'logs') this.loadLogs(this.detailSite.name);
+                    else this.loadTraffic(this.detailSite.name);
+                },
+
+                setLogSource(src) {
+                    if (this.logSource === src) return;
+                    this.logSource = src;
+                    this.loadLogs(this.detailSite.name);
+                },
+
+                setTrafficPeriod(period) {
+                    if (this.trafficPeriod === period) return;
+                    this.trafficPeriod = period;
+                    this.loadTraffic(this.detailSite.name);
+                },
+
+                reloadDiag() {
+                    if (!this.detailSite) return;
+                    if (this.diagTab === 'logs') this.loadLogs(this.detailSite.name);
+                    else this.loadTraffic(this.detailSite.name);
+                },
+
+                async loadLogs(name) {
+                    this.logLoading = true;
+                    this.logError = null;
+                    const res = await this.apiPost('site_logs', {
+                        site_name: name,
+                        source: this.logSource,
+                        level: this.logLevel,
+                        q: this.logQuery,
+                    });
+                    if (!this.detailSite || this.detailSite.name !== name) return;
+                    this.logLoading = false;
+                    if (!res.success) {
+                        this.logError = res.message || 'Could not read logs.';
+                        this.logItems = [];
+                        return;
+                    }
+                    this.logItems = res.items || [];
+                    this.logAvailable = res.available || {};
+                    this.logTruncated = !!res.truncated;
+                },
+
+                async loadTraffic(name) {
+                    this.trafficLoading = true;
+                    this.trafficError = null;
+                    const res = await this.apiPost('site_traffic', { site_name: name, period: this.trafficPeriod });
+                    if (!this.detailSite || this.detailSite.name !== name) return;
+                    this.trafficLoading = false;
+                    if (!res.success) {
+                        this.trafficError = res.message || 'Could not read traffic.';
+                        this.traffic = null;
+                        return;
+                    }
+                    this.traffic = res;
+                },
+
+                logEntryText(entry) {
+                    if (entry.method !== undefined) {
+                        return entry.method + ' ' + entry.uri + ' → ' + entry.status;
+                    }
+                    return entry.message + (entry.location ? '  —  ' + entry.location : '');
                 },
 
                 applyTheme() {

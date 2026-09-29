@@ -81,6 +81,30 @@ sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/plak-stub';|" "
 mkdir -p "$SITES_DIR/demo.localhost/public"
 touch "$SITES_DIR/demo.localhost/public/wp-config.php"
 
+# Fixtures for the diagnostics panel (CLI-14): a shared PHP error log with
+# entries from two sites, a per-site debug.log, and a Caddy access log.
+mkdir -p "$SITES_DIR/demo.localhost/logs" "$SITES_DIR/demo.localhost/public/wp-content" "$HOME/Plak/Logs"
+cat > "$HOME/Plak/Logs/errors.log" <<PHPERR
+[29-Sep-2026 10:00:00 UTC] PHP Warning:  Undefined array key "x" in $SITES_DIR/demo.localhost/public/wp-content/themes/x/functions.php on line 12
+[29-Sep-2026 10:00:00 UTC] PHP Warning:  Undefined array key "x" in $SITES_DIR/demo.localhost/public/wp-content/themes/x/functions.php on line 12
+[29-Sep-2026 10:01:00 UTC] PHP Fatal error:  Uncaught Error: boom in $SITES_DIR/demo.localhost/public/wp-content/plugins/p/p.php on line 9
+Stack trace:
+#0 {main}
+[29-Sep-2026 10:02:00 UTC] PHP Warning:  something unrelated in $SITES_DIR/other.localhost/public/x.php on line 1
+PHPERR
+cat > "$SITES_DIR/demo.localhost/public/wp-content/debug.log" <<'DEBUGLOG'
+[29-Sep-2026 11:00:00 UTC] PHP Notice:  hello from debug
+DEBUGLOG
+now_ts=$(date +%s)
+cat > "$SITES_DIR/demo.localhost/logs/caddy.log" <<ACCESS
+{"level":"info","ts":$now_ts,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","method":"GET","host":"demo.localhost","uri":"/wp-admin/"},"size":100,"status":200,"duration":0.01}
+{"level":"info","ts":$now_ts,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","method":"GET","host":"demo.localhost","uri":"/wp-admin/"},"size":100,"status":200,"duration":0.01}
+{"level":"info","ts":$now_ts,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","method":"GET","host":"demo.localhost","uri":"/"},"size":200,"status":200,"duration":0.02}
+{"level":"info","ts":$now_ts,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","method":"GET","host":"demo.localhost","uri":"/missing"},"size":0,"status":404,"duration":0.005}
+{"level":"error","ts":$now_ts,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","method":"POST","host":"demo.localhost","uri":"/wp-admin/admin-ajax.php"},"size":0,"status":500,"duration":1.5}
+{"level":"info","ts":$now_ts,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","method":"GET","host":"demo.localhost","uri":"/style.css"},"size":50,"status":200,"duration":0.003}
+ACCESS
+
 # The WP-CLI stub and its call log must exist (and be exported) before the PHP
 # server starts, since the server process inherits its environment at launch.
 cat > "$tmpdir/plak-wp-stub" <<'WPSTUB'
@@ -249,6 +273,53 @@ empty_console=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.loca
     -H 'Content-Type: application/json' --data "{\"action\":\"site_wpcli\",\"site_name\":\"demo\",\"args\":[],\"csrf\":\"$token\"}" "$base/api.php")
 grep -q 'No command provided' <<<"$empty_console" || fail "site_wpcli accepted an empty command"
 
+# --- CLI-14: logs by source, site filtering and repeat grouping -------------
+logs_php=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_logs\",\"site_name\":\"demo\",\"source\":\"php\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'Undefined array key' <<<"$logs_php" || fail "site_logs did not read the PHP error log: $logs_php"
+grep -q '"count":2' <<<"$logs_php" || fail "site_logs did not group consecutive repeats"
+if grep -q 'something unrelated' <<<"$logs_php"; then fail "site_logs leaked another site's PHP errors"; fi
+grep -q '"available":{"php":true,"debug":true,"access":true}' <<<"$logs_php" || fail "site_logs did not report source availability"
+
+logs_debug=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_logs\",\"site_name\":\"demo\",\"source\":\"debug\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'hello from debug' <<<"$logs_debug" || fail "site_logs did not read debug.log"
+
+logs_fatal=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_logs\",\"site_name\":\"demo\",\"source\":\"php\",\"level\":\"fatal error\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"level":"fatal error"' <<<"$logs_fatal" || fail "level filter dropped the fatal error: $logs_fatal"
+if grep -q 'Undefined array key' <<<"$logs_fatal"; then fail "fatal-only filter let warnings through"; fi
+
+logs_q=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_logs\",\"site_name\":\"demo\",\"source\":\"php\",\"q\":\"Uncaught\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'Uncaught Error' <<<"$logs_q" || fail "log search did not match: $logs_q"
+
+logs_access=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_logs\",\"site_name\":\"demo\",\"source\":\"access\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'admin-ajax.php' <<<"$logs_access" || fail "site_logs did not parse the access log: $logs_access"
+grep -q '"count":2' <<<"$logs_access" || fail "access log repeats were not grouped"
+
+logs_bad=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_logs\",\"site_name\":\"demo\",\"source\":\"../../etc\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'Unknown log source' <<<"$logs_bad" || fail "site_logs accepted an unknown source"
+
+# --- CLI-14: traffic aggregation and explicit classification ----------------
+traffic=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_traffic\",\"site_name\":\"demo\",\"period\":\"24h\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"requests":6' <<<"$traffic" || fail "traffic did not count every request: $traffic"
+grep -q '"errors":2' <<<"$traffic" || fail "traffic did not count 4xx/5xx responses: $traffic"
+grep -q '"server_errors":1' <<<"$traffic" || fail "traffic did not count 5xx responses"
+grep -q '"admin":2' <<<"$traffic" || fail "traffic misclassified admin requests: $traffic"
+grep -q '"pages":2' <<<"$traffic" || fail "traffic misclassified pages: $traffic"
+grep -q '"ajax_rest":1' <<<"$traffic" || fail "traffic misclassified AJAX/REST: $traffic"
+grep -q '"assets":1' <<<"$traffic" || fail "traffic misclassified assets: $traffic"
+grep -q '"duration_ms":1500' <<<"$traffic" || fail "traffic slow list lost the slowest request"
+grep -q 'analytics' <<<"$traffic" || fail "traffic did not disclaim production analytics"
+
+traffic_1h=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"site_traffic\",\"site_name\":\"demo\",\"period\":\"1h\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"requests":6' <<<"$traffic_1h" || fail "traffic 1h window dropped recent requests"
+
 # --- add_site passes --no-agent only when the box is unchecked (CLI-33) ------
 : > "$WP_CALLS"
 add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
@@ -277,6 +348,8 @@ grep -q 'canDelete' "$GUI_DIR/index.php" || fail "index.php lacks the invalid-ac
 grep -q 'setToolTab' "$GUI_DIR/index.php" || fail "index.php lacks the site tools panel"
 grep -q 'runConsole' "$GUI_DIR/index.php" || fail "index.php lacks the WP-CLI console"
 grep -q "case 'site_users'" "$GUI_DIR/api.php" || fail "api.php lacks the site_users action"
+grep -q 'loadTraffic' "$GUI_DIR/index.php" || fail "index.php lacks the traffic panel"
+grep -q "case 'site_logs'" "$GUI_DIR/api.php" || fail "api.php lacks the site_logs action"
 
 # --- A public source address is rejected by the PHP guard ---
 API_FILE="$GUI_DIR/api.php" HOME="$HOME" php -r '
