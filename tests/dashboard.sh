@@ -22,6 +22,22 @@ fail() {
     exit 1
 }
 
+# Poll a background job until it settles; prints the final job_status payload.
+# Variables used here ($base, $host_header, $token) are set before it is called.
+wait_job() {
+    local id="$1" tries=0 out=""
+    while [ "$tries" -lt 100 ]; do
+        out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+            -H 'Content-Type: application/json' --data "{\"action\":\"job_status\",\"id\":\"$id\",\"csrf\":\"$token\"}" "$base/api.php" 2>/dev/null || true)
+        if grep -q '"status":"done"' <<<"$out"; then printf '%s' "$out"; return 0; fi
+        if grep -q '"status":"failed"' <<<"$out"; then printf '%s' "$out"; return 1; fi
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+    printf '%s' "$out"
+    return 1
+}
+
 if ! command -v php >/dev/null 2>&1; then
     echo "dashboard regression test skipped: php not available."
     exit 0
@@ -86,6 +102,7 @@ touch "$SITES_DIR/demo.localhost/public/wp-config.php"
 # Fixtures for the diagnostics panel (CLI-14): a shared PHP error log with
 # entries from two sites, a per-site debug.log, and a Caddy access log.
 mkdir -p "$SITES_DIR/demo.localhost/logs" "$SITES_DIR/demo.localhost/public/wp-content" "$HOME/Plak/Logs"
+mkdir -p "$SITES_DIR/demo.localhost/private/snapshots/20260101-000000-aaa"
 cat > "$HOME/Plak/Logs/errors.log" <<PHPERR
 [29-Sep-2026 10:00:00 UTC] PHP Warning:  Undefined array key "x" in $SITES_DIR/demo.localhost/public/wp-content/themes/x/functions.php on line 12
 [29-Sep-2026 10:00:00 UTC] PHP Warning:  Undefined array key "x" in $SITES_DIR/demo.localhost/public/wp-content/themes/x/functions.php on line 12
@@ -131,6 +148,30 @@ case "$*" in
         ;;
     *"login demo"*)
         echo "https://demo.localhost/wp-login.php?user_id=7&plak_site_login_token=abc1234"
+        ;;
+    *"snapshot"*"list"*)
+        echo '[{"id":"20260101-000000-aaa","created":"2026-01-01T00:00:00Z","type":"wordpress","note":"first","files_bytes":1024,"db_bytes":2048}]'
+        ;;
+    *"snapshot"*"create"*)
+        echo '{"id":"20260101-000001-bbb","site":"demo","type":"wordpress","note":"x"}'
+        ;;
+    *"snapshot"*"restore"*)
+        echo 'Restored demo.localhost from snapshot 20260101-000000-aaa.'
+        ;;
+    *"snapshot"*"delete"*)
+        echo 'Deleted snapshot 20260101-000000-aaa.'
+        ;;
+    *"snapshot"*"export"*)
+        prev=""; out=""
+        for a in "$@"; do
+            [ "$prev" = "--output" ] && out="$a"
+            prev="$a"
+        done
+        if [ -n "$out" ]; then printf 'PK-STUB-EXPORT' > "$out"; fi
+        echo "Exported snapshot."
+        ;;
+    import\ *|*" import "*)
+        echo "Imported."
         ;;
     *"plugin deactivate"*) echo "Success: Deactivated." ;;
 esac
@@ -419,6 +460,56 @@ offline_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.local
     -H 'Content-Type: application/json' --data "{\"action\":\"mail_messages\",\"scope\":\"all\",\"csrf\":\"$token\"}" "$base/api.php")
 grep -q '"offline":true' <<<"$offline_out" || fail "a stopped Mailpit was not reported as offline: $offline_out"
 
+# --- CLI-16: snapshot listing and background create -------------------------
+snaps=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"snapshots\",\"site_name\":\"demo\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"note":"first"' <<<"$snaps" || fail "snapshots did not list existing snapshots: $snaps"
+
+: > "$WP_CALLS"
+create=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"snapshot_create\",\"site_name\":\"demo\",\"note\":\"before upgrade\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":true' <<<"$create" || fail "snapshot_create was rejected: $create"
+jid=$(sed -E 's/.*"job":"([a-f0-9]+)".*/\1/' <<<"$create")
+[ "${#jid}" -eq 16 ] || fail "snapshot_create did not return a job id: $create"
+jobdone=$(wait_job "$jid") || fail "snapshot create job failed: $jobdone"
+grep -q '"status":"done"' <<<"$jobdone" || fail "snapshot create job did not finish: $jobdone"
+grep -q 'snapshot demo create' "$WP_CALLS" || fail "snapshot create did not run the CLI"
+
+# --- CLI-16: restore and import also run as jobs ----------------------------
+restore=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"snapshot_restore\",\"site_name\":\"demo\",\"id\":\"20260101-000000-aaa\",\"csrf\":\"$token\"}" "$base/api.php")
+rjid=$(sed -E 's/.*"job":"([a-f0-9]+)".*/\1/' <<<"$restore")
+[ "${#rjid}" -eq 16 ] || fail "snapshot_restore did not return a job id: $restore"
+wait_job "$rjid" >/dev/null || fail "restore job failed"
+grep -q 'snapshot demo restore 20260101-000000-aaa --yes' "$WP_CALLS" || fail "restore did not run the CLI with --yes"
+
+# --- CLI-16: delete is synchronous ------------------------------------------
+del=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"snapshot_delete\",\"site_name\":\"demo\",\"id\":\"20260101-000000-aaa\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":true' <<<"$del" || fail "snapshot_delete failed: $del"
+
+# --- CLI-16: download needs the token and streams the export ----------------
+code=$(curl -s -o /dev/null -w '%{http_code}' "$base/api.php?action=download_snapshot&site=demo&id=20260101-000000-aaa")
+[ "$code" = "403" ] || fail "download without a token returned $code, expected 403"
+curl -fsS "$base/api.php?action=download_snapshot&site=demo&id=20260101-000000-aaa&token=$token" -o "$tmpdir/dl.zip"
+[ "$(cat "$tmpdir/dl.zip")" = "PK-STUB-EXPORT" ] || fail "download did not stream the exported backup"
+
+# --- CLI-16: import upload runs as a job; bad archives are refused ----------
+printf 'PK-STUB' > "$tmpdir/backup.zip"
+: > "$WP_CALLS"
+imp=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -F "action=import_site" -F "csrf=$token" -F "site_name=imported" -F "backup=@$tmpdir/backup.zip" "$base/api.php")
+grep -q '"success":true' <<<"$imp" || fail "import upload was rejected: $imp"
+ijid=$(sed -E 's/.*"job":"([a-f0-9]+)".*/\1/' <<<"$imp")
+[ "${#ijid}" -eq 16 ] || fail "import did not return a job id: $imp"
+wait_job "$ijid" >/dev/null || fail "import job failed"
+grep -q 'import imported' "$WP_CALLS" || fail "import did not run plak import"
+
+printf 'x' > "$tmpdir/notes.txt"
+bad_import=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -F "action=import_site" -F "csrf=$token" -F "site_name=badimport" -F "backup=@$tmpdir/notes.txt" "$base/api.php")
+grep -q 'Unsupported archive' <<<"$bad_import" || fail "import accepted a non-archive upload: $bad_import"
+
 # --- add_site passes --no-agent only when the box is unchecked (CLI-33) ------
 : > "$WP_CALLS"
 add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
@@ -451,6 +542,9 @@ grep -q 'loadTraffic' "$GUI_DIR/index.php" || fail "index.php lacks the traffic 
 grep -q "case 'site_logs'" "$GUI_DIR/api.php" || fail "api.php lacks the site_logs action"
 grep -q 'openMail' "$GUI_DIR/index.php" || fail "index.php lacks the mail inbox"
 grep -q "case 'mail_messages'" "$GUI_DIR/api.php" || fail "api.php lacks the mail_messages action"
+grep -q 'loadSnapshots' "$GUI_DIR/index.php" || fail "index.php lacks the backups panel"
+grep -q "case 'job_status'" "$GUI_DIR/api.php" || fail "api.php lacks the job_status action"
+grep -q 'download_snapshot' "$GUI_DIR/api.php" || fail "api.php lacks the snapshot download"
 
 # --- A public source address is rejected by the PHP guard ---
 API_FILE="$GUI_DIR/api.php" HOME="$HOME" php -r '

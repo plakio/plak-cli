@@ -2606,6 +2606,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         echo json_encode($sites_info);
         exit;
     }
+    if ($action === 'download_snapshot') {
+        // Streaming a full backup over GET: read-only, but sensitive, so it
+        // still requires the per-install token and validated site/id.
+        $query_token = (string) ($_GET['token'] ?? '');
+        if (!hash_equals($__plak_site_dashboard_token, $query_token)) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Invalid or missing token.']);
+            exit;
+        }
+        $site = (string) ($_GET['site'] ?? '');
+        $id = (string) ($_GET['id'] ?? '');
+        if (!preg_match('/^[a-zA-Z0-9-]+$/', $site) || !preg_match('/^[A-Za-z0-9._-]{1,64}$/', $id)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Invalid request.']);
+            exit;
+        }
+        $snap_dir = $sitedir . '/' . $site . '.localhost/private/snapshots/' . $id;
+        if (!is_dir($snap_dir)) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Snapshot not found.']);
+            exit;
+        }
+        $tmp_dir = sys_get_temp_dir() . '/plak-exports';
+        @mkdir($tmp_dir, 0700, true);
+        $out = $tmp_dir . '/' . $site . '-' . $id . '-' . bin2hex(random_bytes(4)) . '.zip';
+        $cmd = sprintf(
+            'HOME=%s %s snapshot %s export %s --output %s 2>&1',
+            escapeshellarg($user_home),
+            escapeshellarg($plak_site_path),
+            escapeshellarg($site),
+            escapeshellarg($id),
+            escapeshellarg($out)
+        );
+        exec($cmd, $lines, $rc);
+        if ($rc !== 0 || !is_file($out)) {
+            @unlink($out);
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Could not export the snapshot.', 'output' => implode("\n", $lines)]);
+            exit;
+        }
+        // The export is a temp artifact, not a backup to keep: always remove it.
+        register_shutdown_function(function () use ($out) { @unlink($out); });
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $site . '-' . $id . '.zip"');
+        header('Content-Length: ' . filesize($out));
+        header('X-Content-Type-Options: nosniff');
+        readfile($out);
+        exit;
+    }
 }
 
 // Handle POST requests for adding/deleting/reloading
@@ -2627,10 +2676,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $input = json_decode(file_get_contents('php://input'), true);
+    // Multipart uploads (import) arrive as form fields, not as a JSON body.
+    if (!is_array($input) || empty($input['action'])) {
+        if (!empty($_POST)) $input = $_POST;
+    }
     $action = $input['action'] ?? '';
     $response = ['success' => false, 'message' => 'Invalid request.'];
     $command = '';
     $site_name = $input['site_name'] ?? '';
+
+    // Background-job helpers shared by the snapshot and import actions. Long
+    // operations detach and record their exit code so the dashboard can poll.
+    $__plak_cmd = function (array $args) use ($user_home, $plak_site_path) {
+        $cmd = 'HOME=' . escapeshellarg($user_home) . ' ' . escapeshellarg($plak_site_path);
+        foreach ($args as $a) $cmd .= ' ' . escapeshellarg((string) $a);
+        return $cmd;
+    };
+    $__jobs_dir = $user_home . '/Plak/cache/jobs';
+    $__job_start = function ($label, $command, $cleanup = '') use ($__jobs_dir) {
+        @mkdir($__jobs_dir, 0755, true);
+        $id = bin2hex(random_bytes(8));
+        file_put_contents($__jobs_dir . '/' . $id . '.json', json_encode(['id' => $id, 'label' => $label, 'status' => 'running', 'started' => time()]));
+        $log = $__jobs_dir . '/' . $id . '.log';
+        $exit = $__jobs_dir . '/' . $id . '.exit';
+        $trail = 'echo $? > ' . escapeshellarg($exit) . ';';
+        if ($cleanup !== '') $trail .= ' rm -f ' . escapeshellarg($cleanup) . ';';
+        // Detached so the request returns right away; the UI polls job_status.
+        shell_exec('(' . $command . '; ' . $trail . ') > ' . escapeshellarg($log) . ' 2>&1 &');
+        return $id;
+    };
+    $__job_read = function ($id) use ($__jobs_dir) {
+        if (!is_string($id) || !preg_match('/^[a-f0-9]{16}$/', $id)) return null;
+        $meta_path = $__jobs_dir . '/' . $id . '.json';
+        if (!is_file($meta_path)) return null;
+        $meta = json_decode((string) file_get_contents($meta_path), true) ?: [];
+        $exit_path = $__jobs_dir . '/' . $id . '.exit';
+        if (is_file($exit_path)) {
+            $code = (int) trim((string) file_get_contents($exit_path));
+            $meta['status'] = $code === 0 ? 'done' : 'failed';
+            $meta['exit_code'] = $code;
+        }
+        $log_path = $__jobs_dir . '/' . $id . '.log';
+        if (is_file($log_path)) {
+            $lines = preg_split('/\r?\n/', (string) file_get_contents($log_path));
+            $meta['log'] = trim(implode("\n", array_slice($lines, -40)));
+        }
+        return $meta;
+    };
 
     // Per-request CSRF token, embedded in index.php and echoed back by the UI.
     $__plak_site_client_token = $input['csrf'] ?? ($_SERVER['HTTP_X_PLAK_CSRF'] ?? '');
@@ -3374,6 +3466,118 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 echo json_encode(['success' => true, 'ids' => $clean]);
                 exit;
             }
+        case 'job_status':
+            $job = $__job_read((string) ($input['id'] ?? ''));
+            if ($job === null) {
+                echo json_encode(['success' => false, 'message' => 'Unknown job.']);
+                exit;
+            }
+            echo json_encode(['success' => true, 'job' => $job]);
+            exit;
+        case 'snapshots':
+        case 'snapshot_create':
+        case 'snapshot_restore':
+        case 'snapshot_delete':
+            if (empty($site_name) || !preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid site name.']);
+                exit;
+            }
+            if (!is_dir($sitedir . '/' . $site_name . '.localhost')) {
+                echo json_encode(['success' => false, 'message' => 'Site not found.']);
+                exit;
+            }
+
+            if ($action === 'snapshots') {
+                exec($__plak_cmd(['snapshot', $site_name, 'list', '--json']) . ' 2>&1', $lines, $rc);
+                $data = json_decode(trim(implode("\n", $lines)), true);
+                if (!is_array($data)) {
+                    foreach (array_reverse($lines) as $l) {
+                        $try = json_decode(trim($l), true);
+                        if (is_array($try)) { $data = $try; break; }
+                    }
+                }
+                if (!is_array($data)) {
+                    echo json_encode(['success' => false, 'message' => trim(implode("\n", $lines)) ?: 'Could not list snapshots.']);
+                    exit;
+                }
+                echo json_encode(['success' => true, 'items' => array_values($data)]);
+                exit;
+            }
+
+            if ($action === 'snapshot_delete') {
+                $id = (string) ($input['id'] ?? '');
+                if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $id)) {
+                    echo json_encode(['success' => false, 'message' => 'Invalid snapshot id.']);
+                    exit;
+                }
+                exec($__plak_cmd(['snapshot', $site_name, 'delete', $id, '--yes']) . ' 2>&1', $lines, $rc);
+                echo json_encode([
+                    'success' => $rc === 0,
+                    'message' => $rc === 0 ? 'Snapshot deleted.' : (trim(implode("\n", $lines)) ?: 'Could not delete the snapshot.'),
+                ]);
+                exit;
+            }
+
+            if ($action === 'snapshot_create') {
+                $note = (string) ($input['note'] ?? '');
+                if (strlen($note) > 200) $note = substr($note, 0, 200);
+                $job = $__job_start('Snapshot of ' . $site_name, $__plak_cmd(['snapshot', $site_name, 'create', '--note', $note, '--json']));
+                echo json_encode(['success' => true, 'job' => $job]);
+                exit;
+            }
+
+            // snapshot_restore: the CLI keeps a safety snapshot first and only
+            // reports success once the database step has finished.
+            $id = (string) ($input['id'] ?? '');
+            if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $id)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid snapshot id.']);
+                exit;
+            }
+            $job = $__job_start('Restore ' . $site_name, $__plak_cmd(['snapshot', $site_name, 'restore', $id, '--yes']));
+            echo json_encode(['success' => true, 'job' => $job]);
+            exit;
+        case 'import_site':
+            if (empty($site_name) || !preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid site name.']);
+                exit;
+            }
+            $file = $_FILES['backup'] ?? null;
+            if (!is_array($file) || !isset($file['error'])) {
+                echo json_encode(['success' => false, 'message' => 'No backup file uploaded.']);
+                exit;
+            }
+            if ((int) $file['error'] !== UPLOAD_ERR_OK) {
+                $messages = [
+                    UPLOAD_ERR_INI_SIZE => 'The backup exceeds the server upload limit.',
+                    UPLOAD_ERR_FORM_SIZE => 'The backup is too large.',
+                    UPLOAD_ERR_PARTIAL => 'The upload was interrupted. Try again.',
+                    UPLOAD_ERR_NO_FILE => 'No backup file uploaded.',
+                ];
+                echo json_encode(['success' => false, 'message' => $messages[(int) $file['error']] ?? 'Upload failed (code ' . (int) $file['error'] . ').']);
+                exit;
+            }
+            $orig = (string) ($file['name'] ?? '');
+            $ext = '';
+            if (preg_match('/\.(zip|tar\.gz|tgz|tar)$/i', $orig, $m)) $ext = strtolower($m[1]);
+            if ($ext === '') {
+                echo json_encode(['success' => false, 'message' => 'Unsupported archive. Use zip, tar.gz, tgz or tar.']);
+                exit;
+            }
+            if (!is_uploaded_file($file['tmp_name'])) {
+                echo json_encode(['success' => false, 'message' => 'Invalid upload.']);
+                exit;
+            }
+            // The archive is a temp file: always removed by the job, never kept.
+            $tmp_dir = sys_get_temp_dir() . '/plak-uploads';
+            @mkdir($tmp_dir, 0700, true);
+            $tmp = $tmp_dir . '/import-' . bin2hex(random_bytes(6)) . '.' . $ext;
+            if (!move_uploaded_file($file['tmp_name'], $tmp)) {
+                echo json_encode(['success' => false, 'message' => 'Could not store the upload.']);
+                exit;
+            }
+            $job = $__job_start('Import ' . $site_name, $__plak_cmd(['import', $site_name, $tmp, '--yes']), $tmp);
+            echo json_encode(['success' => true, 'job' => $job]);
+            exit;
         case 'get_login_link':
             $response = ['success' => false, 'message' => 'An unknown error occurred.'];
             if (!empty($site_name)) {
@@ -3915,6 +4119,13 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .mail-links { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; max-height: 5.5rem; overflow: auto; }
         .mail-imgtoggle { margin-bottom: 0.5rem; }
         .mail-frame { width: 100%; height: 55vh; border: 1px solid var(--panel-border); border-radius: var(--radius-md); background: #fff; }
+
+        /* Backups, jobs and the import form. */
+        .job-status { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-dim); }
+        .job-status .btn-spinner { width: 11px; height: 11px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; display: inline-block; opacity: 1; flex: none; }
+        .import-form { display: flex; flex-direction: column; gap: 0.7rem; }
+        .import-file { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.8rem; }
+        .import-form .modal-foot { margin-top: 0.2rem; }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
@@ -3941,6 +4152,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         mail
                     </a>
                     <button class="pill" @click="openMail('all')" title="Read captured mail in the dashboard">inbox</button>
+                    <button class="pill" @click="openImport()" title="Create a site from a backup archive">import</button>
                     <button class="pill primary" @click="toggleAdd()" x-text="adding ? 'cancel' : '+ add site'"></button>
                 </div>
             </header>
@@ -4351,6 +4563,47 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         </div>
                     </template>
                 </div>
+
+                <div class="components backups">
+                    <div class="components-head">
+                        <div class="components-tabs">
+                            <span class="comp-tab active" style="cursor:default">backups</span>
+                        </div>
+                        <button type="button" class="site-action-btn" :class="{ loading: snapLoading }" @click="loadSnapshots(detailSite.name)" :disabled="snapLoading">
+                            <span class="btn-label" x-text="snapLoading ? 'loading…' : 'refresh'"></span>
+                        </button>
+                    </div>
+                    <form class="console-form" @submit.prevent="createSnapshot()">
+                        <input type="text" class="filter-input console-input" x-model="snapNote" placeholder="snapshot note (optional)" maxlength="200" :disabled="!!job">
+                        <button class="pill primary" type="submit" :disabled="!!job" x-text="job ? 'working…' : 'create snapshot'"></button>
+                    </form>
+                    <p class="comp-error" x-show="snapError" x-text="snapError" x-cloak></p>
+                    <ul class="comp-list" x-show="!snapLoading" x-cloak>
+                        <template x-for="s in snapshots" :key="s.id">
+                            <li class="comp-row">
+                                <div class="comp-main">
+                                    <span class="comp-title" x-text="s.note || '(no note)'"></span>
+                                    <span class="comp-slug" x-text="s.id"></span>
+                                    <span class="comp-badge" x-text="s.type"></span>
+                                    <span class="comp-version" x-text="formatSize((s.files_bytes || 0) + (s.db_bytes || 0))"></span>
+                                </div>
+                                <span class="comp-version" x-text="s.created"></span>
+                                <div class="comp-actions">
+                                    <button type="button" class="site-action-btn" @click="downloadSnapshot(s.id)" title="Download as a full backup">download</button>
+                                    <button type="button" class="site-action-btn danger" :disabled="!!job" @click="restoreSnapshot(s)" x-text="snapArm === s.id ? 'confirm restore?' : 'restore'"></button>
+                                    <button type="button" class="site-action-btn danger" :disabled="!!job" @click="deleteSnapshot(s)" x-text="snapArmDel === s.id ? 'confirm delete?' : 'delete'"></button>
+                                </div>
+                            </li>
+                        </template>
+                        <li class="empty" x-show="snapshots.length === 0" x-cloak>No snapshots yet.</li>
+                    </ul>
+                    <div class="job-status" x-show="job" x-cloak>
+                        <span class="btn-spinner" x-show="job && job.status === 'running'" aria-hidden="true"></span>
+                        <span x-text="job ? (job.label + ' — ' + job.status) : ''"></span>
+                    </div>
+                    <pre class="console-out" x-show="job && job.log" x-text="job && job.log" x-cloak></pre>
+                    <pre class="console-out" x-show="!job && jobLog" x-text="jobLog" x-cloak></pre>
+                </div>
             </div>
         </template>
     </section>
@@ -4446,6 +4699,25 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         </div>
     </div>
 
+    <div x-show="showImport" x-transition.opacity class="modal-backdrop" @click.self="!job && (showImport = false)" @keydown.escape.window="showImport && !job && (showImport = false)" style="display: none;">
+        <div class="modal">
+            <h3>Import a backup</h3>
+            <p class="modal-sub">Create a new site from a Plak, Local or hosting backup (zip, tar.gz, tgz or tar).</p>
+            <form class="import-form" @submit.prevent="importBackup()">
+                <input type="text" class="filter-input console-input" x-model="importName" @input="importName = importName.toLowerCase().replace(/[^a-z0-9-]/g, '')" placeholder="new-site-name" required :disabled="!!job" autocomplete="off">
+                <input type="file" class="import-file" x-ref="importFile" accept=".zip,.tar,.gz,.tgz" :disabled="!!job">
+                <p class="comp-error" x-show="importError" x-text="importError" x-cloak></p>
+                <div class="modal-foot">
+                    <span x-text="job ? (job.label + ' — ' + job.status) : ''"></span>
+                    <div class="comp-actions">
+                        <button type="button" class="pill" @click="showImport = false" :disabled="job && job.status === 'running'">close</button>
+                        <button type="submit" class="pill primary" :disabled="!importName || !!job" x-text="job && job.status === 'running' ? 'importing…' : 'import'"></button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         const PORT_SUFFIX = '<?= $__plak_site_port_suffix ?>';
         const SITES_DIR = 'SITES_DIR_PLACEHOLDER';
@@ -4516,6 +4788,19 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 mailDetailError: null,
                 mailShowImages: false,
                 mailPoll: null,
+                // Backups, long-running jobs and the import form (CLI-16).
+                snapshots: [],
+                snapLoading: false,
+                snapError: null,
+                snapNote: '',
+                snapArm: null,
+                snapArmDel: null,
+                job: null,
+                jobLog: '',
+                jobPoll: null,
+                showImport: false,
+                importName: '',
+                importError: null,
                 isRefreshingSizes: false,
                 filter: '',
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
@@ -4602,6 +4887,9 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                     });
 
                     window.addEventListener('hashchange', () => this.applyHash());
+
+                    // Reattach to a snapshot/import job that survived a reload.
+                    this.resumeJob();
                 },
 
                 // Hash routing for the per-site view: #/site/<name>.
@@ -4643,8 +4931,15 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                             this.logAvailable = {};
                             this.traffic = null;
                             this.trafficError = null;
+                            // Reset backups for the new site.
+                            this.snapshots = [];
+                            this.snapError = null;
+                            this.snapNote = '';
+                            this.snapArm = null;
+                            this.snapArmDel = null;
                             if (this.detailSite.type === 'WordPress') this.loadTool(name);
                             this.loadLogs(name);
+                            this.loadSnapshots(name);
                         }
                     } else {
                         this.detailSite = null;
@@ -5021,6 +5316,145 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         this.showSnack('Link copied.');
                     } catch (e) {
                         this.showSnack('Could not copy link.', true);
+                    }
+                },
+
+                // --- Backups, jobs and imports (CLI-16) ---
+                async loadSnapshots(name) {
+                    this.snapLoading = true;
+                    this.snapError = null;
+                    const res = await this.apiPost('snapshots', { site_name: name });
+                    if (!this.detailSite || this.detailSite.name !== name) return;
+                    this.snapLoading = false;
+                    if (!res.success) {
+                        this.snapError = res.message || 'Could not list snapshots.';
+                        this.snapshots = [];
+                        return;
+                    }
+                    this.snapshots = res.items || [];
+                },
+
+                openImport() {
+                    this.showImport = true;
+                    this.importName = '';
+                    this.importError = null;
+                },
+
+                // Persist a running job's id so a reload can reattach to it.
+                trackJob(res) {
+                    if (!res || !res.success || !res.job) return false;
+                    this.job = { id: res.job, label: 'Working', status: 'running', log: '' };
+                    try { localStorage.setItem('plakJob', JSON.stringify({ id: res.job })); } catch (e) {}
+                    this.pollJob();
+                    return true;
+                },
+
+                resumeJob() {
+                    let saved = null;
+                    try { saved = JSON.parse(localStorage.getItem('plakJob') || 'null'); } catch (e) {}
+                    if (saved && saved.id) {
+                        this.job = { id: saved.id, label: 'Working', status: 'running', log: '' };
+                        this.pollJob();
+                    }
+                },
+
+                async pollJob() {
+                    if (!this.job) return;
+                    const id = this.job.id;
+                    clearTimeout(this.jobPoll);
+                    const res = await this.apiPost('job_status', { id });
+                    if (!this.job || this.job.id !== id) return;
+                    if (!res.success) {
+                        this.job = null;
+                        try { localStorage.removeItem('plakJob'); } catch (e) {}
+                        return;
+                    }
+                    this.job = res.job;
+                    if (this.job.status === 'running') {
+                        this.jobPoll = setTimeout(() => this.pollJob(), 1500);
+                        return;
+                    }
+                    const ok = this.job.status === 'done';
+                    this.jobLog = this.job.log || '';
+                    const label = this.job.label;
+                    this.job = null;
+                    try { localStorage.removeItem('plakJob'); } catch (e) {}
+                    this.showSnack(ok ? (label + ' finished.') : (label + ' failed — check the log and retry from the CLI if needed.'), !ok);
+                    if (ok) {
+                        if (this.detailSite) this.loadSnapshots(this.detailSite.name);
+                        this.getSites();
+                    }
+                },
+
+                async createSnapshot() {
+                    if (this.job) return;
+                    const res = await this.apiPost('snapshot_create', { site_name: this.detailSite.name, note: this.snapNote });
+                    if (this.trackJob(res)) this.snapNote = '';
+                },
+
+                // Two-step confirmation, like component deletion.
+                restoreSnapshot(s) {
+                    if (this.job) return;
+                    if (this.snapArm !== s.id) {
+                        this.snapArm = s.id;
+                        this.snapArmDel = null;
+                        return;
+                    }
+                    this.snapArm = null;
+                    this.apiPost('snapshot_restore', { site_name: this.detailSite.name, id: s.id }).then(res => {
+                        if (res.success && res.job) this.trackJob(res);
+                    });
+                },
+
+                async deleteSnapshot(s) {
+                    if (this.job) return;
+                    if (this.snapArmDel !== s.id) {
+                        this.snapArmDel = s.id;
+                        this.snapArm = null;
+                        return;
+                    }
+                    this.snapArmDel = null;
+                    const res = await this.apiPost('snapshot_delete', { site_name: this.detailSite.name, id: s.id });
+                    if (res.success) {
+                        this.snapshots = this.snapshots.filter(x => x.id !== s.id);
+                        this.showSnack('Snapshot deleted.');
+                    }
+                },
+
+                downloadSnapshot(id) {
+                    if (!this.detailSite) return;
+                    const url = 'api.php?action=download_snapshot&site=' + encodeURIComponent(this.detailSite.name)
+                        + '&id=' + encodeURIComponent(id) + '&token=' + encodeURIComponent(CSRF_TOKEN);
+                    window.location.href = url;
+                },
+
+                async importBackup() {
+                    const input = this.$refs.importFile;
+                    const file = input && input.files && input.files[0];
+                    this.importError = null;
+                    if (!file) { this.importError = 'Choose a backup file.'; return; }
+                    if (!/\.(zip|tar\.gz|tgz|tar)$/i.test(file.name)) {
+                        this.importError = 'Unsupported archive. Use zip, tar.gz, tgz or tar.';
+                        return;
+                    }
+                    const form = new FormData();
+                    form.append('action', 'import_site');
+                    form.append('csrf', CSRF_TOKEN);
+                    form.append('site_name', this.importName);
+                    form.append('backup', file);
+                    this.job = { id: null, label: 'Import ' + this.importName, status: 'running', log: '' };
+                    try {
+                        const res = await fetch('api.php', { method: 'POST', body: form }).then(r => r.json());
+                        if (!res.success || !res.job) {
+                            this.job = null;
+                            this.importError = res.message || 'Import could not start.';
+                            return;
+                        }
+                        if (input) input.value = '';
+                        this.trackJob(res);
+                    } catch (e) {
+                        this.job = null;
+                        this.importError = 'Upload failed. Check the connection and try again.';
                     }
                 },
 
