@@ -4076,8 +4076,8 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
         .log-entry { padding: 0.45rem 0; border-bottom: 1px solid var(--panel-border); font-family: var(--font-mono); font-size: 0.78rem; }
         .log-line { display: flex; align-items: baseline; gap: 0.55rem; flex-wrap: wrap; }
         .log-level { text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.06em; padding: 0.05rem 0.4rem; border-radius: var(--radius-pill); background: var(--pill-bg); color: var(--text-dim); flex: none; }
-        .log-entry.lvl-fatal\.error .log-level, .log-entry.lvl-error .log-level { background: var(--danger); color: #fff; }
-        .log-entry.lvl-warning .log-level, .log-entry.lvl-warn .log-level { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .log-entry.lvl-error .log-level { background: var(--danger); color: #fff; }
+        .log-entry.lvl-warn .log-level { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
         .log-time { color: var(--text-faint); flex: none; }
         .log-count { color: var(--accent); flex: none; }
         .log-msg { color: var(--text); word-break: break-word; }
@@ -4493,7 +4493,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                             <p class="comp-loading" x-show="logLoading" x-cloak>Reading logs…</p>
                             <ul class="log-list" x-show="!logLoading" x-cloak>
                                 <template x-for="(entry, i) in logItems" :key="i">
-                                    <li class="log-entry" :class="'lvl-' + entry.level">
+                                    <li class="log-entry" :class="levelClass(entry)">
                                         <div class="log-line">
                                             <span class="log-level" x-text="entry.level"></span>
                                             <span class="log-time" x-text="entry.time"></span>
@@ -4533,9 +4533,12 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                                         <div class="traffic-card"><span class="traffic-num" x-text="traffic.summary.max_ms + ' ms'"></span><span class="traffic-label">max</span></div>
                                     </div>
                                     <div class="traffic-classes">
-                                        <template x-for="(n, k) in traffic.classes" :key="k">
-                                            <span class="comp-badge" x-text="k + ': ' + n"></span>
-                                        </template>
+                                        <span class="comp-badge" x-text="'pages: ' + traffic.classes.pages"></span>
+                                        <span class="comp-badge" x-text="'assets: ' + traffic.classes.assets"></span>
+                                        <span class="comp-badge" x-text="'admin: ' + traffic.classes.admin"></span>
+                                        <span class="comp-badge" x-text="'ajax/rest: ' + traffic.classes.ajax_rest"></span>
+                                        <span class="comp-badge" x-text="'cron: ' + traffic.classes.cron"></span>
+                                        <span class="comp-badge" x-text="'other: ' + traffic.classes.other"></span>
                                     </div>
                                     <p class="comp-hint" x-text="traffic.note"></p>
                                     <div class="traffic-cols">
@@ -5210,6 +5213,13 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         return entry.method + ' ' + entry.uri + ' → ' + entry.status;
                     }
                     return entry.message + (entry.location ? '  —  ' + entry.location : '');
+                },
+
+                levelClass(entry) {
+                    const l = String(entry.level || '').toLowerCase();
+                    if (l === 'error' || l.indexOf('fatal') !== -1 || l.indexOf('parse') !== -1) return 'lvl-error';
+                    if (l === 'warn' || l.indexOf('warning') !== -1 || l.indexOf('deprecated') !== -1) return 'lvl-warn';
+                    return 'lvl-info';
                 },
 
                 openMail(scope = 'all', siteName = null) {

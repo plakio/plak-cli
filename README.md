@@ -145,6 +145,33 @@ on a remote query. Invalid actions (deactivating a must-use plugin, deleting the
 active theme) are prevented in the UI and refused by the API, which passes
 arguments as data and respects the site's runtime.
 
+A WordPress site's detail view also offers day-to-day tooling. **Users** lists
+each account with its roles and mints a one-time login link for any of them —
+not only administrators; links expire and are consumed on first use. **Cron**
+lists scheduled events and runs one event or all due events. **Console** runs
+WP-CLI inside the site with arguments passed as data, never as a shell command.
+
+Every site's detail view includes a **diagnostics** panel. **Logs** reads the
+shared PHP error log (filtered to the site), `wp-content/debug.log` and the
+Caddy access log, with level/search filters, grouped consecutive repeats and
+expandable stack traces, reading only the tail of each file. **Traffic**
+aggregates the access log into requests, errors, bytes and latency, top paths
+and slowest requests over selectable windows, and classifies pages, assets,
+admin, AJAX/REST and cron explicitly; these are local request metrics, not
+production analytics.
+
+The dashboard **inbox** reads mail captured by Mailpit, globally or filtered by
+site, attributing a message to a site by its addresses, subject or snippet.
+Opening a message marks it read; read/unread and delete go through Mailpit. The
+HTML body is sanitized, inline `cid:` images are resolved to data URIs, and the
+body renders in a sandboxed frame whose policy blocks scripts and remote images
+until you opt in.
+
+The **backups** panel lists a site's snapshots and creates, restores, deletes
+and downloads them, and the dashboard can import a backup archive into a new
+site. Snapshot creation, restore and import run as background jobs whose
+progress survives a page reload.
+
 The dashboard, Adminer and Mailpit are administrative surfaces: Caddy answers
 them only from the local machine (and WSL2's private adapter), and Tailscale
 exposes them only from the tailnet's address space. `api.php` repeats the check
