@@ -77,6 +77,15 @@ PY
     plak_multisite_validate_local "$SITES_DIR/$name-renamed.localhost/public" "$name-renamed"
     if plak_site_lan_enable "$name" > /dev/null 2>&1; then exit 1; fi
     [ ! -f "$SITES_DIR/$name.localhost/lan_config" ]
+    # Real WordPress component metadata, including a MU-plugin file rollback.
+    printf '<?php // History version 1\n' > "$public/wp-content/mu-plugins/history-demo.php"
+    plak_history "$name" save --note 'Live history test' > "$tmpdir/history-first"
+    history_first=$(php -r '$r=json_decode(file_get_contents($argv[1]),true); echo $r["id"];' "$tmpdir/history-first")
+    plak_history "$name" save > "$tmpdir/history-noop"
+    grep -q '"changed": false' "$tmpdir/history-noop"
+    printf '<?php // History version 2\n' > "$public/wp-content/mu-plugins/history-demo.php"
+    plak_history "$name" restore "$history_first" mu-plugins/history-demo.php --yes > "$tmpdir/history-restore"
+    grep -q 'History version 1' "$public/wp-content/mu-plugins/history-demo.php"
 done
 regenerate_caddyfile > "$tmpdir/caddy.log"
 grep -q 'ms-subdomains.localhost, \*.ms-subdomains.localhost' "$CADDYFILE_PATH"
@@ -84,6 +93,11 @@ grep -q 'tls internal' "$CADDYFILE_PATH"
 grep -q 'rewrite @ms_assets' "$CADDYFILE_PATH"
 if [ -n "${PLAK_TEST_FRANKENPHP:-}" ]; then
     [ -x "$PLAK_TEST_FRANKENPHP" ] || { echo 'PLAK_TEST_FRANKENPHP must point to an executable binary.' >&2; exit 1; }
+    history_root_flag=""
+    [ "$(id -u)" -ne 0 ] || history_root_flag=--allow-root
+    PLAK_HISTORY_SITE="$SITES_DIR/ms-subdirectories.localhost" PLAK_HISTORY_WP="$(plak_wp_resolve_phar)" PLAK_HISTORY_FRANK="$PLAK_TEST_FRANKENPHP" PLAK_HISTORY_ROOT_FLAG="$history_root_flag" PLAK_HISTORY_ARGS='["save","--note","Official FrankenPHP history test"]' \
+        "$PLAK_TEST_FRANKENPHP" php-cli -r "$(plak_history_program)" > "$tmpdir/history-frank"
+    grep -q '"changed"' "$tmpdir/history-frank"
     export XDG_DATA_HOME="$tmpdir/xdg-data" XDG_CONFIG_HOME="$tmpdir/xdg-config"
     read -r http_port https_port admin_port < <(python3 - <<'PY'
 import socket

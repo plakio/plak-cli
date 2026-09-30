@@ -91,6 +91,7 @@ Commands:
   agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
   snapshot    Create, list, restore, export or delete site snapshots
+  history     Save component history, compare files and selectively roll back
   pull        Pull a remote WordPress site into Plak
   push        Push a local Plak site to a remote WordPress site
   enable      Start local site services
@@ -229,6 +230,9 @@ HELP
         core)
             plak_core_usage
             ;;
+        history)
+            plak_history_usage
+            ;;
         network)
             plak_network_usage
             ;;
@@ -295,7 +299,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health)
+        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health)
             set +e
             ;;
     esac
@@ -402,6 +406,9 @@ main() {
         snapshot)
             check_dependencies
             plak_site_snapshot "$@"
+            ;;
+        history)
+            plak_history "$@"
             ;;
         directive)
             check_dependencies
@@ -905,6 +912,274 @@ plak_agent_prepare() {
 
     plak_ui_success "Agent ready: wp-mcp profile '$site_name' at $(url_for "$site_name.localhost")"
     return 0
+}
+
+# Source: shared/site/history
+# The generated distribution embeds this literal PHP program; no standalone
+# PHP/Python dependency and no mutation of the site's Git index is needed.
+plak_history_program() {
+    cat <<'PHP'
+function historyFail(string $message): never { throw new RuntimeException($message); }
+function historyJson(mixed $value): string { return json_encode($value, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES); }
+function historyWrite(string $path, mixed $data): void {
+    $tmp=$path.'.tmp-'.bin2hex(random_bytes(6));
+    if(file_put_contents($tmp,historyJson($data))===false || !rename($tmp,$path)) historyFail('Cannot publish '.$path);
+}
+function historyMkdir(string $path): void {
+    if(!is_dir($path) && !mkdir($path,0700,true)) historyFail('Cannot create '.$path);
+}
+function historyRemove(string $path): void {
+    if(is_link($path) || is_file($path)) { if(!unlink($path)) historyFail('Cannot remove '.$path); return; }
+    if(!is_dir($path)) return;
+    if(!chmod($path,fileperms($path)|0700)) historyFail('Cannot prepare directory for removal: '.$path);
+    foreach(new FilesystemIterator($path,FilesystemIterator::SKIP_DOTS) as $entry) historyRemove($entry->getPathname());
+    if(!rmdir($path)) historyFail('Cannot remove directory '.$path);
+}
+function historyPath(string $path): string {
+    if(!preg_match('~^(plugins|themes|mu-plugins)/[^/]+(?:/[^/]+)*$~D',$path)) historyFail('Select a component or file beneath plugins/, themes/ or mu-plugins/.');
+    foreach(explode('/',$path) as $part) if($part==='.' || $part==='..' || $part==='.git' || preg_match('/[\x00-\x1f\x7f]/',$part)) historyFail('Unsafe selection path.');
+    return $path;
+}
+function historyMatches(string $path,string $filter): bool { return $path===$filter || str_starts_with($path,$filter.'/'); }
+function historyScan(string $root): array {
+    $result=[];
+    $walk=function(string $path,string $relative) use (&$walk,&$result): void {
+        if(is_link($path)) { $result[$relative]=['type'=>'symlink','target'=>readlink($path)]; return; }
+        if(is_dir($path)) {
+            $result[$relative]=['type'=>'directory','mode'=>fileperms($path)&0777,'git'=>file_exists($path.'/.git') || is_link($path.'/.git')];
+            $entries=scandir($path); if($entries===false) historyFail('Cannot inspect '.$relative);
+            foreach($entries as $name) if($name!=='.' && $name!=='..' && $name!=='.git') $walk($path.'/'.$name,$relative.'/'.$name);
+        } elseif(is_file($path)) {
+            $hash=hash_file('sha256',$path); if($hash===false) historyFail('Cannot read '.$relative);
+            $result[$relative]=['type'=>'file','sha256'=>$hash,'mode'=>fileperms($path)&0777,'size'=>filesize($path)];
+        } elseif(file_exists($path)) historyFail('Unsupported special file: '.$relative);
+    };
+    foreach(['plugins','themes','mu-plugins'] as $kind) {
+        $path=$root.'/'.$kind;
+        if(is_link($path)) historyFail('Linked content root is unsupported: '.$kind);
+        if(is_dir($path)) $walk($path,$kind);
+    }
+    ksort($result); return $result;
+}
+function historyWP(array $args): mixed {
+    global $site;
+    $command=[getenv('PLAK_HISTORY_FRANK'),'php-cli',getenv('PLAK_HISTORY_WP')];
+    if(getenv('PLAK_HISTORY_ROOT_FLAG')==='--allow-root') $command[]='--allow-root';
+    $command=array_merge($command,$args,['--skip-plugins','--skip-themes']);
+    $error=tmpfile(); if($error===false) historyFail('Cannot allocate WP-CLI error stream.');
+    $proc=proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$error],$pipes,$site.'/public');
+    if(!is_resource($proc)) historyFail('Cannot execute WP-CLI.');
+    fclose($pipes[0]); $output=stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $code=proc_close($proc); fclose($error);
+    if($code!==0) historyFail('WP-CLI metadata query failed (code '.$code.'); history not saved.');
+    return json_decode($output,true,512,JSON_THROW_ON_ERROR);
+}
+function historyMetadata(): array {
+    global $content;
+    $actual=historyWP(['eval','echo wp_json_encode(WP_CONTENT_DIR);']);
+    if(!is_string($actual) || realpath($actual)!==realpath($content)) historyFail('Custom/external WP_CONTENT_DIR is unsupported.');
+    $metadata=['plugins'=>historyWP(['plugin','list','--fields=name,status,version','--format=json']),
+        'themes'=>historyWP(['theme','list','--fields=name,status,version','--format=json'])];
+    foreach($metadata as &$components) usort($components,fn($a,$b)=>strcmp($a['name'],$b['name']));
+    return $metadata;
+}
+function historyRecords(): array {
+    global $store;
+    $records=[];
+    foreach(glob($store.'/records/*/manifest.json') ?: [] as $path) {
+        $record=historyRecord(basename(dirname($path)));
+        $records[$record['id']]=$record;
+    }
+    ksort($records); return $records;
+}
+function historyRecord(string $id): array {
+    global $store;
+    if(!preg_match('/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/D',$id)) historyFail('Invalid history ID.');
+    $path=$store.'/records/'.$id.'/manifest.json';
+    if(!is_file($path) || is_link($path)) historyFail('History record not found.');
+    $record=json_decode(file_get_contents($path),true,512,JSON_THROW_ON_ERROR);
+    if(($record['id']??null)!==$id || ($record['schema']??null)!==1 || !is_array($record['files']??null)) historyFail('Invalid history manifest.');
+    foreach($record['files'] as $relative=>$entry) {
+        if(!in_array($relative,['plugins','themes','mu-plugins'],true)) historyPath($relative);
+        if(!in_array($entry['type']??null,['directory','file','symlink'],true)) historyFail('Invalid manifest entry.');
+        if($entry['type']!=='symlink' && (!is_int($entry['mode']??null) || $entry['mode']<0 || $entry['mode']>0777)) historyFail('Invalid file mode.');
+        if($entry['type']==='file' && !preg_match('/^[a-f0-9]{64}$/D',$entry['sha256']??'')) historyFail('Invalid file hash.');
+    }
+    return $record;
+}
+function historyCopyFiles(string $from,string $to,array $files): void {
+    foreach($files as $relative=>$entry) {
+        $target=$to.'/'.$relative;
+        if($entry['type']==='directory') historyMkdir($target);
+        if($entry['type']==='file') {
+            historyMkdir(dirname($target));
+            if(is_link($from.'/'.$relative) || !copy($from.'/'.$relative,$target) || !chmod($target,$entry['mode'])) historyFail('Cannot copy '.$relative);
+            if(hash_file('sha256',$target)!==$entry['sha256']) historyFail('File changed or corrupt: '.$relative);
+        }
+    }
+    // Apply directory modes last, so a read-only directory can be populated.
+    foreach(array_reverse($files,true) as $relative=>$entry) if($entry['type']==='directory' && !chmod($to.'/'.$relative,$entry['mode'])) historyFail('Cannot set directory permissions.');
+}
+function historySave(string $note): array {
+    global $store,$content;
+    $files=historyScan($content); $metadata=historyMetadata(); $records=historyRecords();
+    $last=$records ? end($records) : null;
+    if($last && $last['files']===$files && $last['components']===$metadata) {
+        foreach($files as $path=>$entry) if($entry['type']==='file') {
+            $stored=$store.'/records/'.$last['id'].'/files/'.$path;
+            if(!is_file($stored) || is_link($stored) || hash_file('sha256',$stored)!==$entry['sha256']) historyFail('Latest history record is corrupt: '.$path);
+        }
+        return ['changed'=>false,'id'=>$last['id']];
+    }
+    $id=gmdate('Ymd\THis\Z').'-'.bin2hex(random_bytes(6)); $temporary=$store.'/.pending-'.$id;
+    historyMkdir($temporary.'/files');
+    try {
+        historyCopyFiles($content,$temporary.'/files',$files);
+        if(historyScan($content)!==$files || historyMetadata()!==$metadata) historyFail('Site changed during save; retry after updates finish.');
+        $record=['schema'=>1,'id'=>$id,'created'=>gmdate('c'),'note'=>$note,'components'=>$metadata,'files'=>$files];
+        historyWrite($temporary.'/manifest.json',$record);
+        if(!rename($temporary,$store.'/records/'.$id)) historyFail('Cannot publish history record.');
+        return ['changed'=>true,'id'=>$id];
+    } finally { if(is_dir($temporary)) historyRemove($temporary); }
+}
+function historyProtected(array $files,string $filter): void {
+    foreach($files as $path=>$entry) {
+        if((historyMatches($path,$filter) || historyMatches($filter,$path)) && ($entry['type']==='symlink' || ($entry['git']??false))) historyFail('Selection intersects a symlink or Git checkout: '.$path);
+    }
+}
+function historyDiff(array $from,array $to,string $filter=''): array {
+    $diff=[]; $paths=array_unique(array_merge(array_keys($from),array_keys($to))); sort($paths);
+    foreach($paths as $path) {
+        if($filter!=='' && !historyMatches($path,$filter)) continue;
+        if(($from[$path]??null)===($to[$path]??null)) continue;
+        $diff[]=['path'=>$path,'change'=>!isset($from[$path])?'added':(!isset($to[$path])?'removed':'modified'),'before'=>$from[$path]??null,'after'=>$to[$path]??null];
+    }
+    return $diff;
+}
+function historyComponentDiff(array $from,array $to,string $filter): array {
+    $index=function(array $metadata) use ($filter): array {
+        $components=[];
+        foreach($metadata as $kind=>$items) foreach($items as $item) {
+            $root=($item['status']??'')==='must-use'?'mu-plugins':$kind;
+            $path=$root.'/'.$item['name'];
+            if($filter!=='' && !historyMatches($filter,$path) && !historyMatches($path,$filter)
+                && !historyMatches($filter,$path.'.php')) continue;
+            $components[$path]=$item;
+        }
+        ksort($components); return $components;
+    };
+    return historyDiff($index($from),$index($to));
+}
+function historySafeDestination(string $filter): string {
+    global $content;
+    $path=$content;
+    if(is_link($path)) historyFail('Linked wp-content is unsupported.');
+    foreach(explode('/',$filter) as $part) { $path.='/'.$part; if(is_link($path)) historyFail('Linked destination is unsupported.'); }
+    // Avoid modifying any checkout owning wp-content, including .git files
+    // used by worktrees. Metadata/history never uses that repository.
+    $parent=$content;
+    while(true) {
+        if(file_exists($parent.'/.git') || is_link($parent.'/.git')) historyFail('Rollback into a Git checkout is unsupported; restore through Git explicitly.');
+        $next=dirname($parent); if($next===$parent) break; $parent=$next;
+    }
+    return $path;
+}
+function historyRecover(): array {
+    global $store;
+    $journal=$store.'/restore.json';
+    if(!is_file($journal)) return ['recovered'=>false];
+    $state=json_decode(file_get_contents($journal),true,512,JSON_THROW_ON_ERROR);
+    $destination=historySafeDestination(historyPath($state['selection']));
+    if(!preg_match('/^[a-f0-9]{12}$/D',$state['transaction'])) historyFail('Invalid recovery transaction.');
+    $transaction=$store.'/.restore-'.$state['transaction'];
+    if(file_exists($transaction.'/old')) {
+        historyRemove($destination);
+        if(!rename($transaction.'/old',$destination)) historyFail('Cannot restore pre-rollback files; retained at '.$transaction.'/old');
+    } elseif(!$state['existed'] && !file_exists($transaction.'/new')) historyRemove($destination);
+    if(!unlink($journal)) historyFail('Cannot clear recovery journal.');
+    historyRemove($transaction);
+    return ['recovered'=>true,'selection'=>$state['selection'],'safety_id'=>$state['safety_id']];
+}
+function historyRestore(string $id,string $filter): array {
+    global $store,$content;
+    $record=historyRecord($id); $current=historyScan($content);
+    $destination=historySafeDestination($filter);
+    historyProtected($current,$filter); historyProtected($record['files'],$filter);
+    if(!is_dir(dirname($destination))) historyFail('Selection parent directory must already exist.');
+    $selected=array_filter($record['files'],fn($entry,$path)=>historyMatches($path,$filter),ARRAY_FILTER_USE_BOTH);
+    if(!$selected && !isset($current[$filter])) historyFail('Selection absent in both current and historical state.');
+    if(!historyDiff($current,$record['files'],$filter)) return ['changed'=>false];
+    $safety=historySave('Before rollback '.$id.' '.$filter);
+    if(historyScan($content)!==$current) historyFail('Site changed while preparing rollback.');
+    $token=bin2hex(random_bytes(6)); $transaction=$store.'/.restore-'.$token;
+    historyMkdir($transaction.'/stage');
+    try {
+        historyCopyFiles($store.'/records/'.$id.'/files',$transaction.'/stage',$selected);
+        $staged=$transaction.'/stage/'.$filter;
+        if(file_exists($staged) && !rename($staged,$transaction.'/new')) historyFail('Cannot stage selection.');
+        $journal=['selection'=>$filter,'transaction'=>$token,'existed'=>file_exists($destination),'safety_id'=>$safety['id']];
+        historyWrite($store.'/restore.json',$journal);
+    } catch(Throwable $error) { historyRemove($transaction); throw $error; }
+    try {
+        if($journal['existed'] && !rename($destination,$transaction.'/old')) historyFail('Cannot move current selection to recovery.');
+        if(file_exists($transaction.'/new') && !rename($transaction.'/new',$destination)) historyFail('Cannot install historical selection.');
+        if(!unlink($store.'/restore.json')) historyFail('Cannot commit rollback.');
+    } catch(Throwable $error) { historyRecover(); throw $error; }
+    historyRemove($transaction);
+    return ['changed'=>true,'selection'=>$filter,'restored_id'=>$id,'safety_id'=>$safety['id'],'database_changed'=>false];
+}
+try {
+    $site=getenv('PLAK_HISTORY_SITE'); $content=$site.'/public/wp-content'; $store=$site.'/private/history';
+    if(is_link($site) || is_link($site.'/public') || is_link($content) || is_link($site.'/private') || is_link($store) || is_link($store.'/records')) historyFail('Linked history/content roots are unsupported.');
+    historyMkdir($store.'/records');
+    $args=json_decode(getenv('PLAK_HISTORY_ARGS') ?: '[]',true,512,JSON_THROW_ON_ERROR);
+    if(!is_array($args) || !array_is_list($args)) historyFail('Invalid command arguments.');
+    $action=array_shift($args) ?? 'list';
+    if($action!=='jobs') {
+        $lock=fopen($store.'/lock','c');
+        if(!$lock || !flock($lock,LOCK_EX|LOCK_NB)) historyFail('Another history operation is running for this site.');
+    }
+    if(is_file($store.'/restore.json') && !in_array($action,['recover','jobs'],true)) historyFail('Interrupted rollback: run history <site> recover --yes first.');
+    switch($action) {
+        case 'save':
+            $note='';
+            if(count($args)===2 && $args[0]==='--note') $note=$args[1]; elseif($args) historyFail('Usage: save [--note <text>]');
+            $result=historySave($note); break;
+        case 'list':
+            if($args) historyFail('Usage: list');
+            $result=array_values(array_map(fn($record)=>array_diff_key($record,['files'=>true]),historyRecords())); break;
+        case 'show':
+            if(count($args)<1 || count($args)>2) historyFail('Usage: show <id> [<path>]');
+            $result=historyRecord($args[0]);
+            if(isset($args[1])) { $filter=historyPath($args[1]); $result['files']=array_filter($result['files'],fn($entry,$path)=>historyMatches($path,$filter),ARRAY_FILTER_USE_BOTH); } break;
+        case 'diff':
+            if(count($args)<2 || count($args)>3) historyFail('Usage: diff <from> <to|current> [<path>]');
+            $from=historyRecord($args[0]); $to=$args[1]==='current'?['files'=>historyScan($content),'components'=>historyMetadata()]:historyRecord($args[1]);
+            $filter=isset($args[2])?historyPath($args[2]):'';
+            $result=['files'=>historyDiff($from['files'],$to['files'],$filter),'components'=>historyComponentDiff($from['components'],$to['components'],$filter)]; break;
+        case 'restore':
+            if(count($args)!==3 || $args[2]!=='--yes') historyFail('Usage: restore <id> <path> --yes');
+            $result=historyRestore($args[0],historyPath($args[1])); break;
+        case 'recover':
+            if($args!==['--yes']) historyFail('Usage: recover --yes');
+            $result=historyRecover(); break;
+        case 'jobs':
+            if($args) historyFail('Usage: jobs');
+            $result=[];
+            foreach(glob($store.'/jobs/job.*',GLOB_ONLYDIR) ?: [] as $job) {
+                $exit=is_file($job.'/exit')?(int)file_get_contents($job.'/exit'):null;
+                $pid=is_file($job.'/pid')?(int)file_get_contents($job.'/pid'):null;
+                $status=$exit!==null?($exit===0?'done':'failed'):'running';
+                if($exit===null && $pid && function_exists('posix_kill') && !posix_kill($pid,0)) $status='interrupted';
+                $log=is_file($job.'/log')?file_get_contents($job.'/log'):'';
+                $result[]=['job'=>basename($job),'status'=>$status,'exit_code'=>$exit,'log'=>substr($log,-8192)];
+            }
+            break;
+        default: historyFail('Unknown history action.');
+    }
+    echo historyJson($result)."\n";
+} catch(Throwable $error) { fwrite(STDERR,'Error: '.$error->getMessage()."\n"); exit(1); }
+PHP
 }
 
 # Source: shared/site/multisite
@@ -9010,6 +9285,120 @@ HELP
             ;;
     esac
 }
+
+# Source: commands/site/history
+plak_history_usage() {
+    cat <<'HELP'
+Usage:
+  plak history <site> save [--note <text>] [--background]
+  plak history <site> list
+  plak history <site> show <id> [<path>]
+  plak history <site> diff <from> <to|current> [<path>]
+  plak history <site> restore <id> <path> --yes [--background]
+  plak history <site> recover --yes
+  plak history <site> jobs
+  plak history <site> schedule hourly|daily --enable
+  plak history <site> schedule --disable
+
+Paths are relative to wp-content: plugins/<slug>, themes/<slug>, or
+mu-plugins/<file-or-directory>. Output is JSON. Files only: no database or
+activation-state restoration. Symlinks and Git checkouts cannot be restored.
+HELP
+}
+
+plak_history() {
+    case "${1:-}" in ''|-h|--help) plak_history_usage; return 0 ;; esac
+    local site="${1%.localhost}" site_dir
+    shift
+    # main appends the global --json switch; this command always emits JSON.
+    if [ "${*: -1}" = --json ]; then set -- "${@:1:$#-1}"; fi
+    site_dir=$(plak_snapshot_require_site "$site") || return 1
+    [ -f "$site_dir/public/wp-config.php" ] || { plak_ui_error 'History requires a WordPress site.'; return 1; }
+    if [ "${1:-}" = schedule ]; then
+        shift
+        plak_history_schedule "$site" "$@"
+        return $?
+    fi
+    local wp_path frank root_flag="" args_json='[' separator="" arg
+    wp_path=$(plak_wp_resolve_phar) || return 1
+    frank=$(type -P frankenphp) || { plak_ui_error 'FrankenPHP is required.'; return 1; }
+    [ "$(id -u)" -ne 0 ] || root_flag=--allow-root
+    if [ "${*: -1}" = --background ]; then
+        local action="${1:-}"
+        [[ "$action" = save || "$action" = restore ]] || { plak_ui_error '--background is only supported by save/restore.'; return 1; }
+        set -- "${@:1:$#-1}"
+        plak_history_background "$site" "$site_dir" "$@"
+        return $?
+    fi
+    # FrankenPHP's -r mode does not populate argv on every supported build.
+    for arg in "$@"; do args_json+="$separator$(plak_json_string "$arg")"; separator=','; done
+    args_json+=']'
+    PLAK_HISTORY_SITE="$site_dir" PLAK_HISTORY_WP="$wp_path" PLAK_HISTORY_FRANK="$frank" PLAK_HISTORY_ROOT_FLAG="$root_flag" PLAK_HISTORY_ARGS="$args_json" \
+        "$frank" php-cli -r "$(plak_history_program)"
+}
+
+plak_history_background() {
+    local site="$1" site_dir="$2" jobs id job executable
+    shift 2
+    jobs="$site_dir/private/history/jobs"
+    for job in "$site_dir/private" "$site_dir/private/history" "$jobs"; do
+        [ ! -L "$job" ] || { plak_ui_error 'Linked history storage is unsupported.'; return 1; }
+    done
+    mkdir -p "$jobs" || return 1
+    chmod 700 "$jobs" || return 1
+    executable=$(command -v "${PLAK_SITE_CMD:-$0}") || return 1
+    executable=$(plak_wp_realpath "$executable") || return 1
+    job=$(mktemp -d "$jobs/job.XXXXXXXXXX") || return 1
+    id=$(basename "$job")
+    # argv stays separate, including notes and selections containing spaces.
+    # shellcheck disable=SC2016 # Expanded by the detached bash, not this shell.
+    nohup bash -c '
+        job="$1"; shift
+        trap '\''rc=$?; printf "%s\n" "$rc" > "$job/exit.tmp"; mv "$job/exit.tmp" "$job/exit"'\'' EXIT
+        trap '\''exit 130'\'' INT
+        trap '\''exit 143'\'' TERM
+        printf "%s\n" "$$" > "$job/pid"
+        "$@"
+    ' plak-history-job "$job" "$executable" history "$site" "$@" > "$job/log" 2>&1 < /dev/null &
+    printf '{"job":"%s","status":"queued"}\n' "$id"
+}
+
+plak_history_schedule() (
+    local site="$1" expression="" executable quoted home_quoted crontab_file marker
+    shift
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "$(id -un)" ]; then
+        plak_ui_error 'Configure history scheduling without sudo, as the intended user.'; return 1
+    fi
+    case "$*" in
+        'hourly --enable') expression='17 * * * *' ;;
+        'daily --enable') expression='17 3 * * *' ;;
+        '--disable') ;;
+        *) plak_ui_error 'Usage: schedule hourly|daily --enable, or schedule --disable'; return 1 ;;
+    esac
+    command -v crontab >/dev/null 2>&1 || { plak_ui_error 'crontab is required for opt-in scheduling.'; return 1; }
+    executable=$(command -v "${PLAK_SITE_CMD:-$0}") || return 1
+    executable=$(plak_wp_realpath "$executable") || return 1
+    # Cron treats percent and newline specially even inside shell quotes.
+    case "$HOME$executable" in *%*|*$'\n'*|*$'\r'*) plak_ui_error 'Cron-unsafe HOME/executable path.'; return 1 ;; esac
+    quoted="'${executable//\'/\'\\\'\'}'"
+    home_quoted="'${HOME//\'/\'\\\'\'}'"
+    crontab_file=$(mktemp) || return 1
+    trap 'rm -f "$crontab_file" "$crontab_file.current" "$crontab_file.error"' EXIT
+    if ! crontab -l > "$crontab_file.current" 2> "$crontab_file.error"; then
+        if [ -s "$crontab_file.current" ] || ! grep -qi 'no crontab' "$crontab_file.error"; then
+            cat "$crontab_file.error" >&2; return 1
+        fi
+    fi
+    marker="# plak-history:$site"
+    # Match only our exact trailing marker; unrelated user jobs are preserved.
+    awk -v marker="$marker" 'substr($0,length($0)-length(marker)+1) != marker' "$crontab_file.current" > "$crontab_file"
+    if [ -n "$expression" ]; then
+        printf '%s HOME=%s %s history %s save --note scheduled %s\n' "$expression" "$home_quoted" "$quoted" "$site" "$marker" >> "$crontab_file"
+    fi
+    crontab "$crontab_file" || return 1
+    if [ -n "$expression" ]; then echo "History schedule enabled for $site as $(id -un); cron mails errors/output to that user.";
+    else echo "History schedule disabled for $site as $(id -un)."; fi
+)
 
 # Source: commands/site/import
 plak_site_import_usage() {

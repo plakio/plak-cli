@@ -1,0 +1,112 @@
+plak_history_usage() {
+    cat <<'HELP'
+Usage:
+  plak history <site> save [--note <text>] [--background]
+  plak history <site> list
+  plak history <site> show <id> [<path>]
+  plak history <site> diff <from> <to|current> [<path>]
+  plak history <site> restore <id> <path> --yes [--background]
+  plak history <site> recover --yes
+  plak history <site> jobs
+  plak history <site> schedule hourly|daily --enable
+  plak history <site> schedule --disable
+
+Paths are relative to wp-content: plugins/<slug>, themes/<slug>, or
+mu-plugins/<file-or-directory>. Output is JSON. Files only: no database or
+activation-state restoration. Symlinks and Git checkouts cannot be restored.
+HELP
+}
+
+plak_history() {
+    case "${1:-}" in ''|-h|--help) plak_history_usage; return 0 ;; esac
+    local site="${1%.localhost}" site_dir
+    shift
+    # main appends the global --json switch; this command always emits JSON.
+    if [ "${*: -1}" = --json ]; then set -- "${@:1:$#-1}"; fi
+    site_dir=$(plak_snapshot_require_site "$site") || return 1
+    [ -f "$site_dir/public/wp-config.php" ] || { plak_ui_error 'History requires a WordPress site.'; return 1; }
+    if [ "${1:-}" = schedule ]; then
+        shift
+        plak_history_schedule "$site" "$@"
+        return $?
+    fi
+    local wp_path frank root_flag="" args_json='[' separator="" arg
+    wp_path=$(plak_wp_resolve_phar) || return 1
+    frank=$(type -P frankenphp) || { plak_ui_error 'FrankenPHP is required.'; return 1; }
+    [ "$(id -u)" -ne 0 ] || root_flag=--allow-root
+    if [ "${*: -1}" = --background ]; then
+        local action="${1:-}"
+        [[ "$action" = save || "$action" = restore ]] || { plak_ui_error '--background is only supported by save/restore.'; return 1; }
+        set -- "${@:1:$#-1}"
+        plak_history_background "$site" "$site_dir" "$@"
+        return $?
+    fi
+    # FrankenPHP's -r mode does not populate argv on every supported build.
+    for arg in "$@"; do args_json+="$separator$(plak_json_string "$arg")"; separator=','; done
+    args_json+=']'
+    PLAK_HISTORY_SITE="$site_dir" PLAK_HISTORY_WP="$wp_path" PLAK_HISTORY_FRANK="$frank" PLAK_HISTORY_ROOT_FLAG="$root_flag" PLAK_HISTORY_ARGS="$args_json" \
+        "$frank" php-cli -r "$(plak_history_program)"
+}
+
+plak_history_background() {
+    local site="$1" site_dir="$2" jobs id job executable
+    shift 2
+    jobs="$site_dir/private/history/jobs"
+    for job in "$site_dir/private" "$site_dir/private/history" "$jobs"; do
+        [ ! -L "$job" ] || { plak_ui_error 'Linked history storage is unsupported.'; return 1; }
+    done
+    mkdir -p "$jobs" || return 1
+    chmod 700 "$jobs" || return 1
+    executable=$(command -v "${PLAK_SITE_CMD:-$0}") || return 1
+    executable=$(plak_wp_realpath "$executable") || return 1
+    job=$(mktemp -d "$jobs/job.XXXXXXXXXX") || return 1
+    id=$(basename "$job")
+    # argv stays separate, including notes and selections containing spaces.
+    # shellcheck disable=SC2016 # Expanded by the detached bash, not this shell.
+    nohup bash -c '
+        job="$1"; shift
+        trap '\''rc=$?; printf "%s\n" "$rc" > "$job/exit.tmp"; mv "$job/exit.tmp" "$job/exit"'\'' EXIT
+        trap '\''exit 130'\'' INT
+        trap '\''exit 143'\'' TERM
+        printf "%s\n" "$$" > "$job/pid"
+        "$@"
+    ' plak-history-job "$job" "$executable" history "$site" "$@" > "$job/log" 2>&1 < /dev/null &
+    printf '{"job":"%s","status":"queued"}\n' "$id"
+}
+
+plak_history_schedule() (
+    local site="$1" expression="" executable quoted home_quoted crontab_file marker
+    shift
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "$(id -un)" ]; then
+        plak_ui_error 'Configure history scheduling without sudo, as the intended user.'; return 1
+    fi
+    case "$*" in
+        'hourly --enable') expression='17 * * * *' ;;
+        'daily --enable') expression='17 3 * * *' ;;
+        '--disable') ;;
+        *) plak_ui_error 'Usage: schedule hourly|daily --enable, or schedule --disable'; return 1 ;;
+    esac
+    command -v crontab >/dev/null 2>&1 || { plak_ui_error 'crontab is required for opt-in scheduling.'; return 1; }
+    executable=$(command -v "${PLAK_SITE_CMD:-$0}") || return 1
+    executable=$(plak_wp_realpath "$executable") || return 1
+    # Cron treats percent and newline specially even inside shell quotes.
+    case "$HOME$executable" in *%*|*$'\n'*|*$'\r'*) plak_ui_error 'Cron-unsafe HOME/executable path.'; return 1 ;; esac
+    quoted="'${executable//\'/\'\\\'\'}'"
+    home_quoted="'${HOME//\'/\'\\\'\'}'"
+    crontab_file=$(mktemp) || return 1
+    trap 'rm -f "$crontab_file" "$crontab_file.current" "$crontab_file.error"' EXIT
+    if ! crontab -l > "$crontab_file.current" 2> "$crontab_file.error"; then
+        if [ -s "$crontab_file.current" ] || ! grep -qi 'no crontab' "$crontab_file.error"; then
+            cat "$crontab_file.error" >&2; return 1
+        fi
+    fi
+    marker="# plak-history:$site"
+    # Match only our exact trailing marker; unrelated user jobs are preserved.
+    awk -v marker="$marker" 'substr($0,length($0)-length(marker)+1) != marker' "$crontab_file.current" > "$crontab_file"
+    if [ -n "$expression" ]; then
+        printf '%s HOME=%s %s history %s save --note scheduled %s\n' "$expression" "$home_quoted" "$quoted" "$site" "$marker" >> "$crontab_file"
+    fi
+    crontab "$crontab_file" || return 1
+    if [ -n "$expression" ]; then echo "History schedule enabled for $site as $(id -un); cron mails errors/output to that user.";
+    else echo "History schedule disabled for $site as $(id -un)."; fi
+)

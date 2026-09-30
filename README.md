@@ -372,6 +372,8 @@ plak sshkey delete
 - Non-interactive list/status commands fall back to plain output for scripts and tests.
 - `plak.sh` is generated from `main`, `shared/`, and `commands/`.
 ## WordPress core versions and stack health
+Component history and selective rollback: [history guide](docs/history.md).
+
 Multisite: see [local network management](docs/multisite.md) for creation,
 subsites, network-aware clone/rename and supported boundaries. Linux database
 listing and browser CA trust are described in [Linux compatibility](docs/linux-compatibility.md).
