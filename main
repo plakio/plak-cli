@@ -87,6 +87,7 @@ Commands:
   login       Generate a one-time WordPress admin login link
   wp          Run WP-CLI inside a local WordPress site
   core        Inspect or update WordPress core versions
+  network     Inspect multisite networks and create subsites
   agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
   snapshot    Create, list, restore, export or delete site snapshots
@@ -196,7 +197,7 @@ HELP
             echo "  applies them when asked. 'http2' probes protocol negotiation."
             ;;
         add)
-            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--plain] [--agent|--no-agent] [--no-reload]"
+            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--plain] [--agent|--no-agent] [--no-reload]"
             echo ""
             echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
             echo "              register the site with wp-mcp-cli). WordPress only."
@@ -219,7 +220,7 @@ HELP
             echo "Usage: plak list [--totals] [--json]"
             ;;
         login)
-            echo "Usage: plak login <site> [<user>] [--raw]"
+            echo "Usage: plak login <site> [<user>] [--subsite <id>] [--raw]"
             ;;
         wp)
             echo "Usage: plak wp <site> <wp-cli arguments...>"
@@ -227,6 +228,9 @@ HELP
             ;;
         core)
             plak_core_usage
+            ;;
+        network)
+            plak_network_usage
             ;;
         db)
             echo "Usage: plak db <backup|list>"
@@ -302,6 +306,9 @@ main() {
             ;;
         core)
             plak_core "$@"
+            ;;
+        network)
+            plak_network "$@"
             ;;
         agent)
             check_dependencies

@@ -95,7 +95,24 @@ plak_site_clone() {
     source_config
     local wp_cmd=""
     if [ "$is_wordpress" = true ]; then
-        wp_cmd=$(get_wp_cmd)
+        wp_cmd=$(get_wp_cmd) || return 1
+    fi
+    local network_mode=single
+    if [ "$is_wordpress" = true ]; then
+        network_mode=$(plak_multisite_mode "$source_dir/public") || return 1
+        if [ "$network_mode" != single ]; then
+            plak_multisite_validate_local "$source_dir/public" "$source" || return 1
+            local source_host source_user source_pass
+            source_host=$(plak_multisite_wp "$source_dir/public" config get DB_HOST) || return 1
+            source_user=$(plak_multisite_wp "$source_dir/public" config get DB_USER) || return 1
+            source_pass=$(plak_multisite_wp "$source_dir/public" config get DB_PASSWORD) || return 1
+            if [ "$source_host" != "$DB_HOST:$DB_PORT" ] && { [ "$source_host" != "$DB_HOST" ] || [ "$DB_PORT" != 3306 ]; }; then
+                plak_ui_error 'Network cloning currently requires the configured local Plak database server.'; return 1
+            fi
+            if [ "$source_user" != "$DB_USER" ] || [ "$source_pass" != "$DB_PASSWORD" ]; then
+                plak_ui_error 'Network cloning currently requires the configured local Plak database credentials.'; return 1
+            fi
+        fi
     fi
 
     # mkdir without -p claims the destination exclusively, including races.
@@ -171,26 +188,34 @@ plak_site_clone() {
             return 1
         fi
 
-        # Preserve distinct home/siteurl values and local ports: read them from
-        # the copied database, then map the source hostname to the destination.
-        local source_home source_siteurl dest_home dest_siteurl
-        source_home=$( (cd "$dest_dir/public" && "$wp_cmd" option get home --skip-plugins --skip-themes 2>/dev/null) )
-        source_siteurl=$( (cd "$dest_dir/public" && "$wp_cmd" option get siteurl --skip-plugins --skip-themes 2>/dev/null) )
-        dest_home=$(printf '%s' "$source_home" | sed "s|$source\.localhost|$destination.localhost|g")
-        dest_siteurl=$(printf '%s' "$source_siteurl" | sed "s|$source\.localhost|$destination.localhost|g")
-        [ -n "$dest_home" ] || dest_home=$(url_for "$full_hostname")
-        [ -n "$dest_siteurl" ] || dest_siteurl=$(url_for "$full_hostname")
+        if [ "$network_mode" != single ]; then
+            if ! plak_multisite_rewrite "$dest_dir/public" "$source" "$destination"; then
+                plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+                return 1
+            fi
+            printf '%s\n' "$network_mode" > "$dest_dir/.multisite-mode" || return 1
+        else
+            rm -f "$dest_dir/.multisite-mode"
+            # Preserve distinct home/siteurl values and local ports: read them from
+            # the copied database, then map the source hostname to the destination.
+            local source_home source_siteurl dest_home dest_siteurl
+            source_home=$( (cd "$dest_dir/public" && "$wp_cmd" option get home --skip-plugins --skip-themes 2>/dev/null) )
+            source_siteurl=$( (cd "$dest_dir/public" && "$wp_cmd" option get siteurl --skip-plugins --skip-themes 2>/dev/null) )
+            dest_home=$(printf '%s' "$source_home" | sed "s|$source\.localhost|$destination.localhost|g")
+            dest_siteurl=$(printf '%s' "$source_siteurl" | sed "s|$source\.localhost|$destination.localhost|g")
+            [ -n "$dest_home" ] || dest_home=$(url_for "$full_hostname")
+            [ -n "$dest_siteurl" ] || dest_siteurl=$(url_for "$full_hostname")
 
-        if ! (cd "$dest_dir/public" && "$wp_cmd" search-replace "$source_siteurl" "$dest_siteurl" --all-tables --report-changed-only --skip-plugins --skip-themes &&
-              "$wp_cmd" search-replace "$source_home" "$dest_home" --all-tables --report-changed-only --skip-plugins --skip-themes &&
-              "$wp_cmd" option update home "$dest_home" --skip-plugins --skip-themes &&
-              "$wp_cmd" option update siteurl "$dest_siteurl" --skip-plugins --skip-themes); then
-            echo "Error: failed to rewrite the cloned site URLs." >&2
-            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
-            return 1
+            if ! (cd "$dest_dir/public" && "$wp_cmd" search-replace "$source_siteurl" "$dest_siteurl" --all-tables --report-changed-only --skip-plugins --skip-themes &&
+                  "$wp_cmd" search-replace "$source_home" "$dest_home" --all-tables --report-changed-only --skip-plugins --skip-themes &&
+                  "$wp_cmd" option update home "$dest_home" --skip-plugins --skip-themes &&
+                  "$wp_cmd" option update siteurl "$dest_siteurl" --skip-plugins --skip-themes); then
+                echo "Error: failed to rewrite the cloned site URLs." >&2
+                plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+                return 1
+            fi
         fi
     fi
-
     # --- Independent state: no remote binding, no exclusive domains, empty logs ---
     # A cloned mappings file would repoint the source's exclusive domains at the
     # copy and collide, so it is intentionally dropped.
@@ -219,7 +244,7 @@ plak_site_clone() {
 
     # A clone of an agent-ready site should stay agent-ready; prepare when
     # possible and otherwise say how, without failing the clone.
-    if [ "$is_wordpress" = true ]; then
+    if [ "$is_wordpress" = true ] && [ "$network_mode" = single ]; then
         plak_agent_maybe_prepare "$destination"
     fi
 

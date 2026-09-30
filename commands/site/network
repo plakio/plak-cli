@@ -1,0 +1,88 @@
+# shellcheck disable=SC2016 # WordPress eval programs are literal PHP.
+plak_network_usage() {
+    echo 'Usage: plak network <site> [--json]'
+    echo '       plak network create <site> <slug> [--title <title>]'
+    echo '       plak login <site> [<user>] --subsite <id> [--raw]'
+}
+
+plak_network() {
+    local action=inspect site slug="" title="" json=false
+    [ "${1:-}" != create ] || { action=create; shift; }
+    case "${1:-}" in -h|--help|"") plak_network_usage; return 0 ;; esac
+    site="${1%.localhost}"; shift
+    plak_validate_site_name "$site" || { plak_ui_error 'Invalid site name.'; return 1; }
+    local public="$SITES_DIR/$site.localhost/public" mode
+    [ -f "$public/wp-config.php" ] || { plak_ui_error 'WordPress site not found.'; return 1; }
+    mode=$(plak_multisite_mode "$public") || return 1
+    [ "$mode" != single ] || { plak_ui_error 'This site is not a multisite network.'; return 1; }
+    if [ "$action" = create ]; then
+        slug="${1:-}"; [ "$#" -eq 0 ] || shift
+        plak_validate_site_name "$slug" || { plak_ui_error 'A valid lowercase subsite slug is required.'; return 1; }
+        if [ "${1:-}" = --title ] && [ "$#" -ge 2 ]; then title="$2"; shift 2; fi
+        [ "$#" -eq 0 ] || { plak_network_usage >&2; return 1; }
+        plak_multisite_validate_local "$public" "$site" || return 1
+        local created
+        created=$(plak_multisite_wp "$public" site create "--slug=$slug" "--title=${title:-$slug}" --porcelain) || return 1
+        [[ "$created" =~ ^[1-9][0-9]*$ ]] || { plak_ui_error 'WordPress did not return a subsite ID.'; return 1; }
+        # WordPress initializes new multisite home/siteurl options with http
+        # even when the parent uses HTTPS. Normalize only this new subsite.
+        PLAK_MS_ID="$created" plak_multisite_wp "$public" eval '
+            switch_to_blog((int)getenv("PLAK_MS_ID"));
+            foreach(["home","siteurl"] as $key) {
+                $url=set_url_scheme(get_option($key),"https");
+                update_option($key,$url);
+                if(get_option($key)!==$url) WP_CLI::error("Subsite HTTPS configuration failed.");
+            }
+            restore_current_blog();
+        ' --skip-plugins --skip-themes || return 1
+        echo "Created subsite #$created."
+        if [ "$(cat "$public/../.multisite-mode" 2>/dev/null || true)" != "$mode" ]; then
+            printf '%s\n' "$mode" > "$public/../.multisite-mode" || return 1
+            regenerate_caddyfile || return 1
+        fi
+    else
+        if [ "${1:-}" = --json ]; then json=true; shift; fi
+        [ "$#" -eq 0 ] || { plak_network_usage >&2; return 1; }
+    fi
+    PLAK_MS_JSON="$json" plak_multisite_wp "$public" eval '
+        $network=get_network(); $sites=[];
+        foreach(get_sites(["number"=>0,"network_id"=>$network->id]) as $site) {
+            $sites[]=["id"=>(int)$site->blog_id,"url"=>get_site_url($site->blog_id),"domain"=>$site->domain,"path"=>$site->path];
+        }
+        $report=["multisite"=>true,"mode"=>is_subdomain_install()?"subdomains":"subdirectories","network_id"=>(int)$network->id,"domain"=>$network->domain,"path"=>$network->path,"sites"=>$sites];
+        if(getenv("PLAK_MS_JSON")==="true") echo wp_json_encode($report);
+        else {echo "Network: ".$report["mode"]."\n"; foreach($sites as $site) echo $site["id"]."\t".$site["url"]."\n";}
+    ' --skip-plugins --skip-themes
+}
+
+plak_multisite_login() {
+    local site="$1" id="$2" user="$3" raw="$4" public="$SITES_DIR/$1.localhost/public" url login
+    if ! plak_validate_site_name "$site" || ! [[ "$id" =~ ^[1-9][0-9]*$ ]]; then
+        plak_ui_error 'Invalid network site or subsite ID.'; return 1
+    fi
+    [ -f "$public/wp-config.php" ] || { plak_ui_error 'WordPress network not found.'; return 1; }
+    plak_multisite_validate_local "$public" "$site" || return 1
+    url=$(PLAK_MS_ID="$id" PLAK_MS_HOST="$site.localhost" PLAK_MS_HTTPS_PORT="$HTTPS_PORT" plak_multisite_wp "$public" eval '
+        $site=get_site((int)getenv("PLAK_MS_ID"));
+        if(!$site || (int)$site->site_id !== get_current_network_id()) WP_CLI::error("Unknown subsite in this network.");
+        $url=untrailingslashit(get_site_url($site->blog_id)); $parts=wp_parse_url($url); $host=getenv("PLAK_MS_HOST");
+        if(($parts["scheme"]??"")!=="https" || (($parts["host"]??"")!==$host && !str_ends_with($parts["host"]??"",".".$host))
+            || ($parts["host"]??"")!==explode(":",$site->domain)[0]
+            || (int)($parts["port"]??443)!==(int)getenv("PLAK_MS_HTTPS_PORT")
+            || untrailingslashit($parts["path"]??"/")!==untrailingslashit($site->path)) WP_CLI::error("External or mismatched subsite URL rejected.");
+        echo $url;
+    ' --skip-plugins --skip-themes) || return 1
+    # URL is derived and validated in WordPress, not accepted from the caller.
+    if [ -z "$user" ]; then
+        user=$(plak_multisite_wp "$public" user list --role=administrator --field=user_login --url="$url" --skip-plugins --skip-themes | head -1) || return 1
+    fi
+    [ -n "$user" ] || { plak_ui_error 'No administrator found for this subsite.'; return 1; }
+    PLAK_MS_USER="$user" PLAK_MS_ID="$id" plak_multisite_wp "$public" eval '
+        $value=getenv("PLAK_MS_USER"); $user=is_numeric($value)?get_user_by("id",$value):(is_email($value)?get_user_by("email",$value):get_user_by("login",$value));
+        if(!$user || (!is_super_admin($user->ID) && !is_user_member_of_blog($user->ID,(int)getenv("PLAK_MS_ID")))) WP_CLI::error("User is not a member of the selected subsite.");
+    ' --url="$url" --skip-plugins --skip-themes || return 1
+    inject_mu_plugin "$public" >/dev/null || return 1
+    login=$(plak_multisite_wp "$public" user login "$user" --url="$url" --skip-plugins --skip-themes) || return 1
+    [[ "$login" = "$url/"* ]] || { plak_ui_error 'Unexpected subsite login URL.'; return 1; }
+    if [ "$raw" = true ]; then printf '%s\n' "$login"; else plak_terminal_link "$login"; fi
+}

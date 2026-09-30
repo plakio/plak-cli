@@ -132,7 +132,7 @@ plak_site_db_list() {
     local wp_path
     wp_path=$(plak_wp_resolve_phar) || return 1
     local frank
-    frank=$(command -v frankenphp)
+    frank=$(command -v frankenphp) || return 1
     local php_output
     php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
@@ -151,45 +151,64 @@ plak_site_db_list() {
         $wp_path = getenv("WP_PATH");
         $frank_bin = getenv("FRANK_BIN");
         $json_mode = getenv("JSON_MODE") === "true";
-        $wp_invoker = escapeshellarg($frank_bin) . " php-cli " . escapeshellarg($wp_path);
-
         if (!is_dir($sites_dir)) {
             if ($json_mode) echo "[]\n";
             exit;
         }
 
+        function wpConfig(string $key, string $public): string {
+            global $frank_bin, $wp_path, $wp_root_flag;
+            $args = [$frank_bin, "php-cli", $wp_path];
+            if ($wp_root_flag) $args[] = $wp_root_flag;
+            array_push($args, "config", "get", $key, "--skip-plugins", "--skip-themes", "--quiet");
+            $pipes = [];
+            $proc = proc_open($args, [0 => ["pipe", "r"], 1 => ["pipe", "w"], 2 => ["pipe", "w"]], $pipes, $public);
+            if (!is_resource($proc)) throw new RuntimeException("Cannot execute WP-CLI for " . basename(dirname($public)));
+            fclose($pipes[0]);
+            $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+            stream_get_contents($pipes[2]); fclose($pipes[2]);
+            if (proc_close($proc) !== 0) throw new RuntimeException("Cannot read $key for " . basename(dirname($public)));
+            return trim($out);
+        }
         try {
-            $pdo = new PDO("mysql:host={$db_host};port={$db_port}", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        } catch (PDOException $e) { exit; }
 
         $sites_info = [];
         foreach (scandir($sites_dir) as $item) {
             $public_dir = $sites_dir . "/" . $item . "/public";
             if (is_file($public_dir . "/wp-config.php")) {
                 $site_name = str_replace(".localhost", "", $item);
-                $public_dir_esc = escapeshellarg($public_dir);
-                $cmd_suffix = " " . $wp_root_flag . " --skip-plugins --skip-themes --quiet 2>/dev/null";
-                
-                $name_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_NAME" . $cmd_suffix);
-                if (is_null($name_raw)) { continue; }
-                $site_db_name = trim($name_raw);
-                if (empty($site_db_name)) { continue; }
+                $site_db_name = wpConfig("DB_NAME", $public_dir);
+                if ($site_db_name === "") throw new RuntimeException("Empty DB_NAME for $site_name");
 
                 $site_db_user = "N/A";
                 $site_db_pass = "N/A";
                 $size_str = "N/A";
 
                 if (!str_contains(strtolower($site_db_name), "sqlite")) {
-                    $user_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_USER" . $cmd_suffix);
-                    if (!is_null($user_raw)) { $site_db_user = trim($user_raw); }
-
-                    $pass_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_PASSWORD" . $cmd_suffix);
-                    if (!is_null($pass_raw)) { $site_db_pass = trim($pass_raw); }
-                    
-                    $stmt = $pdo->prepare("SELECT SUM(data_length + index_length) as size FROM information_schema.TABLES WHERE table_schema = ?");
-                    $stmt->execute([$site_db_name]);
-                    $size_bytes = $stmt->fetch(PDO::FETCH_ASSOC)["size"] ?? 0;
+                    if (!class_exists("mysqli")) throw new RuntimeException("mysqli is unavailable; reinstall FrankenPHP with MySQL support.");
+                    $site_db_user = wpConfig("DB_USER", $public_dir);
+                    $site_db_pass = wpConfig("DB_PASSWORD", $public_dir);
+                    $site_db_host = wpConfig("DB_HOST", $public_dir);
+                    $host = $site_db_host ?: $db_host; $port = (int)$db_port; $socket = null;
+                    if (preg_match("/^\\[([^]]+)\\](?::([0-9]+))?(?::(.*))?$/", $host, $parts)) {
+                        $host = $parts[1]; $port = empty($parts[2]) ? $port : (int)$parts[2]; $socket = $parts[3] ?? null;
+                    } elseif (str_contains($host, ":")) {
+                        $parts = explode(":", $host, 3); $host = $parts[0];
+                        if (ctype_digit($parts[1])) { $port = (int)$parts[1]; $socket = $parts[2] ?? null; }
+                        else $socket = $parts[1];
+                    }
+                    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+                    $db = mysqli_init();
+                    $db->options(MYSQLI_OPT_CONNECT_TIMEOUT, 3);
+                    try {
+                        $db->real_connect($host, $site_db_user, $site_db_pass, null, $port, $socket);
+                        $stmt = $db->prepare("SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.TABLES WHERE table_schema = ?");
+                        $stmt->bind_param("s", $site_db_name); $stmt->execute();
+                        $size_bytes = 0; $stmt->bind_result($size_bytes); $stmt->fetch();
+                        $stmt->close(); $db->close();
+                    } catch (Throwable $error) {
+                        throw new RuntimeException("Database connection/query failed for $site_name ($host:$port), code " . $error->getCode());
+                    }
                     $size_str = formatSize((int)$size_bytes);
                 }
 
@@ -227,7 +246,10 @@ plak_site_db_list() {
             $output[] = $row;
         }
         echo implode("\n", $output);
-    ')
+        } catch (Throwable $error) {
+            fwrite(STDERR, "Error: " . $error->getMessage() . "\n"); exit(1);
+        }
+    ') || return 1
 
     if [ -z "$php_output" ]; then
         if [ "$json_mode" = true ]; then

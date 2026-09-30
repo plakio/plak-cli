@@ -39,6 +39,10 @@ openssl_bundle="$prefix/opt/openssl@3/etc/openssl@3/cert.pem"
 printf -- '-----BEGIN CERTIFICATE-----\nOther Root\n-----END CERTIFICATE-----\n' > "$openssl_bundle"
 plak_site_trust_linuxbrew_bundles "$prefix" "$root_cert" >/dev/null
 grep -q 'Caddy Local Authority' "$openssl_bundle" || fail "openssl@3 bundle was not updated"
+mkdir -p "$prefix/etc/openssl@3"
+ln -s "$bundle" "$prefix/etc/openssl@3/cert.pem"
+plak_site_trust_linuxbrew_bundles "$prefix" "$root_cert" >/dev/null
+[ -L "$prefix/etc/openssl@3/cert.pem" ] || fail 'replaced a bundle symlink instead of its target'
 
 # A prefix with no bundles is a no-op.
 empty_prefix="$tmpdir/emptybrew"

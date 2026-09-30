@@ -87,6 +87,7 @@ Commands:
   login       Generate a one-time WordPress admin login link
   wp          Run WP-CLI inside a local WordPress site
   core        Inspect or update WordPress core versions
+  network     Inspect multisite networks and create subsites
   agent       Prepare or repair a site for WP-MCP agents
   db          Manage local site databases
   snapshot    Create, list, restore, export or delete site snapshots
@@ -196,7 +197,7 @@ HELP
             echo "  applies them when asked. 'http2' probes protocol negotiation."
             ;;
         add)
-            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--plain] [--agent|--no-agent] [--no-reload]"
+            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--plain] [--agent|--no-agent] [--no-reload]"
             echo ""
             echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
             echo "              register the site with wp-mcp-cli). WordPress only."
@@ -219,7 +220,7 @@ HELP
             echo "Usage: plak list [--totals] [--json]"
             ;;
         login)
-            echo "Usage: plak login <site> [<user>] [--raw]"
+            echo "Usage: plak login <site> [<user>] [--subsite <id>] [--raw]"
             ;;
         wp)
             echo "Usage: plak wp <site> <wp-cli arguments...>"
@@ -227,6 +228,9 @@ HELP
             ;;
         core)
             plak_core_usage
+            ;;
+        network)
+            plak_network_usage
             ;;
         db)
             echo "Usage: plak db <backup|list>"
@@ -302,6 +306,9 @@ main() {
             ;;
         core)
             plak_core "$@"
+            ;;
+        network)
+            plak_network "$@"
             ;;
         agent)
             check_dependencies
@@ -898,6 +905,83 @@ plak_agent_prepare() {
 
     plak_ui_success "Agent ready: wp-mcp profile '$site_name' at $(url_for "$site_name.localhost")"
     return 0
+}
+
+# Source: shared/site/multisite
+# shellcheck disable=SC2016 # Single-quoted eval programs are PHP, not shell.
+# Authoritative network queries use WordPress, never a marker file alone.
+plak_multisite_wp() (
+    local public="$1" wp_cmd
+    shift
+    wp_cmd=$(get_wp_cmd) || return 1
+    [ -n "$wp_cmd" ] || return 1
+    cd "$public" || return 1
+    "$wp_cmd" "$@"
+)
+
+plak_multisite_mode() {
+    local mode
+    mode=$(plak_multisite_wp "$1" eval 'echo is_multisite() ? (is_subdomain_install() ? "subdomains" : "subdirectories") : "single";' --skip-plugins --skip-themes) || return 1
+    case "$mode" in single|subdomains|subdirectories) printf '%s\n' "$mode" ;; *) plak_ui_error 'Cannot determine WordPress network mode.'; return 1 ;; esac
+}
+
+plak_multisite_require_single() {
+    local public="$1" action="$2" mode
+    [ -f "$public/wp-config.php" ] || return 0
+    # Ordinary configs avoid an extra bootstrap; a marker or a MULTISITE
+    # declaration requires an authoritative check, failing closed on errors.
+    if [ ! -f "$public/../.multisite-mode" ] && ! grep -q MULTISITE "$public/wp-config.php"; then return 0; fi
+    mode=$(plak_multisite_mode "$public") || return 1
+    [ "$mode" = single ] || { plak_ui_error "$action does not support multisite; no data was modified."; return 1; }
+}
+
+plak_multisite_rename() (
+    local old="$1" new="$2" source="$SITES_DIR/$1.localhost" recovery binding
+    # Reuse the independently-created clone transaction. Failed provisioning
+    # cannot affect the source; retain the source DB/files as recovery on rename.
+    (plak_site_clone "$old" "$new" --yes --no-reload) || return 1
+    recovery=$(mktemp -d "$PLAK_SITE_DIR/cache/rename-recovery.XXXXXX") || return 1
+    for binding in .remote mappings; do
+        if [ -f "$source/$binding" ]; then cp "$source/$binding" "$SITES_DIR/$new.localhost/$binding" || return 1; fi
+    done
+    mv "$source" "$recovery/$old.localhost" || return 1
+    if [ -f "$CUSTOM_CADDY_DIR/$old.localhost" ]; then
+        mv "$CUSTOM_CADDY_DIR/$old.localhost" "$recovery/directives" || return 1
+    fi
+    printf '%s\n' "$recovery" > "$SITES_DIR/$new.localhost/rename-recovery" || return 1
+    regenerate_caddyfile || return 1
+    echo "Network renamed to $new.localhost; original database retained for recovery in $recovery."
+)
+
+# Reject mapped domains/multiple networks before any resource is modified.
+plak_multisite_validate_local() {
+    PLAK_MS_HOST="$2.localhost" plak_multisite_wp "$1" eval '
+        global $wpdb;
+        if (!is_multisite()) WP_CLI::error("Expected a multisite network.");
+        $host=getenv("PLAK_MS_HOST"); $network=get_network();
+        if ((int)$wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->site}") !== 1) WP_CLI::error("Multiple networks are not supported.");
+        if (explode(":", $network->domain)[0] !== $host || $network->path !== "/") WP_CLI::error("Only a local root network is supported.");
+        foreach (get_sites(["number"=>0,"network_id"=>$network->id]) as $site) {
+            $domain=explode(":",$site->domain)[0];
+            if ($domain !== $host && !str_ends_with($domain,".".$host)) WP_CLI::error("External/domain-mapped subsites are unsupported.");
+        }
+    ' --skip-plugins --skip-themes
+}
+
+plak_multisite_rewrite() {
+    local public="$1" old="$2" new="$3" domain value key
+    domain=$(plak_multisite_wp "$public" config get DOMAIN_CURRENT_SITE) || return 1
+    [[ "$domain" = "$old.localhost" || "$domain" = "$old.localhost:"* ]] || { plak_ui_error 'Unexpected network domain constant.'; return 1; }
+    plak_multisite_wp "$public" search-replace "(?<![A-Za-z0-9-])${old}\\.localhost(?![A-Za-z0-9.-])" "$new.localhost" \
+        --regex --regex-flags=i --network --all-tables-with-prefix --precise --skip-plugins --skip-themes || return 1
+    plak_multisite_wp "$public" config set DOMAIN_CURRENT_SITE "${domain/$old.localhost/$new.localhost}" --quiet || return 1
+    for key in WP_HOME WP_SITEURL; do
+        if plak_multisite_wp "$public" config has "$key" >/dev/null 2>&1; then
+            value=$(plak_multisite_wp "$public" config get "$key") || return 1
+            plak_multisite_wp "$public" config set "$key" "${value//$old.localhost/$new.localhost}" --quiet || return 1
+        fi
+    done
+    plak_multisite_validate_local "$public" "$new" || return 1
 }
 
 # Source: shared/site/remote-transfer
@@ -1718,6 +1802,9 @@ add_filter( 'auto_theme_update_send_email', '__return_false' );
  */
 if ( ! function_exists( 'plak_cli_maybe_override_site_url' ) ) {
 function plak_cli_maybe_override_site_url( $value ) {
+    if ( is_multisite() ) {
+        return $value; // Never collapse a network to a LAN/share host.
+    }
     // Only run in front-end context with a valid HTTP_HOST
     if ( defined( 'WP_CLI' ) && WP_CLI ) {
         return $value;
@@ -2210,7 +2297,7 @@ ${port_directives}    frankenphp {
         php_ini upload_max_filesize $(plak_site_ini_get upload_max_filesize 1G)
         php_ini post_max_size $(plak_site_ini_get post_max_size 1G)
         # OPcache for the web process only; enable_cli stays 0 so wp-cli is
-        # never served a stale cache. Tuned with `plak health opcache set`.
+        # never served a stale cache. Tuned with plak health opcache set.
         php_ini opcache.enable $(plak_site_ini_get opcache.enable 1)
         php_ini opcache.enable_cli $(plak_site_ini_get opcache.enable_cli 0)
         php_ini opcache.memory_consumption $(plak_site_ini_get opcache.memory_consumption 128)
@@ -2285,6 +2372,11 @@ EOM
 
                 # Build the list of domains
                 local site_domains="$site_name"
+                local multisite_mode=""
+                if [ -f "$site_path/.multisite-mode" ]; then
+                    multisite_mode=$(cat "$site_path/.multisite-mode")
+                    [ "$multisite_mode" != subdomains ] || site_domains="$site_domains, *.$site_name"
+                fi
 
                 if [ -f "$site_path/mappings" ]; then
                     while IFS= read -r mapping || [ -n "$mapping" ]; do
@@ -2310,6 +2402,13 @@ EOM
                     echo "" >> "$CADDYFILE_PATH"
                 fi
 
+                if [ "$multisite_mode" = subdirectories ]; then
+                    echo '    @ms_assets {' >> "$CADDYFILE_PATH"
+                    echo '        path_regexp ms_assets ^/[^/]+/(wp-(?:content|admin|includes).*|[^/]+\.php(?:/.*)?)$' >> "$CADDYFILE_PATH"
+                    echo '        not file {path}' >> "$CADDYFILE_PATH"
+                    echo '    }' >> "$CADDYFILE_PATH"
+                    echo '    rewrite @ms_assets /{re.ms_assets.1}' >> "$CADDYFILE_PATH"
+                fi
                 echo "    php_server" >> "$CADDYFILE_PATH"
 
                 if [ ! -f "$site_path/public/wp-config.php" ]; then
@@ -2641,6 +2740,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                         'size_bytes' => isset($size_cache[$item]) ? (int) $size_cache[$item] : null,
                         'modified_at' => $mtime ?: null,
                         'agent_ready' => file_exists($site_path . '/agent-ready'),
+                        'multisite_mode' => is_file($site_path . '/.multisite-mode') ? trim(file_get_contents($site_path . '/.multisite-mode')) : null,
                     ];
                 }
             }
@@ -2781,6 +2881,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // These dashboard mutations have only single-site semantics. Fail before
+    // executing them against a network (the expert WP-CLI console remains explicit).
+    if (in_array($action, ['site_plugin_op', 'site_theme_op', 'site_cron_run'], true)
+        && is_string($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+        $public = $sitedir . '/' . $site_name . '.localhost/public';
+        $config = @file_get_contents($public . '/wp-config.php');
+        if (is_file(dirname($public) . '/.multisite-mode') || ($config !== false && str_contains($config, 'MULTISITE'))) {
+            $mode_lines = []; $mode_code = 0;
+            exec(sprintf('HOME=%s %s wp %s eval %s --skip-plugins --skip-themes 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), escapeshellarg('echo is_multisite() ? "1" : "0";')), $mode_lines, $mode_code);
+            if ($mode_code !== 0 || trim(implode("\n", $mode_lines)) !== '0') {
+                echo json_encode(['success' => false, 'message' => 'This operation has no network/subsite scope. Use plak wp with explicit --url/--network options. No data was modified.']);
+                exit;
+            }
+        }
+    }
     switch ($action) {
         case 'add_site':
             if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
@@ -2822,7 +2937,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $response = ['success' => false, 'message' => 'Not a WordPress site.'];
                     break;
                 }
-                $info = ['wp_version' => null, 'plugins' => null];
+                $info = ['wp_version' => null, 'plugins' => null, 'network' => null];
+                $network_lines = []; $network_code = 0;
+                exec(sprintf('HOME=%s %s network %s --json 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name)), $network_lines, $network_code);
+                if ($network_code === 0) $info['network'] = json_decode(implode("\n", $network_lines), true);
                 $vp = []; $vrc = 0;
                 exec(sprintf('HOME=%s %s wp %s core version --skip-plugins --skip-themes 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name)), $vp, $vrc);
                 if ($vrc === 0 && !empty($vp[0])) {
@@ -4268,7 +4386,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 <template x-for="site in filteredSites" :key="site.name">
                     <li class="site-row" @click="openSite(site)">
                         <a class="site-domain" :href="site.domain" target="_blank" rel="noopener" @click.stop x-html="highlightedDomain(site.domain, filter)"></a>
-                        <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.type === 'WordPress' ? 'WP' : 'STATIC'"></span>
+                        <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.multisite_mode ? 'NETWORK' : (site.type === 'WordPress' ? 'WP' : 'STATIC')"></span>
                         <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
                         <div class="site-actions">
@@ -4354,6 +4472,15 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         </template>
                     </template>
                 </dl>
+                <template x-if="detailInfo && detailInfo.network">
+                    <section>
+                        <h3 x-text="'Multisite · ' + detailInfo.network.mode"></h3>
+                        <template x-for="subsite in detailInfo.network.sites" :key="subsite.id">
+                            <p><span x-text="'#' + subsite.id + ' '"></span><a :href="subsite.url" target="_blank" rel="noopener" x-text="subsite.url"></a>
+                                <code x-text="'plak login ' + detailSite.name + ' --subsite ' + subsite.id"></code></p>
+                        </template>
+                    </section>
+                </template>
                 <div class="detail-actions">
                     <a class="site-action-btn" :href="detailSite.domain" target="_blank" rel="noopener">open site</a>
                     <template x-if="detailSite.type === 'WordPress'">
@@ -7429,10 +7556,14 @@ plak_site_add() (
     # Every mandatory step is checked explicitly: main disables errexit for
     # legacy site commands, and an outer conditional can disable it too.
     local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=""
-    local agent_flag="" arg wp_version="latest" version_flag=false
+    local agent_flag="" arg wp_version="latest" version_flag=false multisite=""
     while [ "$#" -gt 0 ]; do
         arg="$1"
         case "$arg" in
+            --multisite)
+                [ "$#" -ge 2 ] || { echo 'Error: --multisite requires subdomains or subdirectories.' >&2; exit 1; }
+                multisite="$2"; shift
+                [[ "$multisite" = subdomains || "$multisite" = subdirectories ]] || { echo 'Error: invalid multisite mode.' >&2; exit 1; } ;;
             --wp-version)
                 [ "$#" -ge 2 ] || { echo 'Error: --wp-version requires latest, nightly or a release number.' >&2; exit 1; }
                 wp_version="$2"; version_flag=true; shift ;;
@@ -7452,6 +7583,13 @@ plak_site_add() (
         esac
         shift
     done
+    if [ -n "$multisite" ] && [ "$site_type" = plain ]; then
+        echo 'Error: --multisite cannot be combined with --plain.' >&2; exit 1
+    fi
+    if [ -n "$multisite" ]; then
+        if [ "$agent_flag" = true ]; then echo 'Error: automatic agent preparation has no multisite scope; use explicit network/subsite WP-CLI commands.' >&2; exit 1; fi
+        agent_flag=false; agent_mode=false
+    fi
     plak_core_version_valid "$wp_version" || { echo "Error: invalid WordPress version '$wp_version'; use latest, nightly or a release such as 6.8.1." >&2; exit 1; }
     if [ "$version_flag" = true ] && [ "$site_type" = plain ]; then
         echo 'Error: --wp-version applies only to WordPress sites; omit it with --plain.' >&2
@@ -7550,6 +7688,12 @@ PHP
             [ -s wp-config.php ] || { echo "Error: WP-CLI did not create wp-config.php." >&2; exit 1; }
             "${PLAK_WP_COMMAND[@]}" core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email || exit 1
             "${PLAK_WP_COMMAND[@]}" core is-installed --skip-plugins --skip-themes || exit 1
+            if [ -n "$multisite" ]; then
+                local network_flags=()
+                [ "$multisite" != subdomains ] || network_flags+=(--subdomains)
+                "${PLAK_WP_COMMAND[@]}" core multisite-convert "${network_flags[@]}" || exit 1
+                printf '%s\n' "$multisite" > "$site_dir/.multisite-mode" || exit 1
+            fi
             echo "   - Deleting default plugins (Hello Dolly, Akismet)..."
             "${PLAK_WP_COMMAND[@]}" plugin delete hello akismet --quiet || exit 1
         ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2); then
@@ -7740,7 +7884,24 @@ plak_site_clone() {
     source_config
     local wp_cmd=""
     if [ "$is_wordpress" = true ]; then
-        wp_cmd=$(get_wp_cmd)
+        wp_cmd=$(get_wp_cmd) || return 1
+    fi
+    local network_mode=single
+    if [ "$is_wordpress" = true ]; then
+        network_mode=$(plak_multisite_mode "$source_dir/public") || return 1
+        if [ "$network_mode" != single ]; then
+            plak_multisite_validate_local "$source_dir/public" "$source" || return 1
+            local source_host source_user source_pass
+            source_host=$(plak_multisite_wp "$source_dir/public" config get DB_HOST) || return 1
+            source_user=$(plak_multisite_wp "$source_dir/public" config get DB_USER) || return 1
+            source_pass=$(plak_multisite_wp "$source_dir/public" config get DB_PASSWORD) || return 1
+            if [ "$source_host" != "$DB_HOST:$DB_PORT" ] && { [ "$source_host" != "$DB_HOST" ] || [ "$DB_PORT" != 3306 ]; }; then
+                plak_ui_error 'Network cloning currently requires the configured local Plak database server.'; return 1
+            fi
+            if [ "$source_user" != "$DB_USER" ] || [ "$source_pass" != "$DB_PASSWORD" ]; then
+                plak_ui_error 'Network cloning currently requires the configured local Plak database credentials.'; return 1
+            fi
+        fi
     fi
 
     # mkdir without -p claims the destination exclusively, including races.
@@ -7816,26 +7977,34 @@ plak_site_clone() {
             return 1
         fi
 
-        # Preserve distinct home/siteurl values and local ports: read them from
-        # the copied database, then map the source hostname to the destination.
-        local source_home source_siteurl dest_home dest_siteurl
-        source_home=$( (cd "$dest_dir/public" && "$wp_cmd" option get home --skip-plugins --skip-themes 2>/dev/null) )
-        source_siteurl=$( (cd "$dest_dir/public" && "$wp_cmd" option get siteurl --skip-plugins --skip-themes 2>/dev/null) )
-        dest_home=$(printf '%s' "$source_home" | sed "s|$source\.localhost|$destination.localhost|g")
-        dest_siteurl=$(printf '%s' "$source_siteurl" | sed "s|$source\.localhost|$destination.localhost|g")
-        [ -n "$dest_home" ] || dest_home=$(url_for "$full_hostname")
-        [ -n "$dest_siteurl" ] || dest_siteurl=$(url_for "$full_hostname")
+        if [ "$network_mode" != single ]; then
+            if ! plak_multisite_rewrite "$dest_dir/public" "$source" "$destination"; then
+                plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+                return 1
+            fi
+            printf '%s\n' "$network_mode" > "$dest_dir/.multisite-mode" || return 1
+        else
+            rm -f "$dest_dir/.multisite-mode"
+            # Preserve distinct home/siteurl values and local ports: read them from
+            # the copied database, then map the source hostname to the destination.
+            local source_home source_siteurl dest_home dest_siteurl
+            source_home=$( (cd "$dest_dir/public" && "$wp_cmd" option get home --skip-plugins --skip-themes 2>/dev/null) )
+            source_siteurl=$( (cd "$dest_dir/public" && "$wp_cmd" option get siteurl --skip-plugins --skip-themes 2>/dev/null) )
+            dest_home=$(printf '%s' "$source_home" | sed "s|$source\.localhost|$destination.localhost|g")
+            dest_siteurl=$(printf '%s' "$source_siteurl" | sed "s|$source\.localhost|$destination.localhost|g")
+            [ -n "$dest_home" ] || dest_home=$(url_for "$full_hostname")
+            [ -n "$dest_siteurl" ] || dest_siteurl=$(url_for "$full_hostname")
 
-        if ! (cd "$dest_dir/public" && "$wp_cmd" search-replace "$source_siteurl" "$dest_siteurl" --all-tables --report-changed-only --skip-plugins --skip-themes &&
-              "$wp_cmd" search-replace "$source_home" "$dest_home" --all-tables --report-changed-only --skip-plugins --skip-themes &&
-              "$wp_cmd" option update home "$dest_home" --skip-plugins --skip-themes &&
-              "$wp_cmd" option update siteurl "$dest_siteurl" --skip-plugins --skip-themes); then
-            echo "Error: failed to rewrite the cloned site URLs." >&2
-            plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
-            return 1
+            if ! (cd "$dest_dir/public" && "$wp_cmd" search-replace "$source_siteurl" "$dest_siteurl" --all-tables --report-changed-only --skip-plugins --skip-themes &&
+                  "$wp_cmd" search-replace "$source_home" "$dest_home" --all-tables --report-changed-only --skip-plugins --skip-themes &&
+                  "$wp_cmd" option update home "$dest_home" --skip-plugins --skip-themes &&
+                  "$wp_cmd" option update siteurl "$dest_siteurl" --skip-plugins --skip-themes); then
+                echo "Error: failed to rewrite the cloned site URLs." >&2
+                plak_site_clone_cleanup "$dest_dir" "$dest_db" "$db_created"
+                return 1
+            fi
         fi
     fi
-
     # --- Independent state: no remote binding, no exclusive domains, empty logs ---
     # A cloned mappings file would repoint the source's exclusive domains at the
     # copy and collide, so it is intentionally dropped.
@@ -7864,7 +8033,7 @@ plak_site_clone() {
 
     # A clone of an agent-ready site should stay agent-ready; prepare when
     # possible and otherwise say how, without failing the clone.
-    if [ "$is_wordpress" = true ]; then
+    if [ "$is_wordpress" = true ] && [ "$network_mode" = single ]; then
         plak_agent_maybe_prepare "$destination"
     fi
 
@@ -8138,7 +8307,7 @@ plak_site_db_list() {
     local wp_path
     wp_path=$(plak_wp_resolve_phar) || return 1
     local frank
-    frank=$(command -v frankenphp)
+    frank=$(command -v frankenphp) || return 1
     local php_output
     php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
@@ -8157,45 +8326,64 @@ plak_site_db_list() {
         $wp_path = getenv("WP_PATH");
         $frank_bin = getenv("FRANK_BIN");
         $json_mode = getenv("JSON_MODE") === "true";
-        $wp_invoker = escapeshellarg($frank_bin) . " php-cli " . escapeshellarg($wp_path);
-
         if (!is_dir($sites_dir)) {
             if ($json_mode) echo "[]\n";
             exit;
         }
 
+        function wpConfig(string $key, string $public): string {
+            global $frank_bin, $wp_path, $wp_root_flag;
+            $args = [$frank_bin, "php-cli", $wp_path];
+            if ($wp_root_flag) $args[] = $wp_root_flag;
+            array_push($args, "config", "get", $key, "--skip-plugins", "--skip-themes", "--quiet");
+            $pipes = [];
+            $proc = proc_open($args, [0 => ["pipe", "r"], 1 => ["pipe", "w"], 2 => ["pipe", "w"]], $pipes, $public);
+            if (!is_resource($proc)) throw new RuntimeException("Cannot execute WP-CLI for " . basename(dirname($public)));
+            fclose($pipes[0]);
+            $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+            stream_get_contents($pipes[2]); fclose($pipes[2]);
+            if (proc_close($proc) !== 0) throw new RuntimeException("Cannot read $key for " . basename(dirname($public)));
+            return trim($out);
+        }
         try {
-            $pdo = new PDO("mysql:host={$db_host};port={$db_port}", $db_user, $db_pass, [PDO::ATTR_TIMEOUT => 2]);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        } catch (PDOException $e) { exit; }
 
         $sites_info = [];
         foreach (scandir($sites_dir) as $item) {
             $public_dir = $sites_dir . "/" . $item . "/public";
             if (is_file($public_dir . "/wp-config.php")) {
                 $site_name = str_replace(".localhost", "", $item);
-                $public_dir_esc = escapeshellarg($public_dir);
-                $cmd_suffix = " " . $wp_root_flag . " --skip-plugins --skip-themes --quiet 2>/dev/null";
-                
-                $name_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_NAME" . $cmd_suffix);
-                if (is_null($name_raw)) { continue; }
-                $site_db_name = trim($name_raw);
-                if (empty($site_db_name)) { continue; }
+                $site_db_name = wpConfig("DB_NAME", $public_dir);
+                if ($site_db_name === "") throw new RuntimeException("Empty DB_NAME for $site_name");
 
                 $site_db_user = "N/A";
                 $site_db_pass = "N/A";
                 $size_str = "N/A";
 
                 if (!str_contains(strtolower($site_db_name), "sqlite")) {
-                    $user_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_USER" . $cmd_suffix);
-                    if (!is_null($user_raw)) { $site_db_user = trim($user_raw); }
-
-                    $pass_raw = shell_exec("cd " . $public_dir_esc . " && " . $wp_invoker . " config get DB_PASSWORD" . $cmd_suffix);
-                    if (!is_null($pass_raw)) { $site_db_pass = trim($pass_raw); }
-                    
-                    $stmt = $pdo->prepare("SELECT SUM(data_length + index_length) as size FROM information_schema.TABLES WHERE table_schema = ?");
-                    $stmt->execute([$site_db_name]);
-                    $size_bytes = $stmt->fetch(PDO::FETCH_ASSOC)["size"] ?? 0;
+                    if (!class_exists("mysqli")) throw new RuntimeException("mysqli is unavailable; reinstall FrankenPHP with MySQL support.");
+                    $site_db_user = wpConfig("DB_USER", $public_dir);
+                    $site_db_pass = wpConfig("DB_PASSWORD", $public_dir);
+                    $site_db_host = wpConfig("DB_HOST", $public_dir);
+                    $host = $site_db_host ?: $db_host; $port = (int)$db_port; $socket = null;
+                    if (preg_match("/^\\[([^]]+)\\](?::([0-9]+))?(?::(.*))?$/", $host, $parts)) {
+                        $host = $parts[1]; $port = empty($parts[2]) ? $port : (int)$parts[2]; $socket = $parts[3] ?? null;
+                    } elseif (str_contains($host, ":")) {
+                        $parts = explode(":", $host, 3); $host = $parts[0];
+                        if (ctype_digit($parts[1])) { $port = (int)$parts[1]; $socket = $parts[2] ?? null; }
+                        else $socket = $parts[1];
+                    }
+                    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+                    $db = mysqli_init();
+                    $db->options(MYSQLI_OPT_CONNECT_TIMEOUT, 3);
+                    try {
+                        $db->real_connect($host, $site_db_user, $site_db_pass, null, $port, $socket);
+                        $stmt = $db->prepare("SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.TABLES WHERE table_schema = ?");
+                        $stmt->bind_param("s", $site_db_name); $stmt->execute();
+                        $size_bytes = 0; $stmt->bind_result($size_bytes); $stmt->fetch();
+                        $stmt->close(); $db->close();
+                    } catch (Throwable $error) {
+                        throw new RuntimeException("Database connection/query failed for $site_name ($host:$port), code " . $error->getCode());
+                    }
                     $size_str = formatSize((int)$size_bytes);
                 }
 
@@ -8233,7 +8421,10 @@ plak_site_db_list() {
             $output[] = $row;
         }
         echo implode("\n", $output);
-    ')
+        } catch (Throwable $error) {
+            fwrite(STDERR, "Error: " . $error->getMessage() . "\n"); exit(1);
+        }
+    ') || return 1
 
     if [ -z "$php_output" ]; then
         if [ "$json_mode" = true ]; then
@@ -9885,6 +10076,7 @@ plak_site_lan_enable() {
     fi
     
     local lan_config="$site_dir/lan_config"
+    plak_multisite_require_single "$site_dir/public" 'IP-based LAN access' || return 1
     
     if [ -f "$lan_config" ]; then
         local existing_port
@@ -10151,12 +10343,21 @@ plak_site_list() {
             if (is_dir($site_path)) {
                 $public_path = $site_path . "/public";
                 $size = $show_totals && is_dir($public_path) ? formatSize(getDirectorySize($public_path)) : null;
+                $network = null;
+                if (is_file($site_path . "/.multisite-mode")) {
+                    $cmd = escapeshellarg(getenv("PLAK_SITE_CMD") ?: "plak") . " network " . escapeshellarg(str_replace(".localhost", "", $item)) . " --json";
+                    exec($cmd . " 2>/dev/null", $network_lines, $network_code);
+                    if ($network_code === 0) $network = json_decode(implode("\n", $network_lines), true);
+                    $network_lines = [];
+                }
                 $sites[] = [
                     "name" => str_replace(".localhost", "", $item),
                     "domain" => "https://" . $item . $port_suffix,
                     "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Plain",
                     "size" => $size,
                     "agent_ready" => file_exists($site_path . "/agent-ready"),
+                    "multisite_mode" => is_file($site_path . "/.multisite-mode") ? trim(file_get_contents($site_path . "/.multisite-mode")) : null,
+                    "network" => $network,
                 ];
             }
         }
@@ -10189,7 +10390,7 @@ plak_site_list() {
         $domain_width = max(array_map(fn($s) => strlen($s["domain"]), $sites));
         $domain_width = max($domain_width, 6) + $gap;
         
-        $type_width = $show_totals ? 9 + $gap : 10; // "WordPress" + gap or padding
+        $type_width = 22 + $gap;
 
         $agent_width = 7 + $gap; // "Agent" column
 
@@ -10230,7 +10431,7 @@ plak_site_list() {
         foreach ($sites as $site) {
             $row = $pink . $v . $reset . " " . str_pad($site["name"], $name_width - 1);
             $row .= str_pad($site["domain"], $domain_width);
-            $row .= str_pad($site["type"], $type_width);
+            $row .= str_pad($site["multisite_mode"] ? "Multisite (" . $site["multisite_mode"] . ")" : $site["type"], $type_width);
             $row .= str_pad($site["agent_ready"] ? "ready" : "-", $agent_width);
             if ($show_totals) {
                 $row .= str_pad($site["size"] ?? "N/A", $size_width);
@@ -10259,6 +10460,7 @@ plak_site_list() {
         fi
     fi
 }
+
 # Source: commands/site/log
 plak_site_log() {
     local site_name=""
@@ -10348,20 +10550,29 @@ plak_site_log() {
 plak_site_login() {
     local raw_mode=false
     local positional=()
+    local subsite="" arg
 
-    for arg in "$@"; do
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
         case "$arg" in
+            --subsite) [ "$#" -ge 2 ] || { plak_ui_error '--subsite requires an ID.'; return 1; }; subsite="$2"; shift ;;
             --raw|-r) raw_mode=true ;;
             -h|--help)
-                echo "Usage: plak login <site> [<user>] [--raw]"
+                echo "Usage: plak login <site> [<user>] [--subsite <id>] [--raw]"
                 exit 0
                 ;;
             *) positional+=("$arg") ;;
         esac
+        shift
     done
 
     local site_name="${positional[0]:-}"
     local user_identifier="${positional[1]:-}"
+    [ "${#positional[@]}" -le 2 ] || { plak_ui_error 'Unexpected login arguments.'; return 1; }
+    if [ -n "$subsite" ]; then
+        plak_multisite_login "$site_name" "$subsite" "$user_identifier" "$raw_mode"
+        return $?
+    fi
 
     # 1. Validate that a site name was provided.
     if [ -z "$site_name" ]; then
@@ -10804,6 +11015,96 @@ plak_site_memory_set() {
 
     echo ""
     gum style --foreground green "✅ Done. Run 'plak memory' to verify."
+}
+
+# Source: commands/site/network
+# shellcheck disable=SC2016 # WordPress eval programs are literal PHP.
+plak_network_usage() {
+    echo 'Usage: plak network <site> [--json]'
+    echo '       plak network create <site> <slug> [--title <title>]'
+    echo '       plak login <site> [<user>] --subsite <id> [--raw]'
+}
+
+plak_network() {
+    local action=inspect site slug="" title="" json=false
+    [ "${1:-}" != create ] || { action=create; shift; }
+    case "${1:-}" in -h|--help|"") plak_network_usage; return 0 ;; esac
+    site="${1%.localhost}"; shift
+    plak_validate_site_name "$site" || { plak_ui_error 'Invalid site name.'; return 1; }
+    local public="$SITES_DIR/$site.localhost/public" mode
+    [ -f "$public/wp-config.php" ] || { plak_ui_error 'WordPress site not found.'; return 1; }
+    mode=$(plak_multisite_mode "$public") || return 1
+    [ "$mode" != single ] || { plak_ui_error 'This site is not a multisite network.'; return 1; }
+    if [ "$action" = create ]; then
+        slug="${1:-}"; [ "$#" -eq 0 ] || shift
+        plak_validate_site_name "$slug" || { plak_ui_error 'A valid lowercase subsite slug is required.'; return 1; }
+        if [ "${1:-}" = --title ] && [ "$#" -ge 2 ]; then title="$2"; shift 2; fi
+        [ "$#" -eq 0 ] || { plak_network_usage >&2; return 1; }
+        plak_multisite_validate_local "$public" "$site" || return 1
+        local created
+        created=$(plak_multisite_wp "$public" site create "--slug=$slug" "--title=${title:-$slug}" --porcelain) || return 1
+        [[ "$created" =~ ^[1-9][0-9]*$ ]] || { plak_ui_error 'WordPress did not return a subsite ID.'; return 1; }
+        # WordPress initializes new multisite home/siteurl options with http
+        # even when the parent uses HTTPS. Normalize only this new subsite.
+        PLAK_MS_ID="$created" plak_multisite_wp "$public" eval '
+            switch_to_blog((int)getenv("PLAK_MS_ID"));
+            foreach(["home","siteurl"] as $key) {
+                $url=set_url_scheme(get_option($key),"https");
+                update_option($key,$url);
+                if(get_option($key)!==$url) WP_CLI::error("Subsite HTTPS configuration failed.");
+            }
+            restore_current_blog();
+        ' --skip-plugins --skip-themes || return 1
+        echo "Created subsite #$created."
+        if [ "$(cat "$public/../.multisite-mode" 2>/dev/null || true)" != "$mode" ]; then
+            printf '%s\n' "$mode" > "$public/../.multisite-mode" || return 1
+            regenerate_caddyfile || return 1
+        fi
+    else
+        if [ "${1:-}" = --json ]; then json=true; shift; fi
+        [ "$#" -eq 0 ] || { plak_network_usage >&2; return 1; }
+    fi
+    PLAK_MS_JSON="$json" plak_multisite_wp "$public" eval '
+        $network=get_network(); $sites=[];
+        foreach(get_sites(["number"=>0,"network_id"=>$network->id]) as $site) {
+            $sites[]=["id"=>(int)$site->blog_id,"url"=>get_site_url($site->blog_id),"domain"=>$site->domain,"path"=>$site->path];
+        }
+        $report=["multisite"=>true,"mode"=>is_subdomain_install()?"subdomains":"subdirectories","network_id"=>(int)$network->id,"domain"=>$network->domain,"path"=>$network->path,"sites"=>$sites];
+        if(getenv("PLAK_MS_JSON")==="true") echo wp_json_encode($report);
+        else {echo "Network: ".$report["mode"]."\n"; foreach($sites as $site) echo $site["id"]."\t".$site["url"]."\n";}
+    ' --skip-plugins --skip-themes
+}
+
+plak_multisite_login() {
+    local site="$1" id="$2" user="$3" raw="$4" public="$SITES_DIR/$1.localhost/public" url login
+    if ! plak_validate_site_name "$site" || ! [[ "$id" =~ ^[1-9][0-9]*$ ]]; then
+        plak_ui_error 'Invalid network site or subsite ID.'; return 1
+    fi
+    [ -f "$public/wp-config.php" ] || { plak_ui_error 'WordPress network not found.'; return 1; }
+    plak_multisite_validate_local "$public" "$site" || return 1
+    url=$(PLAK_MS_ID="$id" PLAK_MS_HOST="$site.localhost" PLAK_MS_HTTPS_PORT="$HTTPS_PORT" plak_multisite_wp "$public" eval '
+        $site=get_site((int)getenv("PLAK_MS_ID"));
+        if(!$site || (int)$site->site_id !== get_current_network_id()) WP_CLI::error("Unknown subsite in this network.");
+        $url=untrailingslashit(get_site_url($site->blog_id)); $parts=wp_parse_url($url); $host=getenv("PLAK_MS_HOST");
+        if(($parts["scheme"]??"")!=="https" || (($parts["host"]??"")!==$host && !str_ends_with($parts["host"]??"",".".$host))
+            || ($parts["host"]??"")!==explode(":",$site->domain)[0]
+            || (int)($parts["port"]??443)!==(int)getenv("PLAK_MS_HTTPS_PORT")
+            || untrailingslashit($parts["path"]??"/")!==untrailingslashit($site->path)) WP_CLI::error("External or mismatched subsite URL rejected.");
+        echo $url;
+    ' --skip-plugins --skip-themes) || return 1
+    # URL is derived and validated in WordPress, not accepted from the caller.
+    if [ -z "$user" ]; then
+        user=$(plak_multisite_wp "$public" user list --role=administrator --field=user_login --url="$url" --skip-plugins --skip-themes | head -1) || return 1
+    fi
+    [ -n "$user" ] || { plak_ui_error 'No administrator found for this subsite.'; return 1; }
+    PLAK_MS_USER="$user" PLAK_MS_ID="$id" plak_multisite_wp "$public" eval '
+        $value=getenv("PLAK_MS_USER"); $user=is_numeric($value)?get_user_by("id",$value):(is_email($value)?get_user_by("email",$value):get_user_by("login",$value));
+        if(!$user || (!is_super_admin($user->ID) && !is_user_member_of_blog($user->ID,(int)getenv("PLAK_MS_ID")))) WP_CLI::error("User is not a member of the selected subsite.");
+    ' --url="$url" --skip-plugins --skip-themes || return 1
+    inject_mu_plugin "$public" >/dev/null || return 1
+    login=$(plak_multisite_wp "$public" user login "$user" --url="$url" --skip-plugins --skip-themes) || return 1
+    [[ "$login" = "$url/"* ]] || { plak_ui_error 'Unexpected subsite login URL.'; return 1; }
+    if [ "$raw" = true ]; then printf '%s\n' "$login"; else plak_terminal_link "$login"; fi
 }
 
 # Source: commands/site/path
@@ -11364,6 +11665,9 @@ plak_site_pull() {
             *) site_name="$1"; shift 1 ;;
         esac
     done
+    if [ -n "$site_name" ]; then
+        plak_multisite_require_single "$SITES_DIR/$site_name.localhost/public" 'Pull' || return 1
+    fi
 
     # Define quiet SSH options to prevent host key warnings. ControlMaster
     # shares a single authenticated connection across every ssh call below
@@ -11554,6 +11858,7 @@ plak_site_pull() {
     fi
 
     dest_path="$SITES_DIR/$site_name.localhost/public"
+    plak_multisite_require_single "$dest_path" 'Pull' || return 1
     local_url="$(url_for "$site_name.localhost")"
 
     # Capture both destination URLs while its database is still intact. A new
@@ -11720,6 +12025,9 @@ plak_site_push() {
             *) site_name="$1"; shift 1 ;;
         esac
     done
+    if [ -n "$site_name" ]; then
+        plak_multisite_require_single "$SITES_DIR/$site_name.localhost/public" 'Push' || return 1
+    fi
 
     # --- UI/Logging Functions ---
     log_step() {
@@ -11773,6 +12081,7 @@ plak_site_push() {
     fi
 
     local local_path="$SITES_DIR/$site_name.localhost/public"
+    plak_multisite_require_single "$local_path" 'Push' || return 1
     local local_home local_siteurl wp_cmd
     wp_cmd=$(get_wp_cmd)
     local_home=$( (cd "$local_path" && $wp_cmd option get home --skip-plugins --skip-themes 2>/dev/null) || true)
@@ -11978,8 +12287,8 @@ plak_site_reload() {
 
 # Source: commands/site/rename
 plak_site_rename() {
-    local old_name="$1"
-    local new_name="$2"
+    local old_name="${1:-}"
+    local new_name="${2:-}"
 
     # --- Validation ---
     if [ -z "$old_name" ] || [ -z "$new_name" ]; then
@@ -12019,6 +12328,15 @@ plak_site_rename() {
     if [ -d "$new_site_dir" ]; then
         gum style --foreground red "❌ Error: A site named '$new_name.localhost' already exists."
         exit 1
+    fi
+    if [ -f "$old_site_dir/.multisite-mode" ] || { [ -f "$old_site_dir/public/wp-config.php" ] && grep -q MULTISITE "$old_site_dir/public/wp-config.php"; }; then
+        local mode
+        mode=$(plak_multisite_mode "$old_site_dir/public") || return 1
+        if [ "$mode" != single ]; then
+            mkdir -p "$PLAK_SITE_DIR/cache" || return 1
+            plak_multisite_rename "$old_name" "$new_name"
+            return $?
+        fi
     fi
 
     echo "🔄 Renaming '$old_name.localhost' to '$new_name.localhost'..."
@@ -12148,6 +12466,7 @@ plak_site_share() {
     fi
     
     local local_hostname="${site_name}.localhost"
+    plak_multisite_require_single "$site_dir/public" 'Quick tunnel sharing' || return 1
     
     # --- 2. Check for cloudflared (install on-demand if missing) ---
     if ! command -v cloudflared &> /dev/null; then
@@ -12716,6 +13035,7 @@ plak_snapshot_restore() {
 
     local site_dir
     site_dir=$(plak_snapshot_require_site "$site") || return 1
+    plak_multisite_require_single "$site_dir/public" 'Snapshot restore' || return 1
     if ! plak_snapshot_valid_id "$id"; then
         echo "Error: invalid snapshot id '$id'." >&2
         return 1
@@ -13099,7 +13419,7 @@ plak_site_tailscale() {
 # keeps in the user profile and falling back to the system-trust copy.
 plak_site_caddy_root_cert() {
     local root_cert
-    root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
+    root_cert=$(find "${XDG_DATA_HOME:-$HOME/.local/share}/caddy/pki/authorities/local" \
         -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
     if [ -z "$root_cert" ]; then
         root_cert=$(find /usr/local/share/ca-certificates \
@@ -13108,33 +13428,110 @@ plak_site_caddy_root_cert() {
     [ -n "$root_cert" ] && [ -r "$root_cert" ] && printf '%s\n' "$root_cert"
 }
 
-# Append the Caddy root to every Homebrew CA bundle that exists. Idempotent by
-# marker: Plak owns the Caddy root, so a bundle already carrying one is left
-# alone. Homebrew's curl/OpenSSL reads these instead of the system store.
+# Browser databases are always updated as the invoking user, never via sudo.
+plak_site_trust_nss() {
+    local root_cert="$1" db profile prefix failed=0 discovery
+    local -a roots=()
+    for profile in "$HOME/.pki" "${XDG_DATA_HOME:-$HOME/.local/share}/pki" "$HOME/.mozilla/firefox" "$HOME/snap" "$HOME/.var/app"; do
+        [ ! -d "$profile" ] || roots+=("$profile")
+    done
+    [ "${#roots[@]}" -gt 0 ] || return 0
+    discovery=$(mktemp) || return 1
+    if ! find "${roots[@]}" -type f \( -name cert9.db -o -name cert8.db \) -print0 > "$discovery"; then
+        plak_ui_error 'Some browser profile directories could not be inspected.'; failed=1
+    fi
+    local -a profiles=()
+    while IFS= read -r -d '' db; do
+        profile=$(dirname "$db")
+        local seen=false item
+        for item in "${profiles[@]}"; do [ "$item" != "$profile" ] || seen=true; done
+        [ "$seen" = true ] || profiles+=("$profile")
+    done < "$discovery"
+    rm -f "$discovery"
+    [ "${#profiles[@]}" -gt 0 ] || return "$failed"
+    command -v certutil >/dev/null 2>&1 || { plak_ui_error 'certutil missing: browser profiles were not updated. Install libnss3-tools / nss-tools.'; return 1; }
+    for profile in "${profiles[@]}"; do
+        prefix=dbm
+        [ ! -f "$profile/cert9.db" ] || prefix=sql
+        echo "   - Trusting in $profile"
+        # Replace only Plak/Caddy-managed nicknames; retain unrelated roots.
+        for item in 'Plak Local Authority' 'Caddy Local Authority'; do
+            if certutil -L -d "$prefix:$profile" -n "$item" >/dev/null 2>&1; then
+                if ! certutil -D -d "$prefix:$profile" -n "$item"; then
+                    plak_ui_error "Could not remove stale CA from $profile"; failed=1
+                fi
+            fi
+        done
+        if ! certutil -A -d "$prefix:$profile" -n 'Plak Local Authority' -t 'C,,' -i "$root_cert"; then
+            plak_ui_error "Browser profile not updated: $profile"; failed=1
+        fi
+    done
+    return "$failed"
+}
+
+# Replace Plak's block and migrate legacy unmarked Caddy roots. Real PEM files
+# contain no readable subject name, so grep-only idempotence was insufficient.
 plak_site_trust_linuxbrew_bundles() {
     local brew_prefix="$1" root_cert="$2"
-    local bundle
+    local bundle failed=0 tmp line certificate subject capturing=false skipping=false
     for bundle in \
         "$brew_prefix/etc/ca-certificates/cert.pem" \
         "$brew_prefix/opt/openssl@3/etc/openssl@3/cert.pem" \
         "$brew_prefix/etc/openssl@3/cert.pem"; do
         [ -f "$bundle" ] || continue
-        if grep -q 'Caddy Local Authority' "$bundle" 2>/dev/null; then
-            continue
+        if [ -L "$bundle" ]; then
+            # This shared resolver handles BSD/GNU readlink without inspecting
+            # PHP content, and preserves the original bundle symlink.
+            bundle=$(plak_wp_realpath "$bundle") || { plak_ui_error 'Could not resolve Homebrew CA bundle symlink.'; failed=1; continue; }
         fi
-        if cat "$root_cert" >> "$bundle" 2>/dev/null; then
+        command -v openssl >/dev/null 2>&1 || { plak_ui_error "openssl missing; CA bundle not updated: $bundle"; failed=1; continue; }
+        tmp=$(mktemp "$bundle.plak.XXXXXX") || { failed=1; continue; }
+        cp -p "$bundle" "$tmp" || { rm -f "$tmp"; failed=1; continue; }
+        certificate=""; capturing=false; skipping=false
+        if ! (
+            while IFS= read -r line || [ -n "$line" ]; do
+                if [ "$line" = '# BEGIN PLAK LOCAL CA' ]; then skipping=true; continue; fi
+                if [ "$line" = '# END PLAK LOCAL CA' ]; then skipping=false; continue; fi
+                [ "$skipping" = false ] || continue
+                if [ "$line" = '-----BEGIN CERTIFICATE-----' ]; then certificate=""; capturing=true; fi
+                if [ "$capturing" = true ]; then
+                    certificate+="$line"$'\n'
+                    if [ "$line" = '-----END CERTIFICATE-----' ]; then
+                        subject=$(printf '%s' "$certificate" | openssl x509 -noout -subject 2>/dev/null) || subject=""
+                        if [[ "$subject" != *'Caddy Local Authority'* && "$certificate" != *'Caddy Local Authority'* ]]; then printf '%s' "$certificate"; fi
+                        capturing=false
+                    fi
+                else printf '%s\n' "$line"; fi
+            done < "$bundle"
+            # A malformed trailing certificate must not be silently discarded.
+            [ "$capturing" = false ] || printf '%s' "$certificate"
+            printf '\n# BEGIN PLAK LOCAL CA\n'
+            cat "$root_cert" || exit 1
+            printf '\n# END PLAK LOCAL CA\n'
+        ) > "$tmp"; then
+            rm -f "$tmp"; failed=1; continue
+        fi
+        if mv "$tmp" "$bundle"; then
             echo "   - Added Caddy root to Homebrew CA bundle: $bundle"
         else
+            rm -f "$tmp"
             gum style --foreground yellow "⚠️ Could not update Homebrew CA bundle: $bundle"
+            failed=1
         fi
     done
+    return "$failed"
 }
 
 plak_site_trust() {
     echo "🔐 Installing Plak's local root certificate..."
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        plak_ui_error 'Run plak trust without sudo; only the system-store step escalates privileges.'
+        return 1
+    fi
+    is_caddy_running || { plak_ui_error 'Plak server is unavailable. Run plak enable, then plak trust.'; return 1; }
 
     # FrankenPHP's trust subcommand writes the Caddy local root into the
-    # system store and any NSS DBs it displakrs at the standard paths. On
+    # system store and platform stores supported by Caddy. On
     # macOS that's the login keychain; on Linux it's /usr/local/share/ca-
     # certificates + ~/.pki/nssdb + ~/.mozilla/firefox/*.
     #
@@ -13165,56 +13562,40 @@ plak_site_trust() {
     echo "   - Running frankenphp trust..."
     local trust_output trust_rc=0
     if [ "$OS" = "linux" ]; then
-        trust_output=$($SUDO_CMD "$CADDY_CMD" trust 2>&1)
-        trust_rc=$?
+        trust_output=$($SUDO_CMD "$CADDY_CMD" trust 2>&1) || trust_rc=$?
     else
-        trust_output=$("$CADDY_CMD" trust 2>&1)
-        trust_rc=$?
+        trust_output=$("$CADDY_CMD" trust 2>&1) || trust_rc=$?
     fi
     echo "$trust_output" | grep -vE '^\{|^$' || true
+    if [ "$trust_rc" -ne 0 ]; then
+        plak_ui_error 'System trust installation failed; no total success reported.'
+        return "$trust_rc"
+    fi
 
     # Linux-only: Firefox and Chromium ship as snaps on Ubuntu 22+ and
     # store their NSS DBs under ~/snap/... — a path that neither Caddy nor
     # mkcert scans. Inject the root explicitly for each profile we find.
-    if [ "$OS" = "linux" ] && command -v certutil &>/dev/null; then
+    if [ "$OS" = "linux" ]; then
         local root_cert
-        root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
-            -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
-        # Fallback: the system-trust copy Caddy drops on first auto-install.
-        if [ -z "$root_cert" ]; then
-            root_cert=$(find /usr/local/share/ca-certificates \
-                -maxdepth 1 -name 'Caddy_Local_Authority*.crt' 2>/dev/null | head -1)
-        fi
+        root_cert=$(plak_site_caddy_root_cert) || root_cert=""
 
         if [ -n "$root_cert" ] && [ -r "$root_cert" ]; then
-            # Snap Firefox, snap Chromium, plus any other NSS DB under ~/snap.
-            # The sql: prefix tells certutil the DB is the modern cert9 format.
-            local db
-            while IFS= read -r db; do
-                [ -z "$db" ] && continue
-                local profile_dir
-                profile_dir=$(dirname "$db")
-                echo "   - Trusting in $(echo "$profile_dir" | sed "s|$HOME|~|")"
-                # Remove any prior entry under our nickname so re-runs don't
-                # layer stale copies, then add the current root.
-                certutil -D -d sql:"$profile_dir" -n "Plak Local Authority" 2>/dev/null || true
-                certutil -A -d sql:"$profile_dir" -n "Plak Local Authority" -t "C,," -i "$root_cert" 2>/dev/null || true
-            done < <(find "$HOME/snap" "$HOME/.mozilla/firefox" \
-                -name 'cert9.db' 2>/dev/null)
+            plak_site_trust_nss "$root_cert" || trust_rc=1
         else
-            gum style --foreground yellow "⚠️ Could not locate Caddy root.crt — snap Firefox/Chromium trust skipped."
+            plak_ui_error 'Could not locate current Caddy root.crt; browser trust was not updated.'
+            trust_rc=1
         fi
     fi
 
     # Linuxbrew ships its own curl/OpenSSL with a CA bundle that ignores the
     # system store, so tools like wp-mcp fail with curl exit 60 even after the
-    # root is trusted system-wide. Append the Caddy root to Homebrew's bundle.
+    # root is trusted system-wide. Replace the managed root in Homebrew bundles.
     if [ "$OS" = "linux" ] && command -v brew &>/dev/null; then
         local brew_prefix_linux brew_root
         brew_prefix_linux=$(brew --prefix 2>/dev/null || true)
         brew_root=$(plak_site_caddy_root_cert)
         if [ -n "$brew_prefix_linux" ] && [ -n "$brew_root" ]; then
-            plak_site_trust_linuxbrew_bundles "$brew_prefix_linux" "$brew_root"
+            plak_site_trust_linuxbrew_bundles "$brew_prefix_linux" "$brew_root" || trust_rc=1
         fi
     fi
 
@@ -13224,18 +13605,9 @@ plak_site_trust() {
             "✅ Local SSL trust installed" \
             "If a browser was open during this run, restart it to pick up the new CA."
     else
-        # Tailor the hint based on what frankenphp actually said — "connection
-        # refused" almost always means Caddy's admin API isn't up yet.
-        if echo "$trust_output" | grep -q "connection refused"; then
-            gum style --border normal --margin "1" --padding "1 2" --border-foreground yellow \
-                "⚠️ Trust install skipped — Plak server isn't running yet" \
-                "Run 'plak enable' then 'plak trust' to finish installing the local root."
-        else
-            gum style --border normal --margin "1" --padding "1 2" --border-foreground yellow \
-                "⚠️ Trust install did not complete" \
-                "Re-run 'plak trust' once Plak is running to try again."
-        fi
+        plak_ui_error 'Trust incomplete; see profile/bundle errors above. Close browsers and retry after resolving those errors.'
     fi
+    return "$trust_rc"
 }
 
 # Source: commands/site/upgrade

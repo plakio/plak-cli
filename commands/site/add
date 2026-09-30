@@ -19,10 +19,14 @@ plak_site_add() (
     # Every mandatory step is checked explicitly: main disables errexit for
     # legacy site commands, and an outer conditional can disable it too.
     local site_name="" site_type="wordpress" no_reload_flag=false agent_mode=""
-    local agent_flag="" arg wp_version="latest" version_flag=false
+    local agent_flag="" arg wp_version="latest" version_flag=false multisite=""
     while [ "$#" -gt 0 ]; do
         arg="$1"
         case "$arg" in
+            --multisite)
+                [ "$#" -ge 2 ] || { echo 'Error: --multisite requires subdomains or subdirectories.' >&2; exit 1; }
+                multisite="$2"; shift
+                [[ "$multisite" = subdomains || "$multisite" = subdirectories ]] || { echo 'Error: invalid multisite mode.' >&2; exit 1; } ;;
             --wp-version)
                 [ "$#" -ge 2 ] || { echo 'Error: --wp-version requires latest, nightly or a release number.' >&2; exit 1; }
                 wp_version="$2"; version_flag=true; shift ;;
@@ -42,6 +46,13 @@ plak_site_add() (
         esac
         shift
     done
+    if [ -n "$multisite" ] && [ "$site_type" = plain ]; then
+        echo 'Error: --multisite cannot be combined with --plain.' >&2; exit 1
+    fi
+    if [ -n "$multisite" ]; then
+        if [ "$agent_flag" = true ]; then echo 'Error: automatic agent preparation has no multisite scope; use explicit network/subsite WP-CLI commands.' >&2; exit 1; fi
+        agent_flag=false; agent_mode=false
+    fi
     plak_core_version_valid "$wp_version" || { echo "Error: invalid WordPress version '$wp_version'; use latest, nightly or a release such as 6.8.1." >&2; exit 1; }
     if [ "$version_flag" = true ] && [ "$site_type" = plain ]; then
         echo 'Error: --wp-version applies only to WordPress sites; omit it with --plain.' >&2
@@ -140,6 +151,12 @@ PHP
             [ -s wp-config.php ] || { echo "Error: WP-CLI did not create wp-config.php." >&2; exit 1; }
             "${PLAK_WP_COMMAND[@]}" core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email || exit 1
             "${PLAK_WP_COMMAND[@]}" core is-installed --skip-plugins --skip-themes || exit 1
+            if [ -n "$multisite" ]; then
+                local network_flags=()
+                [ "$multisite" != subdomains ] || network_flags+=(--subdomains)
+                "${PLAK_WP_COMMAND[@]}" core multisite-convert "${network_flags[@]}" || exit 1
+                printf '%s\n' "$multisite" > "$site_dir/.multisite-mode" || exit 1
+            fi
             echo "   - Deleting default plugins (Hello Dolly, Akismet)..."
             "${PLAK_WP_COMMAND[@]}" plugin delete hello akismet --quiet || exit 1
         ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2); then

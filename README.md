@@ -372,6 +372,10 @@ plak sshkey delete
 - Non-interactive list/status commands fall back to plain output for scripts and tests.
 - `plak.sh` is generated from `main`, `shared/`, and `commands/`.
 ## WordPress core versions and stack health
+Multisite: see [local network management](docs/multisite.md) for creation,
+subsites, network-aware clone/rename and supported boundaries. Linux database
+listing and browser CA trust are described in [Linux compatibility](docs/linux-compatibility.md).
+
 
 ```bash
 plak add compatibility --wp-version 6.8.1

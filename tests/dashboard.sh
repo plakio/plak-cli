@@ -569,4 +569,12 @@ grep -q 'This answers only on the machine running Plak' plak.sh || fail "admin h
 grep -q 'remote_ip private_ranges' plak.sh || fail "WSL private-range handling is missing"
 grep -q "remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1" plak.sh || fail "Tailscale admin guard is missing"
 
+# Network mutations without an explicit scope are refused before execution.
+printf 'subdomains\n' > "$SITES_DIR/demo.localhost/.multisite-mode"
+: > "$WP_CALLS"
+for action in site_plugin_op site_theme_op site_cron_run; do
+    network_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' -H 'Content-Type: application/json' --data "{\"action\":\"$action\",\"site_name\":\"demo\",\"op\":\"delete\",\"slug\":\"hello\",\"csrf\":\"$token\"}" "$base/api.php")
+    grep -q 'no network' <<< "$network_out" || fail "network mutation was not refused: $network_out"
+done
+if grep -q 'plugin delete\|theme delete\|cron event run' "$WP_CALLS"; then fail 'network refusal changed data'; fi
 echo "Dashboard regression tests passed."

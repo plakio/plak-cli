@@ -63,6 +63,7 @@ plak_site_share() {
     fi
     
     local local_hostname="${site_name}.localhost"
+    plak_multisite_require_single "$site_dir/public" 'Quick tunnel sharing' || return 1
     
     # --- 2. Check for cloudflared (install on-demand if missing) ---
     if ! command -v cloudflared &> /dev/null; then

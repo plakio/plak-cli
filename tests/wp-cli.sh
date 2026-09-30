@@ -60,6 +60,7 @@ case "$stage" in
         touch .installed
         ;;
     'core is-installed') test -f .installed ;;
+    'core multisite-convert') printf '%s\n' "$@" > "$WP_ARGV_LOG.network" ;;
     'plugin delete') ;;
     'user login')
         [ "${FAIL_STAGE:-}" != empty-login ] || exit 0
@@ -239,6 +240,18 @@ for version in nope ../6.8 --force; do
     [ ! -e "$SITES_DIR/invalid.localhost" ] || fail 'created invalid-version resources'
 done
 if ./plak.sh add invalid --plain --wp-version nightly --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted WP version with plain'; fi
+for mode in subdomains subdirectories; do
+    ./plak.sh add "network-$mode" --multisite "$mode" --no-agent --no-reload >"$tmpdir/out" 2>"$tmpdir/err"
+    [ "$(cat "$SITES_DIR/network-$mode.localhost/.multisite-mode")" = "$mode" ] || fail 'lost network routing mode'
+    if [ "$mode" = subdomains ]; then grep -q -- --subdomains "$WP_ARGV_LOG.network" || fail 'lost subdomain option';
+    else if grep -q -- --subdomains "$WP_ARGV_LOG.network"; then fail 'enabled subdomains for a directory network'; fi; fi
+done
+export FAIL_STAGE='core multisite-convert'
+if ./plak.sh add network-fail --multisite subdomains --no-agent --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'ignored failed network conversion'; fi
+[ ! -e "$SITES_DIR/network-fail.localhost" ] || fail 'left files after failed network conversion'
+[ ! -e "$TEST_DATABASES/plak_site_network_fail_" ] || fail 'left database after failed network conversion'
+unset FAIL_STAGE
+if ./plak.sh add invalid --multisite subdomains --plain --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted plain multisite'; fi
 
 # Failure after a completed install must keep the valid site for reload retry.
 regenerate_caddyfile() { return 19; }

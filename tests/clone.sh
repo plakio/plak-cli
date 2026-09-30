@@ -64,6 +64,7 @@ cat > "$fake_wp" <<'FAKE_WP'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$WP_TEST_LOG"
 case "$*" in
+    'eval echo is_multisite()'*) echo single ;;
     "config get DB_NAME"*) echo "custom_source_db" ;;
     "option get home"*) echo "https://src.localhost:8453/wp" ;;
     "option get siteurl"*) echo "https://src.localhost:8453" ;;

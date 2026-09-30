@@ -1,0 +1,75 @@
+# shellcheck disable=SC2016 # Single-quoted eval programs are PHP, not shell.
+# Authoritative network queries use WordPress, never a marker file alone.
+plak_multisite_wp() (
+    local public="$1" wp_cmd
+    shift
+    wp_cmd=$(get_wp_cmd) || return 1
+    [ -n "$wp_cmd" ] || return 1
+    cd "$public" || return 1
+    "$wp_cmd" "$@"
+)
+
+plak_multisite_mode() {
+    local mode
+    mode=$(plak_multisite_wp "$1" eval 'echo is_multisite() ? (is_subdomain_install() ? "subdomains" : "subdirectories") : "single";' --skip-plugins --skip-themes) || return 1
+    case "$mode" in single|subdomains|subdirectories) printf '%s\n' "$mode" ;; *) plak_ui_error 'Cannot determine WordPress network mode.'; return 1 ;; esac
+}
+
+plak_multisite_require_single() {
+    local public="$1" action="$2" mode
+    [ -f "$public/wp-config.php" ] || return 0
+    # Ordinary configs avoid an extra bootstrap; a marker or a MULTISITE
+    # declaration requires an authoritative check, failing closed on errors.
+    if [ ! -f "$public/../.multisite-mode" ] && ! grep -q MULTISITE "$public/wp-config.php"; then return 0; fi
+    mode=$(plak_multisite_mode "$public") || return 1
+    [ "$mode" = single ] || { plak_ui_error "$action does not support multisite; no data was modified."; return 1; }
+}
+
+plak_multisite_rename() (
+    local old="$1" new="$2" source="$SITES_DIR/$1.localhost" recovery binding
+    # Reuse the independently-created clone transaction. Failed provisioning
+    # cannot affect the source; retain the source DB/files as recovery on rename.
+    (plak_site_clone "$old" "$new" --yes --no-reload) || return 1
+    recovery=$(mktemp -d "$PLAK_SITE_DIR/cache/rename-recovery.XXXXXX") || return 1
+    for binding in .remote mappings; do
+        if [ -f "$source/$binding" ]; then cp "$source/$binding" "$SITES_DIR/$new.localhost/$binding" || return 1; fi
+    done
+    mv "$source" "$recovery/$old.localhost" || return 1
+    if [ -f "$CUSTOM_CADDY_DIR/$old.localhost" ]; then
+        mv "$CUSTOM_CADDY_DIR/$old.localhost" "$recovery/directives" || return 1
+    fi
+    printf '%s\n' "$recovery" > "$SITES_DIR/$new.localhost/rename-recovery" || return 1
+    regenerate_caddyfile || return 1
+    echo "Network renamed to $new.localhost; original database retained for recovery in $recovery."
+)
+
+# Reject mapped domains/multiple networks before any resource is modified.
+plak_multisite_validate_local() {
+    PLAK_MS_HOST="$2.localhost" plak_multisite_wp "$1" eval '
+        global $wpdb;
+        if (!is_multisite()) WP_CLI::error("Expected a multisite network.");
+        $host=getenv("PLAK_MS_HOST"); $network=get_network();
+        if ((int)$wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->site}") !== 1) WP_CLI::error("Multiple networks are not supported.");
+        if (explode(":", $network->domain)[0] !== $host || $network->path !== "/") WP_CLI::error("Only a local root network is supported.");
+        foreach (get_sites(["number"=>0,"network_id"=>$network->id]) as $site) {
+            $domain=explode(":",$site->domain)[0];
+            if ($domain !== $host && !str_ends_with($domain,".".$host)) WP_CLI::error("External/domain-mapped subsites are unsupported.");
+        }
+    ' --skip-plugins --skip-themes
+}
+
+plak_multisite_rewrite() {
+    local public="$1" old="$2" new="$3" domain value key
+    domain=$(plak_multisite_wp "$public" config get DOMAIN_CURRENT_SITE) || return 1
+    [[ "$domain" = "$old.localhost" || "$domain" = "$old.localhost:"* ]] || { plak_ui_error 'Unexpected network domain constant.'; return 1; }
+    plak_multisite_wp "$public" search-replace "(?<![A-Za-z0-9-])${old}\\.localhost(?![A-Za-z0-9.-])" "$new.localhost" \
+        --regex --regex-flags=i --network --all-tables-with-prefix --precise --skip-plugins --skip-themes || return 1
+    plak_multisite_wp "$public" config set DOMAIN_CURRENT_SITE "${domain/$old.localhost/$new.localhost}" --quiet || return 1
+    for key in WP_HOME WP_SITEURL; do
+        if plak_multisite_wp "$public" config has "$key" >/dev/null 2>&1; then
+            value=$(plak_multisite_wp "$public" config get "$key") || return 1
+            plak_multisite_wp "$public" config set "$key" "${value//$old.localhost/$new.localhost}" --quiet || return 1
+        fi
+    done
+    plak_multisite_validate_local "$public" "$new" || return 1
+}

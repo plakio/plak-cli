@@ -257,6 +257,7 @@ plak_snapshot_restore() {
 
     local site_dir
     site_dir=$(plak_snapshot_require_site "$site") || return 1
+    plak_multisite_require_single "$site_dir/public" 'Snapshot restore' || return 1
     if ! plak_snapshot_valid_id "$id"; then
         echo "Error: invalid snapshot id '$id'." >&2
         return 1

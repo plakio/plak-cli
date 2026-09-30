@@ -739,6 +739,9 @@ add_filter( 'auto_theme_update_send_email', '__return_false' );
  */
 if ( ! function_exists( 'plak_cli_maybe_override_site_url' ) ) {
 function plak_cli_maybe_override_site_url( $value ) {
+    if ( is_multisite() ) {
+        return $value; // Never collapse a network to a LAN/share host.
+    }
     // Only run in front-end context with a valid HTTP_HOST
     if ( defined( 'WP_CLI' ) && WP_CLI ) {
         return $value;
@@ -1231,7 +1234,7 @@ ${port_directives}    frankenphp {
         php_ini upload_max_filesize $(plak_site_ini_get upload_max_filesize 1G)
         php_ini post_max_size $(plak_site_ini_get post_max_size 1G)
         # OPcache for the web process only; enable_cli stays 0 so wp-cli is
-        # never served a stale cache. Tuned with `plak health opcache set`.
+        # never served a stale cache. Tuned with plak health opcache set.
         php_ini opcache.enable $(plak_site_ini_get opcache.enable 1)
         php_ini opcache.enable_cli $(plak_site_ini_get opcache.enable_cli 0)
         php_ini opcache.memory_consumption $(plak_site_ini_get opcache.memory_consumption 128)
@@ -1306,6 +1309,11 @@ EOM
 
                 # Build the list of domains
                 local site_domains="$site_name"
+                local multisite_mode=""
+                if [ -f "$site_path/.multisite-mode" ]; then
+                    multisite_mode=$(cat "$site_path/.multisite-mode")
+                    [ "$multisite_mode" != subdomains ] || site_domains="$site_domains, *.$site_name"
+                fi
 
                 if [ -f "$site_path/mappings" ]; then
                     while IFS= read -r mapping || [ -n "$mapping" ]; do
@@ -1331,6 +1339,13 @@ EOM
                     echo "" >> "$CADDYFILE_PATH"
                 fi
 
+                if [ "$multisite_mode" = subdirectories ]; then
+                    echo '    @ms_assets {' >> "$CADDYFILE_PATH"
+                    echo '        path_regexp ms_assets ^/[^/]+/(wp-(?:content|admin|includes).*|[^/]+\.php(?:/.*)?)$' >> "$CADDYFILE_PATH"
+                    echo '        not file {path}' >> "$CADDYFILE_PATH"
+                    echo '    }' >> "$CADDYFILE_PATH"
+                    echo '    rewrite @ms_assets /{re.ms_assets.1}' >> "$CADDYFILE_PATH"
+                fi
                 echo "    php_server" >> "$CADDYFILE_PATH"
 
                 if [ ! -f "$site_path/public/wp-config.php" ]; then
@@ -1662,6 +1677,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                         'size_bytes' => isset($size_cache[$item]) ? (int) $size_cache[$item] : null,
                         'modified_at' => $mtime ?: null,
                         'agent_ready' => file_exists($site_path . '/agent-ready'),
+                        'multisite_mode' => is_file($site_path . '/.multisite-mode') ? trim(file_get_contents($site_path . '/.multisite-mode')) : null,
                     ];
                 }
             }
@@ -1802,6 +1818,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // These dashboard mutations have only single-site semantics. Fail before
+    // executing them against a network (the expert WP-CLI console remains explicit).
+    if (in_array($action, ['site_plugin_op', 'site_theme_op', 'site_cron_run'], true)
+        && is_string($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
+        $public = $sitedir . '/' . $site_name . '.localhost/public';
+        $config = @file_get_contents($public . '/wp-config.php');
+        if (is_file(dirname($public) . '/.multisite-mode') || ($config !== false && str_contains($config, 'MULTISITE'))) {
+            $mode_lines = []; $mode_code = 0;
+            exec(sprintf('HOME=%s %s wp %s eval %s --skip-plugins --skip-themes 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), escapeshellarg('echo is_multisite() ? "1" : "0";')), $mode_lines, $mode_code);
+            if ($mode_code !== 0 || trim(implode("\n", $mode_lines)) !== '0') {
+                echo json_encode(['success' => false, 'message' => 'This operation has no network/subsite scope. Use plak wp with explicit --url/--network options. No data was modified.']);
+                exit;
+            }
+        }
+    }
     switch ($action) {
         case 'add_site':
             if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
@@ -1843,7 +1874,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $response = ['success' => false, 'message' => 'Not a WordPress site.'];
                     break;
                 }
-                $info = ['wp_version' => null, 'plugins' => null];
+                $info = ['wp_version' => null, 'plugins' => null, 'network' => null];
+                $network_lines = []; $network_code = 0;
+                exec(sprintf('HOME=%s %s network %s --json 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name)), $network_lines, $network_code);
+                if ($network_code === 0) $info['network'] = json_decode(implode("\n", $network_lines), true);
                 $vp = []; $vrc = 0;
                 exec(sprintf('HOME=%s %s wp %s core version --skip-plugins --skip-themes 2>/dev/null', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name)), $vp, $vrc);
                 if ($vrc === 0 && !empty($vp[0])) {
@@ -3289,7 +3323,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 <template x-for="site in filteredSites" :key="site.name">
                     <li class="site-row" @click="openSite(site)">
                         <a class="site-domain" :href="site.domain" target="_blank" rel="noopener" @click.stop x-html="highlightedDomain(site.domain, filter)"></a>
-                        <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.type === 'WordPress' ? 'WP' : 'STATIC'"></span>
+                        <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.multisite_mode ? 'NETWORK' : (site.type === 'WordPress' ? 'WP' : 'STATIC')"></span>
                         <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
                         <div class="site-actions">
@@ -3375,6 +3409,15 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         </template>
                     </template>
                 </dl>
+                <template x-if="detailInfo && detailInfo.network">
+                    <section>
+                        <h3 x-text="'Multisite · ' + detailInfo.network.mode"></h3>
+                        <template x-for="subsite in detailInfo.network.sites" :key="subsite.id">
+                            <p><span x-text="'#' + subsite.id + ' '"></span><a :href="subsite.url" target="_blank" rel="noopener" x-text="subsite.url"></a>
+                                <code x-text="'plak login ' + detailSite.name + ' --subsite ' + subsite.id"></code></p>
+                        </template>
+                    </section>
+                </template>
                 <div class="detail-actions">
                     <a class="site-action-btn" :href="detailSite.domain" target="_blank" rel="noopener">open site</a>
                     <template x-if="detailSite.type === 'WordPress'">

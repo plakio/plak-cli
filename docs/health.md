@@ -22,12 +22,14 @@ Supported settings: enable / validate_timestamps (0 or 1), memory_consumption
 (200–1000000), revalidate_freq (0–3600 seconds). Review real free memory before
 raising limits. No scheduled restarts are added. `--yes` alone does not restart.
 
-## HTTP/2 evaluation: blocked pending a live stack
+## HTTP/2 evaluation: representative-load evidence still pending
 
 The existing Caddy configuration explicitly uses `protocols h1`. It remains the
-default: no supported FrankenPHP installation is available in this development
-environment, so live compatibility/load evidence has **not** been collected.
-Reproduction of this blocker: `command -v frankenphp` returns exit status 1 here.
+default. Initially `command -v frankenphp` returned exit status 1 in this
+development environment. A temporary official v1.12.7 binary was later used to
+validate multisite HTTPS and the web OPcache probe (see `docs/multisite.md`),
+without installing it globally. Representative HTTP/2 load evidence still has
+**not** been collected; the default is not changed by the multisite tests.
 `plak health http2` only reports curl capability and negotiated protocol, not
 performance. A client without HTTP2 support reports negotiation as unknown.
 

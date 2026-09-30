@@ -1,20 +1,29 @@
 plak_site_login() {
     local raw_mode=false
     local positional=()
+    local subsite="" arg
 
-    for arg in "$@"; do
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
         case "$arg" in
+            --subsite) [ "$#" -ge 2 ] || { plak_ui_error '--subsite requires an ID.'; return 1; }; subsite="$2"; shift ;;
             --raw|-r) raw_mode=true ;;
             -h|--help)
-                echo "Usage: plak login <site> [<user>] [--raw]"
+                echo "Usage: plak login <site> [<user>] [--subsite <id>] [--raw]"
                 exit 0
                 ;;
             *) positional+=("$arg") ;;
         esac
+        shift
     done
 
     local site_name="${positional[0]:-}"
     local user_identifier="${positional[1]:-}"
+    [ "${#positional[@]}" -le 2 ] || { plak_ui_error 'Unexpected login arguments.'; return 1; }
+    if [ -n "$subsite" ]; then
+        plak_multisite_login "$site_name" "$subsite" "$user_identifier" "$raw_mode"
+        return $?
+    fi
 
     # 1. Validate that a site name was provided.
     if [ -z "$site_name" ]; then

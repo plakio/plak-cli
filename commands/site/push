@@ -17,6 +17,9 @@ plak_site_push() {
             *) site_name="$1"; shift 1 ;;
         esac
     done
+    if [ -n "$site_name" ]; then
+        plak_multisite_require_single "$SITES_DIR/$site_name.localhost/public" 'Push' || return 1
+    fi
 
     # --- UI/Logging Functions ---
     log_step() {
@@ -70,6 +73,7 @@ plak_site_push() {
     fi
 
     local local_path="$SITES_DIR/$site_name.localhost/public"
+    plak_multisite_require_single "$local_path" 'Push' || return 1
     local local_home local_siteurl wp_cmd
     wp_cmd=$(get_wp_cmd)
     local_home=$( (cd "$local_path" && $wp_cmd option get home --skip-plugins --skip-themes 2>/dev/null) || true)

@@ -122,6 +122,7 @@ plak_site_lan_enable() {
     fi
     
     local lan_config="$site_dir/lan_config"
+    plak_multisite_require_single "$site_dir/public" 'IP-based LAN access' || return 1
     
     if [ -f "$lan_config" ]; then
         local existing_port

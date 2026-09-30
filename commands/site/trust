@@ -2,7 +2,7 @@
 # keeps in the user profile and falling back to the system-trust copy.
 plak_site_caddy_root_cert() {
     local root_cert
-    root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
+    root_cert=$(find "${XDG_DATA_HOME:-$HOME/.local/share}/caddy/pki/authorities/local" \
         -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
     if [ -z "$root_cert" ]; then
         root_cert=$(find /usr/local/share/ca-certificates \
@@ -11,33 +11,110 @@ plak_site_caddy_root_cert() {
     [ -n "$root_cert" ] && [ -r "$root_cert" ] && printf '%s\n' "$root_cert"
 }
 
-# Append the Caddy root to every Homebrew CA bundle that exists. Idempotent by
-# marker: Plak owns the Caddy root, so a bundle already carrying one is left
-# alone. Homebrew's curl/OpenSSL reads these instead of the system store.
+# Browser databases are always updated as the invoking user, never via sudo.
+plak_site_trust_nss() {
+    local root_cert="$1" db profile prefix failed=0 discovery
+    local -a roots=()
+    for profile in "$HOME/.pki" "${XDG_DATA_HOME:-$HOME/.local/share}/pki" "$HOME/.mozilla/firefox" "$HOME/snap" "$HOME/.var/app"; do
+        [ ! -d "$profile" ] || roots+=("$profile")
+    done
+    [ "${#roots[@]}" -gt 0 ] || return 0
+    discovery=$(mktemp) || return 1
+    if ! find "${roots[@]}" -type f \( -name cert9.db -o -name cert8.db \) -print0 > "$discovery"; then
+        plak_ui_error 'Some browser profile directories could not be inspected.'; failed=1
+    fi
+    local -a profiles=()
+    while IFS= read -r -d '' db; do
+        profile=$(dirname "$db")
+        local seen=false item
+        for item in "${profiles[@]}"; do [ "$item" != "$profile" ] || seen=true; done
+        [ "$seen" = true ] || profiles+=("$profile")
+    done < "$discovery"
+    rm -f "$discovery"
+    [ "${#profiles[@]}" -gt 0 ] || return "$failed"
+    command -v certutil >/dev/null 2>&1 || { plak_ui_error 'certutil missing: browser profiles were not updated. Install libnss3-tools / nss-tools.'; return 1; }
+    for profile in "${profiles[@]}"; do
+        prefix=dbm
+        [ ! -f "$profile/cert9.db" ] || prefix=sql
+        echo "   - Trusting in $profile"
+        # Replace only Plak/Caddy-managed nicknames; retain unrelated roots.
+        for item in 'Plak Local Authority' 'Caddy Local Authority'; do
+            if certutil -L -d "$prefix:$profile" -n "$item" >/dev/null 2>&1; then
+                if ! certutil -D -d "$prefix:$profile" -n "$item"; then
+                    plak_ui_error "Could not remove stale CA from $profile"; failed=1
+                fi
+            fi
+        done
+        if ! certutil -A -d "$prefix:$profile" -n 'Plak Local Authority' -t 'C,,' -i "$root_cert"; then
+            plak_ui_error "Browser profile not updated: $profile"; failed=1
+        fi
+    done
+    return "$failed"
+}
+
+# Replace Plak's block and migrate legacy unmarked Caddy roots. Real PEM files
+# contain no readable subject name, so grep-only idempotence was insufficient.
 plak_site_trust_linuxbrew_bundles() {
     local brew_prefix="$1" root_cert="$2"
-    local bundle
+    local bundle failed=0 tmp line certificate subject capturing=false skipping=false
     for bundle in \
         "$brew_prefix/etc/ca-certificates/cert.pem" \
         "$brew_prefix/opt/openssl@3/etc/openssl@3/cert.pem" \
         "$brew_prefix/etc/openssl@3/cert.pem"; do
         [ -f "$bundle" ] || continue
-        if grep -q 'Caddy Local Authority' "$bundle" 2>/dev/null; then
-            continue
+        if [ -L "$bundle" ]; then
+            # This shared resolver handles BSD/GNU readlink without inspecting
+            # PHP content, and preserves the original bundle symlink.
+            bundle=$(plak_wp_realpath "$bundle") || { plak_ui_error 'Could not resolve Homebrew CA bundle symlink.'; failed=1; continue; }
         fi
-        if cat "$root_cert" >> "$bundle" 2>/dev/null; then
+        command -v openssl >/dev/null 2>&1 || { plak_ui_error "openssl missing; CA bundle not updated: $bundle"; failed=1; continue; }
+        tmp=$(mktemp "$bundle.plak.XXXXXX") || { failed=1; continue; }
+        cp -p "$bundle" "$tmp" || { rm -f "$tmp"; failed=1; continue; }
+        certificate=""; capturing=false; skipping=false
+        if ! (
+            while IFS= read -r line || [ -n "$line" ]; do
+                if [ "$line" = '# BEGIN PLAK LOCAL CA' ]; then skipping=true; continue; fi
+                if [ "$line" = '# END PLAK LOCAL CA' ]; then skipping=false; continue; fi
+                [ "$skipping" = false ] || continue
+                if [ "$line" = '-----BEGIN CERTIFICATE-----' ]; then certificate=""; capturing=true; fi
+                if [ "$capturing" = true ]; then
+                    certificate+="$line"$'\n'
+                    if [ "$line" = '-----END CERTIFICATE-----' ]; then
+                        subject=$(printf '%s' "$certificate" | openssl x509 -noout -subject 2>/dev/null) || subject=""
+                        if [[ "$subject" != *'Caddy Local Authority'* && "$certificate" != *'Caddy Local Authority'* ]]; then printf '%s' "$certificate"; fi
+                        capturing=false
+                    fi
+                else printf '%s\n' "$line"; fi
+            done < "$bundle"
+            # A malformed trailing certificate must not be silently discarded.
+            [ "$capturing" = false ] || printf '%s' "$certificate"
+            printf '\n# BEGIN PLAK LOCAL CA\n'
+            cat "$root_cert" || exit 1
+            printf '\n# END PLAK LOCAL CA\n'
+        ) > "$tmp"; then
+            rm -f "$tmp"; failed=1; continue
+        fi
+        if mv "$tmp" "$bundle"; then
             echo "   - Added Caddy root to Homebrew CA bundle: $bundle"
         else
+            rm -f "$tmp"
             gum style --foreground yellow "⚠️ Could not update Homebrew CA bundle: $bundle"
+            failed=1
         fi
     done
+    return "$failed"
 }
 
 plak_site_trust() {
     echo "🔐 Installing Plak's local root certificate..."
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        plak_ui_error 'Run plak trust without sudo; only the system-store step escalates privileges.'
+        return 1
+    fi
+    is_caddy_running || { plak_ui_error 'Plak server is unavailable. Run plak enable, then plak trust.'; return 1; }
 
     # FrankenPHP's trust subcommand writes the Caddy local root into the
-    # system store and any NSS DBs it displakrs at the standard paths. On
+    # system store and platform stores supported by Caddy. On
     # macOS that's the login keychain; on Linux it's /usr/local/share/ca-
     # certificates + ~/.pki/nssdb + ~/.mozilla/firefox/*.
     #
@@ -68,56 +145,40 @@ plak_site_trust() {
     echo "   - Running frankenphp trust..."
     local trust_output trust_rc=0
     if [ "$OS" = "linux" ]; then
-        trust_output=$($SUDO_CMD "$CADDY_CMD" trust 2>&1)
-        trust_rc=$?
+        trust_output=$($SUDO_CMD "$CADDY_CMD" trust 2>&1) || trust_rc=$?
     else
-        trust_output=$("$CADDY_CMD" trust 2>&1)
-        trust_rc=$?
+        trust_output=$("$CADDY_CMD" trust 2>&1) || trust_rc=$?
     fi
     echo "$trust_output" | grep -vE '^\{|^$' || true
+    if [ "$trust_rc" -ne 0 ]; then
+        plak_ui_error 'System trust installation failed; no total success reported.'
+        return "$trust_rc"
+    fi
 
     # Linux-only: Firefox and Chromium ship as snaps on Ubuntu 22+ and
     # store their NSS DBs under ~/snap/... — a path that neither Caddy nor
     # mkcert scans. Inject the root explicitly for each profile we find.
-    if [ "$OS" = "linux" ] && command -v certutil &>/dev/null; then
+    if [ "$OS" = "linux" ]; then
         local root_cert
-        root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
-            -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
-        # Fallback: the system-trust copy Caddy drops on first auto-install.
-        if [ -z "$root_cert" ]; then
-            root_cert=$(find /usr/local/share/ca-certificates \
-                -maxdepth 1 -name 'Caddy_Local_Authority*.crt' 2>/dev/null | head -1)
-        fi
+        root_cert=$(plak_site_caddy_root_cert) || root_cert=""
 
         if [ -n "$root_cert" ] && [ -r "$root_cert" ]; then
-            # Snap Firefox, snap Chromium, plus any other NSS DB under ~/snap.
-            # The sql: prefix tells certutil the DB is the modern cert9 format.
-            local db
-            while IFS= read -r db; do
-                [ -z "$db" ] && continue
-                local profile_dir
-                profile_dir=$(dirname "$db")
-                echo "   - Trusting in $(echo "$profile_dir" | sed "s|$HOME|~|")"
-                # Remove any prior entry under our nickname so re-runs don't
-                # layer stale copies, then add the current root.
-                certutil -D -d sql:"$profile_dir" -n "Plak Local Authority" 2>/dev/null || true
-                certutil -A -d sql:"$profile_dir" -n "Plak Local Authority" -t "C,," -i "$root_cert" 2>/dev/null || true
-            done < <(find "$HOME/snap" "$HOME/.mozilla/firefox" \
-                -name 'cert9.db' 2>/dev/null)
+            plak_site_trust_nss "$root_cert" || trust_rc=1
         else
-            gum style --foreground yellow "⚠️ Could not locate Caddy root.crt — snap Firefox/Chromium trust skipped."
+            plak_ui_error 'Could not locate current Caddy root.crt; browser trust was not updated.'
+            trust_rc=1
         fi
     fi
 
     # Linuxbrew ships its own curl/OpenSSL with a CA bundle that ignores the
     # system store, so tools like wp-mcp fail with curl exit 60 even after the
-    # root is trusted system-wide. Append the Caddy root to Homebrew's bundle.
+    # root is trusted system-wide. Replace the managed root in Homebrew bundles.
     if [ "$OS" = "linux" ] && command -v brew &>/dev/null; then
         local brew_prefix_linux brew_root
         brew_prefix_linux=$(brew --prefix 2>/dev/null || true)
         brew_root=$(plak_site_caddy_root_cert)
         if [ -n "$brew_prefix_linux" ] && [ -n "$brew_root" ]; then
-            plak_site_trust_linuxbrew_bundles "$brew_prefix_linux" "$brew_root"
+            plak_site_trust_linuxbrew_bundles "$brew_prefix_linux" "$brew_root" || trust_rc=1
         fi
     fi
 
@@ -127,16 +188,7 @@ plak_site_trust() {
             "✅ Local SSL trust installed" \
             "If a browser was open during this run, restart it to pick up the new CA."
     else
-        # Tailor the hint based on what frankenphp actually said — "connection
-        # refused" almost always means Caddy's admin API isn't up yet.
-        if echo "$trust_output" | grep -q "connection refused"; then
-            gum style --border normal --margin "1" --padding "1 2" --border-foreground yellow \
-                "⚠️ Trust install skipped — Plak server isn't running yet" \
-                "Run 'plak enable' then 'plak trust' to finish installing the local root."
-        else
-            gum style --border normal --margin "1" --padding "1 2" --border-foreground yellow \
-                "⚠️ Trust install did not complete" \
-                "Re-run 'plak trust' once Plak is running to try again."
-        fi
+        plak_ui_error 'Trust incomplete; see profile/bundle errors above. Close browsers and retry after resolving those errors.'
     fi
+    return "$trust_rc"
 }
