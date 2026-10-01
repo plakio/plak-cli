@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Real WordPress/MariaDB behavior; PHP stands in for FrankenPHP's CLI only.
-# This does not validate Caddy TLS or HTTP behavior.
+# Real WordPress/MariaDB behavior; optionally validates official FrankenPHP
+# TLS/routing, dashboard acceptance and web OPcache/HTTP2 under load.
 set -euo pipefail
 [ "${PLAK_LIVE_TESTS:-0}" = 1 ] || { echo 'multisite live test skipped (set PLAK_LIVE_TESTS=1; downloads WordPress)'; exit 0; }
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -12,7 +12,30 @@ done
 tmpdir=$(mktemp -d /tmp/opencode/plak-multisite-test.XXXXXX)
 server_pid=""
 web_pid=""
-trap '[ -z "$web_pid" ] || { kill "$web_pid" 2>/dev/null || true; wait "$web_pid" 2>/dev/null || true; }; [ -z "$server_pid" ] || { kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; }; rm -rf "$tmpdir"' EXIT
+mailpit_pid=""
+cleanup_live_fixture() {
+    local artifact pid
+    if [ -n "${PLAK_TEST_DIAGNOSTICS:-}" ]; then
+        mkdir -p "$PLAK_TEST_DIAGNOSTICS"
+        for artifact in web-health web.log dashboard-create live-users live-ready live-mail live-mail-detail live-editor-login core-up; do
+            [ ! -f "$tmpdir/$artifact" ] || cp "$tmpdir/$artifact" "$PLAK_TEST_DIAGNOSTICS/"
+        done
+    fi
+    for pid in "$mailpit_pid" "$web_pid" "$server_pid"; do
+        [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+    done
+    rm -rf "$tmpdir"
+}
+trap cleanup_live_fixture EXIT
+isolate_live_caddyfile() {
+    python3 - "$CADDYFILE_PATH" "$http_port" "$https_port" "$admin_port" <<'PY'
+import sys
+p=sys.argv[1]; text=open(p).read()
+text=text.replace('{\n','{\n    admin 127.0.0.1:'+sys.argv[4]+'\n    skip_install_trust\n    default_bind 127.0.0.1\n    http_port '+sys.argv[2]+'\n    https_port '+sys.argv[3]+'\n',1)
+text=text.replace('frankenphp {','frankenphp {\n        num_threads 2\n        max_threads 4',1)
+open(p,'w').write(text)
+PY
+}
 export HOME="$tmpdir/home" PLAK_NO_PATH_PRELUDE=1 PLAK_TERMINAL_LINKS=0
 mkdir -p "$HOME/.local/bin" "$HOME/Plak/Logs" "$tmpdir/data"
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
@@ -130,7 +153,7 @@ PY
     python3 - "$tmpdir/web-health" <<'PY'
 import json,sys
 r=json.load(open(sys.argv[1])); assert r['source']=='web'
-assert r['opcache_status'] is not None
+assert r['opcache_status'] is not None, r
 assert 'cache_full' in r['opcache_status']
 assert 'free_memory' in r['opcache_status']['memory_usage']
 PY
@@ -175,5 +198,11 @@ PY
         grep -q 'wp-admin-bar' "$tmpdir/admin-$mode"
     done
     echo 'Real FrankenPHP TLS/wildcard/subdirectory routing tests passed'
+    if [ "${PLAK_TEST_ACCEPTANCE:-0}" = 1 ]; then
+        source "$ROOT_DIR/tests/helpers/dashboard-acceptance.sh"
+    fi
+    if [ "${PLAK_TEST_HEALTH:-0}" = 1 ]; then
+        source "$ROOT_DIR/tests/helpers/health-live.sh"
+    fi
 fi
 echo 'Real WordPress multisite creation/subsites/login/clone/rename tests passed'

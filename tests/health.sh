@@ -56,6 +56,7 @@ import json, sys
 r=json.load(open(sys.argv[1]))
 assert r['source']=='cli' # Direct fixture invocation is not a web cache.
 assert 'opcache_status' in r and 'opcache_configuration' in r
+assert isinstance(r['opcache_ini'],dict) and isinstance(r['opcache_warnings'],list)
 PY
 source commands/health
 curl() { printf '%s' '<html>dashboard fallback</html>'; }

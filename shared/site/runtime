@@ -3328,7 +3328,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                     </label>
                     <label class="plain-toggle" x-show="!newSite.isPlain" x-cloak title="Install WP-MCP and register the site with wp-mcp-cli">
                         <input type="checkbox" x-model="newSite.agent" :disabled="newSite.isLoading">
-                        agent-ready (WP-MCP)
+                        agent-ready (MCP)
                     </label>
                     <button class="pill primary" type="submit" :disabled="!newSite.name || newSite.isLoading">
                         <span class="btn-spinner" x-show="newSite.isLoading" aria-hidden="true" style="display: none;"></span>
@@ -3353,7 +3353,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
                         <div class="site-actions">
                             <template x-if="site.type === 'WordPress' && !site.agent_ready">
-                                <button class="site-action-btn" :class="{ loading: site.isPreparingAgent }" @click.stop="prepareAgent(site)" :disabled="site.isPreparingAgent" :title="'Make ' + site.name + ' agent-ready (WP-MCP)'">
+                                <button class="site-action-btn" :class="{ loading: site.isPreparingAgent }" @click.stop="prepareAgent(site)" :disabled="site.isPreparingAgent" :title="'Make ' + site.name + ' agent-ready (MCP)'">
                                     <span class="btn-label" x-text="site.isPreparingAgent ? 'preparing…' : 'agent'"></span>
                                     <span class="btn-spinner" aria-hidden="true"></span>
                                 </button>
@@ -4946,6 +4946,31 @@ header('Cache-Control: no-store');
 header('Content-Type: application/json');
 $status = function_exists('opcache_get_status') ? @opcache_get_status(false) : null;
 $config = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : null;
+$directives = $config ? ($config['directives'] ?? null) : null;
+$warnings = [];
+// Some FrankenPHP/PHP builds expose uninitialized thread-local OPcache memory
+// counters. Negative usage / a zero enabled-cache limit are not measurements.
+foreach (['used_memory', 'free_memory', 'wasted_memory'] as $key) {
+    if ($status && isset($status['memory_usage'][$key]) && $status['memory_usage'][$key] < 0) {
+        $status['memory_usage'][$key] = null;
+        $warnings[] = 'Runtime returned negative OPcache ' . $key . '; reported as unknown.';
+    }
+}
+if ($status && isset($status['memory_usage']['current_wasted_percentage'])
+    && !is_finite((float) $status['memory_usage']['current_wasted_percentage'])) {
+    $status['memory_usage']['current_wasted_percentage'] = null;
+    $warnings[] = 'Runtime returned a non-finite OPcache wasted percentage; reported as unknown.';
+}
+if ($directives && (bool) ini_get('opcache.enable') && ($directives['opcache.memory_consumption'] ?? 0) <= 0) {
+    $directives['opcache.memory_consumption'] = null;
+    $warnings[] = 'Runtime returned an invalid enabled-cache memory limit; INI setting is listed separately.';
+}
+$opcache_ini = [];
+foreach (['opcache.enable', 'opcache.memory_consumption', 'opcache.interned_strings_buffer',
+    'opcache.max_accelerated_files', 'opcache.validate_timestamps', 'opcache.revalidate_freq'] as $key) {
+    $value = ini_get($key);
+    $opcache_ini[$key] = $value === false ? null : $value;
+}
 $report = [
     'source' => PHP_SAPI === 'cli' ? 'cli' : 'web',
     'sapi' => PHP_SAPI,
@@ -4953,7 +4978,9 @@ $report = [
     'opcache_extension_loaded' => extension_loaded('Zend OPcache'),
     'opcache_enabled' => (bool) ini_get('opcache.enable'),
     'opcache_status' => $status ?: null,
-    'opcache_configuration' => $config ? ($config['directives'] ?? null) : null,
+    'opcache_configuration' => $directives,
+    'opcache_ini' => $opcache_ini,
+    'opcache_warnings' => $warnings,
 ];
 if (($_GET['format'] ?? '') === 'text') {
     header('Content-Type: text/plain');
@@ -4965,13 +4992,17 @@ if (($_GET['format'] ?? '') === 'text') {
         foreach (['memory_usage', 'opcache_statistics'] as $section) {
             foreach (($status[$section] ?? []) as $key => $value) {
                 if (is_scalar($value)) echo "$key: $value\n";
+                elseif ($value === null) echo "$key: unknown\n";
             }
         }
         foreach (['opcache.memory_consumption', 'opcache.interned_strings_buffer', 'opcache.max_accelerated_files'] as $key) {
-            echo $key . ': ' . ($config['directives'][$key] ?? 'unknown') . "\n";
+            echo $key . ': ' . ($directives[$key] ?? 'unknown') . "\n";
         }
         if ($status['cache_full']) echo "Recommendation: inspect usage and raise validated limits explicitly; no automatic restart.\n";
     }
+    foreach ($warnings as $warning) echo 'Warning: ' . $warning . "\n";
+    echo "Web INI settings (not measured shared-cache limits):\n";
+    foreach ($opcache_ini as $key => $value) echo $key . ': ' . ($value ?? 'unknown') . "\n";
 } else {
     echo json_encode($report, JSON_PARTIAL_OUTPUT_ON_ERROR);
 }
