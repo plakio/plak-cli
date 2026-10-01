@@ -130,6 +130,7 @@ cat > "$tmpdir/plak-wp-stub" <<'WPSTUB'
 #!/usr/bin/env bash
 echo "$*" >> "$WP_CALLS"
 case "$*" in
+    "add dashfail "*) echo 'Error: diagnostic provisioning failure'; exit 1 ;;
     *"core version"*) echo "6.7.1" ;;
     *"plugin list"*)
         echo '[{"name":"akismet","title":"Akismet","status":"active","version":"5.3","update":"none","file":"akismet/akismet.php"},{"name":"plak-helper","title":"Plak","status":"must-use","version":"1.0","update":"none","file":"plak-cli-helper.php"}]'
@@ -246,9 +247,16 @@ server_pid=$!
 base="http://127.0.0.1:$port"
 
 for _ in $(seq 1 50); do
-    curl -fsS "$base/api.php?action=list_sites" >/dev/null 2>&1 && break
+    curl -fsS "$base/index.php" > "$tmpdir/first-index" 2>/dev/null && break
     sleep 0.1
 done
+
+# A first page visit must already have a usable token before any API call.
+[ -f "$HOME/Plak/cache/dashboard-token" ] || fail 'first dashboard page did not initialize CSRF'
+first_token=$(cat "$HOME/Plak/cache/dashboard-token")
+grep -q "const CSRF_TOKEN = '$first_token'" "$tmpdir/first-index" || fail 'first dashboard page embedded an empty or different token'
+HOME="$tmpdir/service-home" php "$GUI_DIR/index.php" > "$tmpdir/service-index"
+grep -q "const CSRF_TOKEN = '$first_token'" "$tmpdir/service-index" || fail 'service HOME changed the dashboard user/token'
 
 # --- GET list_sites works (read-only) ---
 list_out=$(curl -fsS "$base/api.php?action=list_sites")
@@ -257,6 +265,7 @@ grep -q '"name":"demo"' <<<"$list_out" || fail "list_sites did not return the de
 # api.php creates the shared CSRF token on first use.
 [ -f "$HOME/Plak/cache/dashboard-token" ] || fail "dashboard token was not created"
 token=$(cat "$HOME/Plak/cache/dashboard-token")
+[ "$token" = "$first_token" ] || fail 'API rotated the token after the initial page load'
 [ "${#token}" -ge 32 ] || fail "dashboard token is too short"
 
 host_header="Host: plak.localhost"
@@ -510,12 +519,13 @@ bad_import=$(curl -sS -X POST -H "$host_header" -H 'Origin: https://plak.localho
     -F "action=import_site" -F "csrf=$token" -F "site_name=badimport" -F "backup=@$tmpdir/notes.txt" "$base/api.php")
 grep -q 'Unsupported archive' <<<"$bad_import" || fail "import accepted a non-archive upload: $bad_import"
 
-# --- add_site passes --no-agent only when the box is unchecked (CLI-33) ------
+# --- Manual creation is independent of optional agent tools -----------------
 : > "$WP_CALLS"
 add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
     -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"dashagent\",\"agent\":true,\"csrf\":\"$token\"}" "$base/api.php")
 grep -q '"success":true' <<<"$add_out" || fail "add_site (agent on) failed: $add_out"
 grep -q 'add dashagent' "$WP_CALLS" || fail "add_site did not run plak add"
+grep -q -- '--agent ' "$WP_CALLS" || fail 'checked agent box did not explicitly opt in'
 if grep -q -- '--no-agent' "$WP_CALLS"; then
     fail "checked agent box still passed --no-agent"
 fi
@@ -523,6 +533,58 @@ fi
 add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
     -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"dashplain\",\"agent\":false,\"csrf\":\"$token\"}" "$base/api.php")
 grep -q -- '--no-agent' "$WP_CALLS" || fail "unchecked agent box did not pass --no-agent"
+: > "$WP_CALLS"
+add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"dashmanual\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":true' <<< "$add_out" || fail 'manual creation failed'
+grep -q -- '--no-agent' "$WP_CALLS" || fail 'omitted agent option inherited the CLI agent default'
+grep -q "agent: false" "$GUI_DIR/index.php" || fail 'agent preparation is enabled by default in manual form'
+grep -q 'x-text="newSite.output"' "$GUI_DIR/index.php" || fail 'creation error details are hidden from users'
+add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"dashfail\",\"agent\":false,\"csrf\":\"$token\"}" "$base/api.php")
+grep -q '"success":false' <<< "$add_out" || fail 'provisioning failure was reported as success'
+grep -q 'diagnostic provisioning failure' <<< "$add_out" || fail 'API discarded the provisioning error details'
+if command -v node >/dev/null 2>&1; then
+    curl -fsS -H "$host_header" "$base/index.php" > "$tmpdir/rendered-index"
+    node - "$tmpdir/rendered-index" <<'JS'
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const html = fs.readFileSync(process.argv[2], 'utf8');
+let factory;
+const context = {
+    document: { addEventListener: (name, callback) => { if (name === 'alpine:init') callback(); } },
+    Alpine: { data: (name, callback) => { if (name === 'dashboard') factory = callback; } },
+    localStorage: { getItem: () => null }, window: {},
+};
+vm.createContext(context);
+for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) vm.runInContext(match[1], context);
+const dashboard = factory();
+assert.equal(dashboard.newSite.agent, false);
+dashboard.newSite.name = 'manual';
+dashboard.adding = true;
+dashboard.showSnack = () => {};
+const calls = [];
+dashboard.apiPost = async (action, payload) => {
+    calls.push({action, payload});
+    return {success: false, message: 'Could not create site.', output: 'Error: executable unavailable'};
+};
+(async () => {
+    await dashboard.addSite();
+    assert.equal(calls[0].payload.agent, false);
+    assert.equal(dashboard.newSite.name, 'manual');
+    assert.equal(dashboard.newSite.isLoading, false);
+    assert.equal(dashboard.newSite.output, 'Error: executable unavailable');
+    assert.equal(dashboard.newSite.error, 'Could not create site.');
+    dashboard.apiPost = async () => ({success: true, size_bytes: 128});
+    await dashboard.addSite();
+    assert.equal(dashboard.newSite.error, '');
+    assert.equal(dashboard.newSite.output, '');
+    assert.equal(dashboard.sites[0].name, 'manual');
+    assert.equal(dashboard.adding, false);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+JS
+fi
 
 # --- listing exposes agent_ready; prepare_agent action exists ---------------
 list_out=$(curl -fsS "$base/api.php?action=list_sites")
@@ -570,6 +632,12 @@ grep -q 'remote_ip private_ranges' plak.sh || fail "WSL private-range handling i
 grep -q "remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1" plak.sh || fail "Tailscale admin guard is missing"
 
 # Network mutations without an explicit scope are refused before execution.
+sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/deleted-cellar/plak';|" "$GUI_DIR/api.php"
+missing_launcher=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
+    -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"missinglauncher\",\"csrf\":\"$token\"}" "$base/api.php")
+grep -q 'Run plak reload' <<< "$missing_launcher" || fail 'missing launcher was hidden behind a generic error'
+sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/plak-wp-stub';|" "$GUI_DIR/api.php"
+
 printf 'subdomains\n' > "$SITES_DIR/demo.localhost/.multisite-mode"
 : > "$WP_CALLS"
 for action in site_plugin_op site_theme_op site_cron_run; do
@@ -577,4 +645,16 @@ for action in site_plugin_op site_theme_op site_cron_run; do
     grep -q 'no network' <<< "$network_out" || fail "network mutation was not refused: $network_out"
 done
 if grep -q 'plugin delete\|theme delete\|cron event run' "$WP_CALLS"; then fail 'network refusal changed data'; fi
+
+# Dashboard commands keep the public launcher symlink, not a removed versioned
+# target. This also allows a sourced generator to name the intended CLI.
+mkdir -p "$tmpdir/launcher-bin"
+cp "$tmpdir/plak-stub" "$tmpdir/launcher-v1"
+cp "$tmpdir/plak-stub" "$tmpdir/launcher-v2"
+ln -s "$tmpdir/launcher-v1" "$tmpdir/launcher-bin/plak"
+GUI_DIR="$tmpdir/launcher-gui" PLAK_SITE_CMD="$tmpdir/launcher-bin/plak" create_gui_file >/dev/null
+grep -q "plak_site_path = '$tmpdir/launcher-bin/plak'" "$tmpdir/launcher-gui/api.php" || fail 'dashboard embedded a versioned executable target'
+ln -sfn "$tmpdir/launcher-v2" "$tmpdir/launcher-bin/plak"
+rm "$tmpdir/launcher-v1"
+[ -x "$tmpdir/launcher-bin/plak" ] || fail 'public launcher stopped working after simulated upgrade'
 echo "Dashboard regression tests passed."

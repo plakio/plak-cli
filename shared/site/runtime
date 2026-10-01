@@ -1573,6 +1573,34 @@ create_gui_file() {
     echo "🎨 Creating Plak dashboard files..."
     mkdir -p "$GUI_DIR"
 
+    # Both the first HTML response and the API need the same token. Generating
+    # it only on the first API request left the already-rendered page with an
+    # empty CSRF_TOKEN until the user refreshed.
+    cat > "$GUI_DIR/dashboard-auth.php" <<'EOM'
+<?php
+function plak_site_dashboard_token($path) {
+    $directory = dirname($path);
+    if (!is_dir($directory) && !mkdir($directory, 0755, true) && !is_dir($directory)) {
+        throw new RuntimeException('Cannot create dashboard token directory.');
+    }
+    $lock = fopen($path . '.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX)) throw new RuntimeException('Cannot lock dashboard token.');
+    try {
+        if (is_file($path)) {
+            $existing = trim((string) file_get_contents($path));
+            if (preg_match('/^[a-f0-9]{64}$/D', $existing)) return $existing;
+        }
+        $token = bin2hex(random_bytes(32));
+        $tmp = $path . '.' . bin2hex(random_bytes(4));
+        if (file_put_contents($tmp, $token) === false || !chmod($tmp, 0600) || !rename($tmp, $path)) {
+            @unlink($tmp);
+            throw new RuntimeException('Cannot publish dashboard token.');
+        }
+        return $token;
+    } finally { flock($lock, LOCK_UN); fclose($lock); }
+}
+EOM
+
     # Create the API file that handles the logic
     cat > "$GUI_DIR/api.php.tmp" << 'EOM'
 <?php
@@ -1610,23 +1638,7 @@ if (!$__plak_site_ok) {
 
 $__plak_site_token_file = $user_home . '/Plak/cache/dashboard-token';
 
-function plak_site_dashboard_token($path) {
-    if (file_exists($path)) {
-        $existing = trim((string) @file_get_contents($path));
-        if (strlen($existing) >= 32) return $existing;
-    }
-    $token = bin2hex(random_bytes(32));
-    @mkdir(dirname($path), 0755, true);
-    // Create with restrictive permissions atomically, then fall back to write.
-    $tmp = $path . '.' . bin2hex(random_bytes(4));
-    if (@file_put_contents($tmp, $token) !== false) {
-        @chmod($tmp, 0600);
-        @rename($tmp, $path);
-    } else {
-        @file_put_contents($path, $token);
-    }
-    return $token;
-}
+require_once __DIR__ . '/dashboard-auth.php';
 
 $__plak_site_dashboard_token = plak_site_dashboard_token($__plak_site_token_file);
 
@@ -1835,13 +1847,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     switch ($action) {
         case 'add_site':
+            if (!is_file($plak_site_path) || !is_executable($plak_site_path)) {
+                $response = ['success' => false, 'message' => 'Dashboard CLI launcher is unavailable. Run plak reload and refresh this page.'];
+                break;
+            }
             if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
                 $is_plain = (bool) ($input['is_plain'] ?? false);
                 $type_flag = $is_plain ? '--plain' : '';
-                // Agent readiness is opt-in from the dashboard checkbox; the
-                // CLI defaults it on, so the explicit flag is only added when
-                // the user unchecked it for a WordPress site.
-                $agent_flag = (!$is_plain && isset($input['agent']) && !$input['agent']) ? '--no-agent' : '';
+                // Manual creation never depends on optional agent tooling.
+                // Always express the checkbox choice instead of inheriting CLI
+                // defaults (which depend on tools installed on the machine).
+                $agent_flag = !$is_plain ? (!empty($input['agent']) ? '--agent' : '--no-agent') : '';
                 $command = sprintf('HOME=%s %s add %s %s %s --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), $type_flag, $agent_flag);
                 // Remember we're adding so the post-exec block below can
                 // measure the new site's size and fold it into the cache.
@@ -2806,15 +2822,17 @@ EOM
     # Create the main dashboard file (the UI)
     cat > "$GUI_DIR/index.php.tmp" << 'EOM'
 <?php
-$config_file = getenv('HOME') . '/Plak/config';
+$user_home = 'USER_HOME_PLACEHOLDER';
+$config_file = $user_home . '/Plak/config';
 $config_data = file_exists($config_file) ? parse_ini_file($config_file) : [];
 $__plak_site_https_port = isset($config_data['HTTPS_PORT']) ? (int) $config_data['HTTPS_PORT'] : 443;
 $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__plak_site_https_port;
 
 // The same CSRF token api.php verifies, surfaced to the UI so each mutating
-// request can echo it back. Read (never generated) here: api.php owns creation.
-$__plak_site_token_file = getenv('HOME') . '/Plak/cache/dashboard-token';
-$__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_get_contents($__plak_site_token_file)) : '';
+// request can echo it back, including on the very first page load.
+require_once __DIR__ . '/dashboard-auth.php';
+$__plak_site_token_file = $user_home . '/Plak/cache/dashboard-token';
+$__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -3317,6 +3335,13 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                         <span x-text="newSite.isLoading ? 'creating…' : 'create'"></span>
                     </button>
                 </form>
+                <div x-show="newSite.error" role="alert" x-cloak>
+                    <p class="comp-error" x-text="newSite.error"></p>
+                    <details x-show="newSite.output">
+                        <summary>Creation error details</summary>
+                        <pre class="console-out" x-text="newSite.output"></pre>
+                    </details>
+                </div>
             </div>
 
             <ul class="site-list">
@@ -3922,7 +3947,7 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
                 sort: 'name',
                 sortModes: ['name', 'size', 'modified'],
-                newSite: { name: '', isPlain: false, agent: true, isLoading: false },
+                newSite: { name: '', isPlain: false, agent: false, isLoading: false, error: '', output: '' },
                 snackbar: { visible: false, message: '', isError: false, timer: null },
                 // Persistent dismissible banners for newly-created sites — the
                 // snackbar only lives ~3.5s, not long enough to reach for the
@@ -4702,7 +4727,9 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                 },
 
                 async addSite() {
-                    if (!this.newSite.name) return;
+                    if (!this.newSite.name || this.newSite.isLoading) return;
+                    this.newSite.error = '';
+                    this.newSite.output = '';
                     this.newSite.isLoading = true;
                     const name = this.newSite.name;
                     const isPlain = this.newSite.isPlain;
@@ -4743,6 +4770,9 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
                             isPlain,
                             isLoggingIn: false,
                         });
+                    } else {
+                        this.newSite.error = add.message || 'Could not create site.';
+                        this.newSite.output = add.output || '';
                     }
                     this.newSite.isLoading = false;
                 },
@@ -4866,10 +4896,18 @@ $__plak_site_csrf = file_exists($__plak_site_token_file) ? trim((string) file_ge
 </html>
 EOM
 
-    # Find the absolute path to this script to pass to the GUI
+    # Prefer the public CLI launcher (e.g. Homebrew's bin/plak symlink), not a
+    # versioned Cellar path which disappears on upgrade. Source-based callers
+    # can provide PLAK_SITE_CMD explicitly.
+    local dashboard_executable
+    dashboard_executable="${PLAK_SITE_CMD:-$0}"
+    case "$dashboard_executable" in
+        */*) ;;
+        *) dashboard_executable=$(command -v "$dashboard_executable") || return 1 ;;
+    esac
     local script_dir
-    script_dir=$(cd "$(dirname "$0")" && pwd)
-    local absolute_script_path="$script_dir/$(basename "$0")"
+    script_dir=$(cd "$(dirname "$dashboard_executable")" && pwd) || return 1
+    local absolute_script_path="$script_dir/$(basename "$dashboard_executable")"
 
     # Escape the paths for use in sed
     local escaped_path
@@ -4891,6 +4929,7 @@ EOM
         "$GUI_DIR/api.php.tmp" > "$GUI_DIR/api.php"
 
     sed -e "s/SITES_DIR_PLACEHOLDER/${escaped_sites_dir}/g" \
+        -e "s/USER_HOME_PLACEHOLDER/${escaped_home}/g" \
         "$GUI_DIR/index.php.tmp" > "$GUI_DIR/index.php"
 
     # health.php reports the web process's PHP/OPcache state to `plak health`.

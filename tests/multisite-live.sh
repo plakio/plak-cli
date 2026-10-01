@@ -135,6 +135,24 @@ assert 'cache_full' in r['opcache_status']
 assert 'free_memory' in r['opcache_status']['memory_usage']
 PY
     ca="$XDG_DATA_HOME/caddy/pki/authorities/local/root.crt"
+    # Provision through the actual dashboard API, not a mocked plak executable.
+    curl --noproxy '*' --cacert "$ca" -fsS \
+        --connect-to "plak.localhost:443:127.0.0.1:$https_port" \
+        https://plak.localhost/ > "$tmpdir/dashboard-index"
+    dashboard_token=$(cat "$HOME/Plak/cache/dashboard-token")
+    curl --noproxy '*' --cacert "$ca" -fsS --max-time 120 \
+        --connect-to "plak.localhost:443:127.0.0.1:$https_port" \
+        -H 'Origin: https://plak.localhost' -H 'Content-Type: application/json' \
+        --data "{\"action\":\"add_site\",\"site_name\":\"dash-manual\",\"agent\":false,\"csrf\":\"$dashboard_token\"}" \
+        https://plak.localhost/api.php > "$tmpdir/dashboard-create"
+    python3 - "$tmpdir/dashboard-create" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1])); assert r.get('success'), r
+PY
+    [ -f "$SITES_DIR/dash-manual.localhost/public/wp-config.php" ]
+    [ ! -f "$SITES_DIR/dash-manual.localhost/agent-ready" ]
+    plak_multisite_wp "$SITES_DIR/dash-manual.localhost/public" core is-installed --skip-plugins --skip-themes
+    echo 'Real dashboard manual WordPress creation passed'
     for entry in 'ms-subdirectories.localhost /team/wp-admin/plak-probe.php' 'team.ms-subdomains.localhost /wp-admin/plak-probe.php'; do
         read -r host path <<< "$entry"
         curl --noproxy '*' --cacert "$ca" -fsS --connect-to "$host:443:127.0.0.1:$https_port" "https://$host$path" > "$tmpdir/web-probe"
