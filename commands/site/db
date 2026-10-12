@@ -129,12 +129,15 @@ plak_site_db_list() {
 
     # This heredoc contains a PHP script to find, connect, and format the database list.
     # We invoke it via frankenphp php-cli -r so we don't depend on a standalone php binary.
+    local PLAK_WP_COMMAND=() wp_command_json
+    plak_wp_resolve_command || return $?
+    wp_command_json=$(plak_wp_command_json) || return 1
     local wp_path
     wp_path=$(plak_wp_resolve_phar) || return 1
     local frank
     frank=$(command -v frankenphp) || return 1
     local php_output
-    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
+    php_output=$(PLAK_WP_COMMAND_JSON="$wp_command_json" DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
             if ($bytes === 0) return "0 B";
             $units = ["B", "KB", "MB", "GB", "TB"];
@@ -158,8 +161,7 @@ plak_site_db_list() {
 
         function wpConfig(string $key, string $public): string {
             global $frank_bin, $wp_path, $wp_root_flag;
-            $args = [$frank_bin, "php-cli", $wp_path];
-            if ($wp_root_flag) $args[] = $wp_root_flag;
+            $args = json_decode(getenv("PLAK_WP_COMMAND_JSON"), true, 512, JSON_THROW_ON_ERROR);
             array_push($args, "config", "get", $key, "--skip-plugins", "--skip-themes", "--quiet");
             $pipes = [];
             $proc = proc_open($args, [0 => ["pipe", "r"], 1 => ["pipe", "w"], 2 => ["pipe", "w"]], $pipes, $public);

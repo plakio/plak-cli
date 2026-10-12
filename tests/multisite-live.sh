@@ -17,7 +17,7 @@ cleanup_live_fixture() {
     local artifact pid
     if [ -n "${PLAK_TEST_DIAGNOSTICS:-}" ]; then
         mkdir -p "$PLAK_TEST_DIAGNOSTICS"
-        for artifact in web-health web.log dashboard-create live-users live-ready live-mail live-mail-detail live-editor-login core-up; do
+        for artifact in web-health web.log dashboard-create live-users live-ready live-mail live-mail-detail live-editor-login core-up history-first history-noop self-process runtime-databases.json; do
             [ ! -f "$tmpdir/$artifact" ] || cp "$tmpdir/$artifact" "$PLAK_TEST_DIAGNOSTICS/"
         done
     fi
@@ -51,17 +51,31 @@ cat > "$HOME/.local/bin/frankenphp" <<'FRANK'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1" in
-    php-cli) shift; exec php "$@" ;;
+    php-cli)
+        shift
+        if [ -n "${PLAK_TEST_WP_RUNTIME:-}" ]; then exec "$PLAK_TEST_WP_RUNTIME" php-cli "$@"; fi
+        exec php "$@" ;;
     reload) exit 0 ;;
     *) exit 1 ;;
 esac
 FRANK
 printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/mailpit"
 chmod +x "$HOME/.local/bin/"*
+if [ -n "${PLAK_TEST_WP_RUNTIME:-}" ]; then
+    [ -x "$PLAK_TEST_WP_RUNTIME" ] || { echo 'PLAK_TEST_WP_RUNTIME must be an executable.' >&2; exit 1; }
+    mv "$HOME/.local/bin/frankenphp" "$HOME/.local/bin/frankenphp-lifecycle"
+    ln -s "$PLAK_TEST_WP_RUNTIME" "$HOME/.local/bin/frankenphp"
+fi
 export PATH="$HOME/.local/bin:$PATH"
 printf "DB_USER='plak_test'\nDB_PASSWORD='testpass'\nDB_HOST='127.0.0.1'\nDB_PORT='%s'\n" "$port" > "$HOME/Plak/config"
 printf 'memory_limit=1G\nerror_reporting=6143\nsendmail_path=/bin/true\n' > "$HOME/Plak/php.ini"
+[ -z "${PLAK_TEST_PHP_INI_EXTRA:-}" ] || printf '%s\n' "$PLAK_TEST_PHP_INI_EXTRA" >> "$HOME/Plak/php.ini"
 source ./plak.sh >/dev/null
+if [ -n "${PLAK_TEST_WP_RUNTIME:-}" ]; then
+    # Keep service lifecycle isolated; WP's resolver uses the real symlink and
+    # its sibling php-zts. Inline probes still use FrankenPHP's own PHP.
+    CADDY_CMD="$HOME/.local/bin/frankenphp-lifecycle"
+fi
 export PLAK_SITE_CMD="$ROOT_DIR/plak.sh"
 gum() { :; }
 is_caddy_running() { return 0; }
@@ -82,6 +96,15 @@ PY
     if plak_site_login "$name" admin --subsite 999 --raw >/dev/null 2>&1; then exit 1; fi
     public="$SITES_DIR/$name.localhost/public"
     plak_multisite_wp "$public" user create outsider outsider@example.test --role=subscriber >/dev/null
+    if [ -n "${PLAK_TEST_WP_RUNTIME:-}" ]; then
+        plak_multisite_wp "$public" eval '$result = WP_CLI::launch_self("cli version", [], [], false, true); echo $result->stdout; exit($result->return_code);' > "$tmpdir/self-process"
+        grep -q 'WP-CLI' "$tmpdir/self-process"
+        plak_site_db_list --json > "$tmpdir/runtime-databases.json"
+        python3 - "$tmpdir/runtime-databases.json" <<'PY'
+import json,sys
+assert isinstance(json.load(open(sys.argv[1])),list)
+PY
+    fi
     if plak_site_login "$name" outsider --subsite 2 --raw >/dev/null 2>&1; then exit 1; fi
     plak_multisite_wp "$public" site list --format=json > "$tmpdir/source-before"
     plak_multisite_wp "$public" option add serialized_test '{"url":"https://example.'"$name"'.localhost/"}' --format=json >/dev/null
@@ -103,7 +126,7 @@ PY
     # Real WordPress component metadata, including a MU-plugin file rollback.
     printf '<?php // History version 1\n' > "$public/wp-content/mu-plugins/history-demo.php"
     plak_history "$name" save --note 'Live history test' > "$tmpdir/history-first"
-    history_first=$(php -r '$r=json_decode(file_get_contents($argv[1]),true); echo $r["id"];' "$tmpdir/history-first")
+    history_first=$(php -n -r '$r=json_decode(file_get_contents($argv[1]),true); echo $r["id"];' "$tmpdir/history-first")
     plak_history "$name" save > "$tmpdir/history-noop"
     grep -q '"changed": false' "$tmpdir/history-noop"
     printf '<?php // History version 2\n' > "$public/wp-content/mu-plugins/history-demo.php"
