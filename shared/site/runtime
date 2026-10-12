@@ -999,6 +999,13 @@ update_etc_hosts() {
 
     local missing_hosts=()
     for host in "${required_hosts[@]}"; do
+        # Browser special-use handling is not a libc resolver test. On WSL,
+        # avoid a sudo edit only when this Linux resolver already gives the
+        # loopback address used by Plak; other clients are documented separately.
+        if [ "${IS_WSL:-false}" = true ] && [[ "$host" = *.localhost ]] &&
+            command -v getent >/dev/null && getent ahostsv4 "$host" 2>/dev/null | grep -q '^127\.0\.0\.1[[:space:]]'; then
+            continue
+        fi
         # Use grep -q to quietly check if the entry exists
         if ! grep -q "127.0.0.1[[:space:]]\+$host" /etc/hosts; then
             missing_hosts+=("$host")
@@ -1013,7 +1020,10 @@ update_etc_hosts() {
         done
 
         # Use sudo tee to append all missing entries at once
-        echo -e "$entries_to_add" | sudo tee -a /etc/hosts > /dev/null
+        if ! printf '%b' "$entries_to_add" | sudo tee -a /etc/hosts >/dev/null; then
+            echo 'Error: Linux /etc/hosts update failed; retry interactively with sudo authorization. Browser .localhost resolution does not prove Linux CLI resolution.' >&2
+            return 1
+        fi
         echo "   - ✅ Done."
     else
         echo "   - ✅ All entries are present."

@@ -35,13 +35,15 @@ plak_hosts_write_hosts_file() {
     backup_path="${PLAK_HOSTS_FILE}.plak.bak.$(date +%Y%m%d%H%M%S)"
 
     if [ -w "$PLAK_HOSTS_FILE" ]; then
-        cp "$PLAK_HOSTS_FILE" "$backup_path"
-        cat "$tmp_file" > "$PLAK_HOSTS_FILE"
+        cp "$PLAK_HOSTS_FILE" "$backup_path" || return 1
+        cat "$tmp_file" > "$PLAK_HOSTS_FILE" || return 1
         return 0
     fi
 
-    sudo cp "$PLAK_HOSTS_FILE" "$backup_path"
-    sudo cp "$tmp_file" "$PLAK_HOSTS_FILE"
+    if ! sudo cp "$PLAK_HOSTS_FILE" "$backup_path" || ! sudo cp "$tmp_file" "$PLAK_HOSTS_FILE"; then
+        echo "Error: could not update $PLAK_HOSTS_FILE; sudo authorization is required. No success reported." >&2
+        return 1
+    fi
 }
 
 plak_hosts_add_entry() {
