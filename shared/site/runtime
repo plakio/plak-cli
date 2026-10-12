@@ -349,10 +349,42 @@ prompt_custom_ports() {
     done
 }
 
+# Plak's own MariaDB server config file. Only this file is ever written:
+# Homebrew's my.cnf.d/plak.cnf on macOS, 99-plak.cnf (or my.cnf.d/plak.cnf)
+# on Linux. Other server configs are never edited. An explicit path argument
+# overrides detection (used by tests to avoid touching /etc).
+plak_mariadb_conf_file() {
+    if [ -n "${1:-}" ]; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    if [ "$OS" = "macos" ]; then
+        printf '%s\n' "$(brew --prefix)/etc/my.cnf.d/plak.cnf"
+    else
+        local mariadb_conf_file="/etc/mysql/mariadb.conf.d/99-plak.cnf"
+        if [ ! -d "$(dirname "$mariadb_conf_file")" ]; then
+            mariadb_conf_file="/etc/my.cnf.d/plak.cnf"
+        fi
+        printf '%s\n' "$mariadb_conf_file"
+    fi
+}
+
+# Restart the local MariaDB service. Separated so the explicit port command
+# (and its tests) can stub it; production behavior matches `plak install`.
+plak_site_db_restart_mariadb() {
+    if [ "$OS" = "macos" ]; then
+        brew services restart mariadb
+    else
+        $SUDO_CMD systemctl restart "$(get_mariadb_service_name)"
+    fi
+}
+
 # Reconfigure an existing MariaDB server to listen on DB_PORT. Not called by
-# `plak install` (it would rewrite a system/Homebrew-managed config); kept as
-# the basis for an explicit port-change command. See the CLI ticket for it.
+# `plak install` (it would rewrite a system/Homebrew-managed config); the
+# explicit `plak db port set` command owns that decision with confirmation,
+# backup, restart verification and rollback. See CLI-30 / GH #37.
 plak_site_configure_mariadb_port() {
+    local conf_override="${1:-}"
     DB_HOST="${DB_HOST:-127.0.0.1}"
     DB_PORT="${DB_PORT:-3306}"
     config_set DB_HOST "$DB_HOST"
@@ -362,7 +394,12 @@ plak_site_configure_mariadb_port() {
         local brew_prefix mariadb_conf_dir mariadb_conf_file mariadb_socket
         brew_prefix=$(brew --prefix)
         mariadb_conf_dir="$brew_prefix/etc/my.cnf.d"
-        mariadb_conf_file="$mariadb_conf_dir/plak.cnf"
+        if [ -n "$conf_override" ]; then
+            mariadb_conf_file="$conf_override"
+            mariadb_conf_dir="$(dirname "$mariadb_conf_file")"
+        else
+            mariadb_conf_file="$mariadb_conf_dir/plak.cnf"
+        fi
         mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
         mkdir -p "$mariadb_conf_dir"
         if [ ! -f "$brew_prefix/etc/my.cnf" ]; then
@@ -388,10 +425,8 @@ socket=$mariadb_socket
 EOF
         echo "   - MariaDB configured for $DB_HOST:$DB_PORT ($mariadb_conf_file)"
     elif [ "$OS" = "linux" ]; then
-        local mariadb_conf_file="/etc/mysql/mariadb.conf.d/99-plak.cnf"
-        if [ ! -d "$(dirname "$mariadb_conf_file")" ]; then
-            mariadb_conf_file="/etc/my.cnf.d/plak.cnf"
-        fi
+        local mariadb_conf_file
+        mariadb_conf_file=$(plak_mariadb_conf_file "$conf_override")
         $SUDO_CMD mkdir -p "$(dirname "$mariadb_conf_file")"
         printf '[client]\nhost=%s\nport=%s\n\n[mariadb]\nbind-address=%s\nport=%s\n\n[mysqld]\nbind-address=%s\nport=%s\n' \
             "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" \
