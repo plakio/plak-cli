@@ -6303,6 +6303,17 @@ if ($directives && (bool) ini_get('opcache.enable') && ($directives['opcache.mem
     $directives['opcache.memory_consumption'] = null;
     $warnings[] = 'Runtime returned an invalid enabled-cache memory limit; INI setting is listed separately.';
 }
+// The same uninitialized reporting zeroes other cache-size directives on
+// affected builds (observed: interned_strings_buffer 0 with INI 8, while the
+// CLI SAPI reports the correct values). Non-positive limits are never valid
+// for these directives (see plak_health_opcache_valid ranges), so report
+// them as unknown rather than as measurements.
+foreach (['opcache.interned_strings_buffer', 'opcache.max_accelerated_files'] as $limit_key) {
+    if ($directives && (bool) ini_get('opcache.enable') && ($directives[$limit_key] ?? 0) <= 0) {
+        $directives[$limit_key] = null;
+        $warnings[] = 'Runtime returned an invalid ' . $limit_key . '; INI setting is listed separately.';
+    }
+}
 $opcache_ini = [];
 foreach (['opcache.enable', 'opcache.memory_consumption', 'opcache.interned_strings_buffer',
     'opcache.max_accelerated_files', 'opcache.validate_timestamps', 'opcache.revalidate_freq'] as $key) {
