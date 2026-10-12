@@ -79,6 +79,7 @@ plak_site_status() {
     if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
             "✅ All services are running" \
+            "Service availability only; check WordPress CLI readiness with plak health wordpress." \
             "Dashboard: $(url_for plak.localhost)" \
             "Adminer:   $(url_for db.plak.localhost)" \
             "Mailpit:   $(url_for mail.plak.localhost)"
