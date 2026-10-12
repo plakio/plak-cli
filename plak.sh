@@ -188,6 +188,7 @@ HELP
             ;;
         health)
             echo "Usage: plak health [--json]"
+            echo "       plak health wordpress [--json]"
             echo "       plak health opcache [--json]"
             echo "       plak health opcache set <directive>=<value>... [--restart]"
             echo "       plak health http2 [--json]"
@@ -6654,12 +6655,69 @@ plak_validate_port() {
 # Read-only probes; mutations always require an explicit subcommand/flag.
 plak_health() {
     case "${1:-}" in
+        wordpress) shift; plak_health_wordpress "$@" ;;
         opcache) shift; plak_health_opcache "$@" ;;
         http2) shift; plak_health_http2 "$@" ;;
         -h|--help) plak_display_command_help health ;;
         *) plak_health_report "$@" ;;
     esac
 }
+
+# Bounded subprocess: no website/database/plugin bootstrap or network calls.
+plak_health_wordpress() (
+    local json=false
+    case "${1:-}" in --json) json=true; shift ;; esac
+    [ "$#" -eq 0 ] || { echo 'Usage: plak health wordpress [--json]' >&2; return 1; }
+    local workspace runner rc=0 runtime="" result missing="" phase=runtime definitions
+    definitions=$(declare -f plak_core_version_valid plak_wp_realpath plak_wp_file_is_php plak_wp_resolve_phar plak_php_cli_resolve plak_wp_resolve_command) || return 1
+    runner=$(command -v timeout || command -v gtimeout) || {
+        echo 'Error: WordPress readiness requires timeout (GNU coreutils) to bound external probes.' >&2; return 1;
+    }
+    workspace=$(mktemp -d) || return 1
+    trap 'rm -rf "$workspace"' EXIT
+    # Function definitions are passed as code, not reconstructed argv. The
+    # selected command is resolved under the exact inherited PHPRC/environment.
+    # shellcheck disable=SC2016 # Code expands only in the bounded child shell.
+    "$runner" 20 bash -c '
+        eval "$1"
+        PLAK_WP_COMMAND=()
+        plak_wp_resolve_command || exit $?
+        printf "%s" "${PLAK_WP_COMMAND[0]}" > "$2/runtime"
+        printf script > "$2/phase"
+        cat > "$2/probe.php" <<'"'"'PHP'"'"'
+<?php
+$expected = [__FILE__, "argument with spaces", ""];
+if ($argv !== $expected || $argc !== 3 || $_SERVER["argv"] !== $expected || $_SERVER["argc"] !== 3) exit(78);
+$missing = array_values(array_filter(["mysqli", "curl", "dom", "mbstring", "zip", "Phar"], fn($extension) => !extension_loaded($extension)));
+echo implode(",", $missing);
+exit($missing ? 69 : 0);
+PHP
+        runtime=("${PLAK_WP_COMMAND[@]:0:${#PLAK_WP_COMMAND[@]}-1}")
+        if [ "${PLAK_WP_COMMAND[${#PLAK_WP_COMMAND[@]}-1]}" = --allow-root ]; then
+            runtime=("${PLAK_WP_COMMAND[@]:0:${#PLAK_WP_COMMAND[@]}-2}")
+        fi
+        "${runtime[@]}" "$2/probe.php" "argument with spaces" "" > "$2/missing" || exit $?
+        printf wp-cli > "$2/phase"
+        cd "$2" || exit 1
+        WP_CLI_CONFIG_PATH=/dev/null "${PLAK_WP_COMMAND[@]}" cli info >/dev/null || exit $?
+    ' bash "$definitions" "$workspace" >/dev/null 2> "$workspace/error" || rc=$?
+    [ ! -f "$workspace/runtime" ] || runtime=$(cat "$workspace/runtime")
+    [ ! -f "$workspace/phase" ] || phase=$(cat "$workspace/phase")
+    [ ! -f "$workspace/missing" ] || missing=$(cat "$workspace/missing")
+    if [ "$rc" -eq 0 ]; then result=ready; else result=unavailable; fi
+    if [ "$json" = true ]; then
+        printf '{"wordpress_cli":"%s","phase":"%s","exit_code":%s,"runtime":' "$result" "$phase" "$rc"
+        plak_json_string "$runtime"; printf ',"missing_extensions":'; plak_json_string "$missing"; printf '}\n'
+    else
+        printf 'WordPress CLI: %s (phase: %s, exit: %s)\n' "$result" "$phase" "$rc"
+        [ -z "$runtime" ] || printf 'Selected runtime: %s\n' "$runtime"
+        [ -z "$missing" ] || printf 'Missing required extensions: %s\n' "$missing"
+        [ "$rc" -eq 0 ] || echo 'Check FrankenPHP/WP-CLI availability, script arguments and matching runtime configuration. This probe does not check DB connectivity, DNS/TLS or download availability.'
+    fi
+    # External stderr may contain user configuration/secrets: never dump it in
+    # a health report. Provisioning itself retains its original error output.
+    return "$rc"
+)
 
 plak_health_web() {
     local format="${1:-json}" response
@@ -8073,40 +8131,42 @@ plak_site_add() (
         # Filter known vendor deprecations only for provisioning. plak wp
         # itself passes stderr through unchanged. Explicit checks preserve
         # each failure instead of returning only the last command's status.
-        if ! (
+        (
             cd "$site_dir/public" || exit 1
             "${PLAK_WP_COMMAND[@]}" core download --version="$wp_version" --quiet || {
-                echo "Error: WordPress '$wp_version' download failed; verify the release exists and network access is available." >&2
-                exit 1
+                local rc=$?
+                echo "Error: WP-CLI core download failed for WordPress '$wp_version' (exit $rc). See the original error above; run plak health wordpress to check CLI readiness." >&2
+                exit "$rc"
             }
             if [ ! -s wp-includes/version.php ] || [ ! -s wp-settings.php ]; then
                 echo "Error: WP-CLI reported a download but WordPress core files are missing." >&2
                 exit 1
             fi
-            "${PLAK_WP_COMMAND[@]}" config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<'PHP' || exit 1
+            "${PLAK_WP_COMMAND[@]}" config create --dbname="$db_name" --dbuser="$DB_USER" --dbpass="$DB_PASSWORD" --dbhost="${DB_HOST}:${DB_PORT}" --extra-php <<'PHP' || exit $?
 define( 'WP_ENVIRONMENT_TYPE', 'local' );
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
 PHP
             [ -s wp-config.php ] || { echo "Error: WP-CLI did not create wp-config.php." >&2; exit 1; }
-            "${PLAK_WP_COMMAND[@]}" core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email || exit 1
-            "${PLAK_WP_COMMAND[@]}" core is-installed --skip-plugins --skip-themes || exit 1
+            "${PLAK_WP_COMMAND[@]}" core install --url="$(url_for "$full_hostname")" --title="Welcome to $site_name" --admin_user="$admin_user" --admin_password="$admin_pass" --admin_email="admin@$full_hostname" --skip-email || exit $?
+            "${PLAK_WP_COMMAND[@]}" core is-installed --skip-plugins --skip-themes || exit $?
             if [ -n "$multisite" ]; then
                 local network_flags=()
                 [ "$multisite" != subdomains ] || network_flags+=(--subdomains)
-                "${PLAK_WP_COMMAND[@]}" core multisite-convert "${network_flags[@]}" || exit 1
+                "${PLAK_WP_COMMAND[@]}" core multisite-convert "${network_flags[@]}" || exit $?
                 printf '%s\n' "$multisite" > "$site_dir/.multisite-mode" || exit 1
             fi
             echo "   - Deleting default plugins (Hello Dolly, Akismet)..."
-            "${PLAK_WP_COMMAND[@]}" plugin delete hello akismet --quiet || exit 1
-        ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2); then
-            echo "Error: WordPress installation failed; cleaning up the new site and database." >&2
-            exit 1
-        fi
+            "${PLAK_WP_COMMAND[@]}" plugin delete hello akismet --quiet || exit $?
+        ) 2> >(grep -v -E '^(PHP )?Deprecated:' >&2) || {
+            local rc=$?
+            echo "Error: WordPress provisioning failed (exit $rc); cleaning up the new site and database. The original WP-CLI error identifies the cause." >&2
+            exit "$rc"
+        }
 
         inject_mu_plugin "$site_dir/public" || exit 1
-        one_time_login_url=$("${PLAK_WP_COMMAND[@]}" user login "$admin_user" --path="$site_dir/public/") || exit 1
+        one_time_login_url=$("${PLAK_WP_COMMAND[@]}" user login "$admin_user" --path="$site_dir/public/") || exit $?
         if [[ "$one_time_login_url" != https://* ]]; then
             echo "Error: WP-CLI did not return a one-time login URL." >&2
             exit 1
@@ -13757,6 +13817,7 @@ plak_site_status() {
     if [[ "$caddy_status" == "✅ Running" && "$mariadb_status" == "✅ Running" && "$mailpit_status" == "✅ Running" ]]; then
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 \
             "✅ All services are running" \
+            "Service availability only; check WordPress CLI readiness with plak health wordpress." \
             "Dashboard: $(url_for plak.localhost)" \
             "Adminer:   $(url_for db.plak.localhost)" \
             "Mailpit:   $(url_for mail.plak.localhost)"

@@ -1,12 +1,69 @@
 # Read-only probes; mutations always require an explicit subcommand/flag.
 plak_health() {
     case "${1:-}" in
+        wordpress) shift; plak_health_wordpress "$@" ;;
         opcache) shift; plak_health_opcache "$@" ;;
         http2) shift; plak_health_http2 "$@" ;;
         -h|--help) plak_display_command_help health ;;
         *) plak_health_report "$@" ;;
     esac
 }
+
+# Bounded subprocess: no website/database/plugin bootstrap or network calls.
+plak_health_wordpress() (
+    local json=false
+    case "${1:-}" in --json) json=true; shift ;; esac
+    [ "$#" -eq 0 ] || { echo 'Usage: plak health wordpress [--json]' >&2; return 1; }
+    local workspace runner rc=0 runtime="" result missing="" phase=runtime definitions
+    definitions=$(declare -f plak_core_version_valid plak_wp_realpath plak_wp_file_is_php plak_wp_resolve_phar plak_php_cli_resolve plak_wp_resolve_command) || return 1
+    runner=$(command -v timeout || command -v gtimeout) || {
+        echo 'Error: WordPress readiness requires timeout (GNU coreutils) to bound external probes.' >&2; return 1;
+    }
+    workspace=$(mktemp -d) || return 1
+    trap 'rm -rf "$workspace"' EXIT
+    # Function definitions are passed as code, not reconstructed argv. The
+    # selected command is resolved under the exact inherited PHPRC/environment.
+    # shellcheck disable=SC2016 # Code expands only in the bounded child shell.
+    "$runner" 20 bash -c '
+        eval "$1"
+        PLAK_WP_COMMAND=()
+        plak_wp_resolve_command || exit $?
+        printf "%s" "${PLAK_WP_COMMAND[0]}" > "$2/runtime"
+        printf script > "$2/phase"
+        cat > "$2/probe.php" <<'"'"'PHP'"'"'
+<?php
+$expected = [__FILE__, "argument with spaces", ""];
+if ($argv !== $expected || $argc !== 3 || $_SERVER["argv"] !== $expected || $_SERVER["argc"] !== 3) exit(78);
+$missing = array_values(array_filter(["mysqli", "curl", "dom", "mbstring", "zip", "Phar"], fn($extension) => !extension_loaded($extension)));
+echo implode(",", $missing);
+exit($missing ? 69 : 0);
+PHP
+        runtime=("${PLAK_WP_COMMAND[@]:0:${#PLAK_WP_COMMAND[@]}-1}")
+        if [ "${PLAK_WP_COMMAND[${#PLAK_WP_COMMAND[@]}-1]}" = --allow-root ]; then
+            runtime=("${PLAK_WP_COMMAND[@]:0:${#PLAK_WP_COMMAND[@]}-2}")
+        fi
+        "${runtime[@]}" "$2/probe.php" "argument with spaces" "" > "$2/missing" || exit $?
+        printf wp-cli > "$2/phase"
+        cd "$2" || exit 1
+        WP_CLI_CONFIG_PATH=/dev/null "${PLAK_WP_COMMAND[@]}" cli info >/dev/null || exit $?
+    ' bash "$definitions" "$workspace" >/dev/null 2> "$workspace/error" || rc=$?
+    [ ! -f "$workspace/runtime" ] || runtime=$(cat "$workspace/runtime")
+    [ ! -f "$workspace/phase" ] || phase=$(cat "$workspace/phase")
+    [ ! -f "$workspace/missing" ] || missing=$(cat "$workspace/missing")
+    if [ "$rc" -eq 0 ]; then result=ready; else result=unavailable; fi
+    if [ "$json" = true ]; then
+        printf '{"wordpress_cli":"%s","phase":"%s","exit_code":%s,"runtime":' "$result" "$phase" "$rc"
+        plak_json_string "$runtime"; printf ',"missing_extensions":'; plak_json_string "$missing"; printf '}\n'
+    else
+        printf 'WordPress CLI: %s (phase: %s, exit: %s)\n' "$result" "$phase" "$rc"
+        [ -z "$runtime" ] || printf 'Selected runtime: %s\n' "$runtime"
+        [ -z "$missing" ] || printf 'Missing required extensions: %s\n' "$missing"
+        [ "$rc" -eq 0 ] || echo 'Check FrankenPHP/WP-CLI availability, script arguments and matching runtime configuration. This probe does not check DB connectivity, DNS/TLS or download availability.'
+    fi
+    # External stderr may contain user configuration/secrets: never dump it in
+    # a health report. Provisioning itself retains its original error output.
+    return "$rc"
+)
 
 plak_health_web() {
     local format="${1:-json}" response
