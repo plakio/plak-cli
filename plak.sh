@@ -14653,15 +14653,13 @@ PLAK_WPMCP_SKILL_RAW_BASE="${PLAK_WPMCP_SKILL_RAW_BASE:-https://raw.githubuserco
 
 # Destination used by wp-mcp-cli's own `skill install` for a target.
 plak_skill_wpmcp_path() {
-    case "$1" in
-        codex) echo "$HOME/.codex/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        opencode) echo "$HOME/.config/opencode/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        hermes) echo "$HOME/.hermes/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        pi) echo "$HOME/.pi/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        global) echo "$HOME/.agents/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        *) return 1 ;;
-    esac
+    local path
+    path=$(plak_skill_target_path "$1") || return 1
+    # Preserve wp-mcp-cli's legacy Pi location for local installs only.
+    if [ "$1" = pi ] && [ -z "${PLAK_SKILL_DIRECTORY:-}" ]; then
+        path="$HOME/.pi/skills/$PLAK_SKILL_NAME"
+    fi
+    echo "$(dirname "$path")/$PLAK_WPMCP_SKILL_NAME/SKILL.md"
 }
 
 # Install the official wp-mcp skill for one target. Prefer wp-mcp-cli's own
@@ -14669,7 +14667,9 @@ plak_skill_wpmcp_path() {
 # skill install and never writes to targets the user did not select.
 plak_skill_install_wpmcp_companion() {
     local target="$1" dest
-    if plak_command_exists wp-mcp; then
+    if [ "${PLAK_SKILL_WINDOWS:-false}" = false ] && [ -z "${PLAK_SKILL_DIRECTORY:-}" ] &&
+        { [ "$target" != opencode ] || [ -z "${XDG_CONFIG_HOME:-}" ]; } &&
+        [ "$target" != codex ] && plak_command_exists wp-mcp; then
         if wp-mcp skill install "$target" >/dev/null 2>&1; then
             return 0
         fi
@@ -14680,9 +14680,12 @@ plak_skill_install_wpmcp_companion() {
         return 0
     fi
     mkdir -p "$(dirname "$dest")" || return 0
-    if curl -fsSL "$PLAK_WPMCP_SKILL_RAW_BASE/SKILL.md" -o "$dest"; then
+    local downloaded
+    downloaded=$(mktemp "$(dirname "$dest")/.SKILL.XXXXXX") || return 0
+    if curl -fsSL "$PLAK_WPMCP_SKILL_RAW_BASE/SKILL.md" -o "$downloaded" && [ -s "$downloaded" ] && mv "$downloaded" "$dest"; then
         plak_ui_success "Installed wp-mcp skill for $target: $dest"
     else
+        rm -f "$downloaded"
         plak_ui_warn "Could not install the wp-mcp skill for $target."
     fi
     return 0
@@ -14691,30 +14694,48 @@ plak_skill_install_wpmcp_companion() {
 plak_skill_help() {
     cat <<'HELP'
 Usage:
-  plak skill install [codex|claude-code|opencode|hermes|pi|global|all]
+  plak skill install [codex|claude-code|opencode|hermes|pi|global|all] [--windows]
+  plak skill install <target> --directory /absolute/path/to/skills
+  plak skill path <target> [--windows | --directory /absolute/path/to/skills]
   plak skill help
 
 Installs the Plak CLI agent skill for supported coding agents.
 
 Targets:
-  codex        ~/.codex/skills/plak-cli/SKILL.md
+  codex        ~/.agents/skills/plak-cli/SKILL.md (current Codex discovery)
   claude-code  ~/.claude/skills/plak-cli/SKILL.md
   opencode     ~/.config/opencode/skills/plak-cli/SKILL.md
   hermes       ~/.hermes/skills/plak-cli/SKILL.md
   pi           ~/.pi/agent/skills/plak-cli/SKILL.md
   global       ~/.agents/skills/plak-cli/SKILL.md
   all          Install for every agent-specific target (does not include global)
+
+Default: install in the current Linux/WSL/macOS user's environment only.
+--windows: explicitly copy from WSL into the Windows USERPROFILE for codex,
+claude-code, opencode or global; requires cmd.exe and wslpath. No AppData guesses.
+Hermes/Pi/custom agent paths: use --directory with one target and confirm that
+your agent scans it. --directory is a skills root, not the SKILL.md filename.
+Copying instructions does not install a Windows CLI; run Plak via wsl.exe.
 HELP
 }
 
 plak_skill_target_path() {
+    local home="${PLAK_SKILL_WINDOWS_HOME:-$HOME}"
+    if [ -n "${PLAK_SKILL_DIRECTORY:-}" ]; then
+        echo "$PLAK_SKILL_DIRECTORY/$PLAK_SKILL_NAME"
+        return 0
+    fi
     case "$1" in
-        codex) echo "$HOME/.codex/skills/$PLAK_SKILL_NAME" ;;
-        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
-        opencode) echo "$HOME/.config/opencode/skills/$PLAK_SKILL_NAME" ;;
-        hermes) echo "$HOME/.hermes/skills/$PLAK_SKILL_NAME" ;;
-        pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
-        global) echo "$HOME/.agents/skills/$PLAK_SKILL_NAME" ;;
+        codex|global) echo "$home/.agents/skills/$PLAK_SKILL_NAME" ;;
+        claude-code|claude) echo "$home/.claude/skills/$PLAK_SKILL_NAME" ;;
+        opencode)
+            if [ "${PLAK_SKILL_WINDOWS:-false}" = true ]; then
+                echo "$home/.config/opencode/skills/$PLAK_SKILL_NAME"
+            else
+                echo "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$PLAK_SKILL_NAME"
+            fi ;;
+        hermes) echo "$home/.hermes/skills/$PLAK_SKILL_NAME" ;;
+        pi) echo "$home/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
         *) return 1 ;;
     esac
 }
@@ -14750,21 +14771,42 @@ plak_skill_install_target() {
     local target="$1" dest source_dir
     dest=$(plak_skill_target_path "$target") || return 1
 
-    mkdir -p "$dest"
+    mkdir -p "$dest" || { plak_ui_error "Cannot create skill destination: $dest"; return 1; }
 
     if source_dir=$(plak_skill_source_dir); then
-        cp -R "$source_dir/." "$dest/"
+        cp -R "$source_dir/." "$dest/" || { plak_ui_error "Cannot copy skill to $dest"; return 1; }
     else
         if ! plak_command_exists curl; then
             plak_ui_error "curl is required to download the Plak skill."
             return 1
         fi
-        curl -fsSL "$PLAK_SKILL_RAW_BASE/SKILL.md" -o "$dest/SKILL.md"
+        local downloaded
+        downloaded=$(mktemp "$dest/.SKILL.XXXXXX") || return 1
+        if ! curl -fsSL "$PLAK_SKILL_RAW_BASE/SKILL.md" -o "$downloaded" || [ ! -s "$downloaded" ] || ! mv "$downloaded" "$dest/SKILL.md"; then
+            rm -f "$downloaded"
+            plak_ui_error "Could not download skill for $target; existing SKILL.md was preserved."
+            return 1
+        fi
     fi
 
     if [ ! -f "$dest/SKILL.md" ]; then
         plak_ui_error "Failed to install skill for $target."
         return 1
+    fi
+
+    if [ "${PLAK_SKILL_WINDOWS:-false}" = true ]; then
+        cat >> "$dest/SKILL.md" <<'WINDOWS'
+
+## Native Windows host with Plak in WSL
+
+This copy exposes instructions to a Windows agent; Plak itself runs in WSL.
+Identify the user's distribution with `wsl.exe --list --quiet`, then run commands
+through `wsl.exe -d <distribution> -- bash -lc 'plak <arguments>'`. Confirm
+`command -v plak` inside that Linux shell first. Do not run `plak` as a native
+Windows executable or assume Windows paths/HOME are Linux paths. This copy is
+not a cross-environment MCP registration; credentials and connectivity must be
+configured separately. Respect the user's shell/argument quoting rules.
+WINDOWS
     fi
 
     plak_ui_success "Installed Plak skill for $target: $dest/SKILL.md"
@@ -14835,6 +14877,38 @@ plak_skill_prompt_targets() {
 
 plak_skill_install() {
     local targets=() arg normalized target failed=false
+    # Scoped to this invocation: Windows must never inherit WSL's HOME/XDG or
+    # delegate companion installation into the local user's environment.
+    local PLAK_SKILL_WINDOWS=false PLAK_SKILL_WINDOWS_HOME="" PLAK_SKILL_DIRECTORY=""
+    local paths_only="${PLAK_SKILL_PATHS_ONLY:-false}" profile
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --windows) PLAK_SKILL_WINDOWS=true; shift ;;
+            --directory)
+                [ "$#" -ge 2 ] && [[ "$2" = /* ]] || { plak_ui_error '--directory requires an absolute skills-root path.'; return 1; }
+                PLAK_SKILL_DIRECTORY="${2%/}"; [ -n "$PLAK_SKILL_DIRECTORY" ] || PLAK_SKILL_DIRECTORY=/
+                shift 2 ;;
+            *) targets+=("$1"); shift ;;
+        esac
+    done
+    set -- "${targets[@]}"
+    targets=()
+    if [ "$paths_only" = true ] && [ "$#" -eq 0 ]; then
+        plak_ui_error 'Select a target for plak skill path.'
+        return 1
+    fi
+    if [ "$PLAK_SKILL_WINDOWS" = true ]; then
+        [ -z "$PLAK_SKILL_DIRECTORY" ] || { plak_ui_error 'Choose --windows or --directory, not both.'; return 1; }
+        if [ "${IS_WSL:-false}" != true ] || ! plak_command_exists cmd.exe || ! plak_command_exists wslpath; then
+            plak_ui_error 'Windows profile is unavailable. Run in WSL with cmd.exe/wslpath interop, or select --directory explicitly.'
+            return 1
+        fi
+        profile=$(cmd.exe /d /c 'echo %USERPROFILE%' 2>/dev/null) || { plak_ui_error 'Could not read Windows USERPROFILE.'; return 1; }
+        profile="${profile//$'\r'/}"
+        [[ "$profile" =~ ^[A-Za-z]:\\ ]] && [[ "$profile" != *$'\n'* ]] || { plak_ui_error 'Windows USERPROFILE is not an absolute drive path.'; return 1; }
+        PLAK_SKILL_WINDOWS_HOME=$(wslpath -u "$profile") || return 1
+        [[ "$PLAK_SKILL_WINDOWS_HOME" = /* ]] && [ -d "$PLAK_SKILL_WINDOWS_HOME" ] || { plak_ui_error 'Windows profile is not mounted or accessible.'; return 1; }
+    fi
 
     if [ "$#" -eq 0 ]; then
         while IFS= read -r target; do
@@ -14868,13 +14942,30 @@ plak_skill_install() {
         return 0
     fi
 
+    if [ -n "$PLAK_SKILL_DIRECTORY" ] && [ "${#targets[@]}" -ne 1 ]; then
+        plak_ui_error '--directory requires exactly one target.'
+        return 1
+    fi
+    if [ "$PLAK_SKILL_WINDOWS" = true ]; then
+        for target in "${targets[@]}"; do
+            case "$target" in
+                codex|claude-code|opencode|global) ;;
+                *) plak_ui_error "Automatic Windows discovery is not verified for $target. Select one target with --directory instead."; return 1 ;;
+            esac
+        done
+    elif [ "${IS_WSL:-false}" = true ] && [ -z "$PLAK_SKILL_DIRECTORY" ] && [ "$paths_only" = false ]; then
+        plak_ui_warn 'WSL-local skills are not automatically discovered by native Windows agents. Use --windows or --directory explicitly.'
+    fi
+
     local seen=","
     for target in "${targets[@]}"; do
         case "$seen" in
             *",$target,"*) continue ;;
         esac
         seen="$seen$target,"
-        if ! plak_skill_install_target "$target"; then
+        if [ "$paths_only" = true ]; then
+            plak_skill_target_path "$target"
+        elif ! plak_skill_install_target "$target"; then
             failed=true
         fi
     done
@@ -14883,6 +14974,10 @@ plak_skill_install() {
         return 1
     fi
 
+    [ "$paths_only" = false ] || return 0
+    if [ "$PLAK_SKILL_WINDOWS" = true ]; then
+        echo 'Windows skills copied; run Plak commands through wsl.exe -d <distro> -- plak (not native Windows plak).'
+    fi
     echo ""
     echo "Restart your agent session so it can discover the new skill."
 }
@@ -14893,6 +14988,11 @@ plak_skill() {
 
     case "$action" in
         install)
+            plak_skill_install "$@"
+            ;;
+        path)
+            [ "$#" -gt 0 ] || { plak_ui_error 'Select a target for plak skill path.'; return 1; }
+            local PLAK_SKILL_PATHS_ONLY=true
             plak_skill_install "$@"
             ;;
         help|--help|-h)
