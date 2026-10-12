@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 
 ./compile.sh >/dev/null
 bash tests/php-runtime.sh
+bash tests/wordpress-health.sh
 for source_file in main shared/* shared/site/* commands/* commands/site/* compile.sh install.sh plak.sh tests/*.sh; do
     [ ! -f "$source_file" ] || bash -n "$source_file"
 done

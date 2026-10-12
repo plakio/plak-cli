@@ -185,7 +185,16 @@ for stage in database 'core download' empty-download 'config create' empty-confi
     : > "$MYSQL_LOG"
     : > "$WP_STEPS"
     export FAIL_STAGE="$stage"
-    if ./plak.sh add new --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail "success after failure: $stage"; fi
+    rc=0
+    ./plak.sh add new --no-reload >"$tmpdir/out" 2>"$tmpdir/err" || rc=$?
+    [ "$rc" -ne 0 ] || fail "success after failure: $stage"
+    case "$stage" in
+        'core download'|'config create'|'core install'|'plugin delete'|'user login')
+            [ "$rc" -eq 23 ] || fail "lost WP-CLI exit status for $stage: $rc"
+            grep -q "simulated $stage failure" "$tmpdir/err" || fail "lost original WP-CLI error for $stage"
+            ;;
+    esac
+    if grep -q 'verify the release exists' "$tmpdir/err"; then fail 'misleading network/release diagnosis'; fi
     [ ! -e "$SITES_DIR/new.localhost" ] || fail "left site after $stage"
     [ ! -e "$TEST_DATABASES/$db_name" ] || fail "left database after $stage"
     if grep -q 'created successfully' "$tmpdir/out"; then fail "false success after $stage"; fi

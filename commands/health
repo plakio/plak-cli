@@ -23,6 +23,7 @@ plak_health_wordpress() (
     trap 'rm -rf "$workspace"' EXIT
     # Function definitions are passed as code, not reconstructed argv. The
     # selected command is resolved under the exact inherited PHPRC/environment.
+    # shellcheck disable=SC2016 # Code expands only in the bounded child shell.
     "$runner" 20 bash -c '
         eval "$1"
         PLAK_WP_COMMAND=()
