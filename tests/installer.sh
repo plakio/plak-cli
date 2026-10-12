@@ -53,5 +53,16 @@ for arch in x86_64 aarch64; do
 done
 if PATH="$tmpdir/tools:$PATH" TEST_OS=Windows_NT bash "$ROOT_DIR/install.sh" > "$tmpdir/output" 2>&1; then exit 1; fi
 grep -q 'Unsupported operating system' "$tmpdir/output"
+# Actual executable launch (not bash script invocation) must also work before
+# replacing the previous installation. Simulate a broken shebang interpreter.
+cat > "$tmpdir/tools/bash" <<'BASH'
+#!/bin/bash
+case "$1" in */.plak-install.*) echo 'test interpreter cannot execute installed Plak' >&2; exit 126 ;; esac
+exec /bin/bash "$@"
+BASH
+chmod +x "$tmpdir/tools/bash"
+if PATH="$tmpdir/tools:$PATH" /bin/bash "$ROOT_DIR/install.sh" > "$tmpdir/output" 2>&1; then exit 1; fi
+grep -q 'executable validation failed' "$tmpdir/output"
+cmp "$tmpdir/original" "$PLAK_INSTALL_DIR/plak"
 [ -z "$(find "$PLAK_INSTALL_DIR" -name '.plak-install.*' -print)" ]
 echo 'Installer validation, piped download, preservation and simulated Linux architecture tests passed (not real WSL)'
