@@ -46,8 +46,14 @@ function historyScan(string $root): array {
 }
 function historyWP(array $args): mixed {
     global $site;
-    $command=[getenv('PLAK_HISTORY_FRANK'),'php-cli',getenv('PLAK_HISTORY_WP')];
-    if(getenv('PLAK_HISTORY_ROOT_FLAG')==='--allow-root') $command[]='--allow-root';
+    $selected=getenv('PLAK_HISTORY_WP_COMMAND');
+    if($selected!==false) $command=json_decode($selected,true,512,JSON_THROW_ON_ERROR);
+    else {
+        // Compatibility for standalone engine fixtures; production supplies
+        // the same centrally resolved argv array as every other WP operation.
+        $command=[getenv('PLAK_HISTORY_FRANK'),'php-cli',getenv('PLAK_HISTORY_WP')];
+        if(getenv('PLAK_HISTORY_ROOT_FLAG')==='--allow-root') $command[]='--allow-root';
+    }
     $command=array_merge($command,$args,['--skip-plugins','--skip-themes']);
     $error=tmpfile(); if($error===false) historyFail('Cannot allocate WP-CLI error stream.');
     $proc=proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$error],$pipes,$site.'/public');
