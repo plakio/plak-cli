@@ -30,6 +30,9 @@ plak_history() {
         plak_history_schedule "$site" "$@"
         return $?
     fi
+    local PLAK_WP_COMMAND=() wp_command_json
+    plak_wp_resolve_command || return $?
+    wp_command_json=$(plak_wp_command_json) || return 1
     local wp_path frank root_flag="" args_json='[' separator="" arg
     wp_path=$(plak_wp_resolve_phar) || return 1
     frank=$(type -P frankenphp) || { plak_ui_error 'FrankenPHP is required.'; return 1; }
@@ -44,7 +47,7 @@ plak_history() {
     # FrankenPHP's -r mode does not populate argv on every supported build.
     for arg in "$@"; do args_json+="$separator$(plak_json_string "$arg")"; separator=','; done
     args_json+=']'
-    PLAK_HISTORY_SITE="$site_dir" PLAK_HISTORY_WP="$wp_path" PLAK_HISTORY_FRANK="$frank" PLAK_HISTORY_ROOT_FLAG="$root_flag" PLAK_HISTORY_ARGS="$args_json" \
+    PLAK_HISTORY_WP_COMMAND="$wp_command_json" PLAK_HISTORY_SITE="$site_dir" PLAK_HISTORY_WP="$wp_path" PLAK_HISTORY_FRANK="$frank" PLAK_HISTORY_ROOT_FLAG="$root_flag" PLAK_HISTORY_ARGS="$args_json" \
         "$frank" php-cli -r "$(plak_history_program)"
 }
 

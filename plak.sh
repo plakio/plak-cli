@@ -966,8 +966,14 @@ function historyScan(string $root): array {
 }
 function historyWP(array $args): mixed {
     global $site;
-    $command=[getenv('PLAK_HISTORY_FRANK'),'php-cli',getenv('PLAK_HISTORY_WP')];
-    if(getenv('PLAK_HISTORY_ROOT_FLAG')==='--allow-root') $command[]='--allow-root';
+    $selected=getenv('PLAK_HISTORY_WP_COMMAND');
+    if($selected!==false) $command=json_decode($selected,true,512,JSON_THROW_ON_ERROR);
+    else {
+        // Compatibility for standalone engine fixtures; production supplies
+        // the same centrally resolved argv array as every other WP operation.
+        $command=[getenv('PLAK_HISTORY_FRANK'),'php-cli',getenv('PLAK_HISTORY_WP')];
+        if(getenv('PLAK_HISTORY_ROOT_FLAG')==='--allow-root') $command[]='--allow-root';
+    }
     $command=array_merge($command,$args,['--skip-plugins','--skip-themes']);
     $error=tmpfile(); if($error===false) historyFail('Cannot allocate WP-CLI error stream.');
     $proc=proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$error],$pipes,$site.'/public');
@@ -6451,7 +6457,7 @@ plak_snapshot_keep_safety() {
 }
 
 # Source: shared/site/wp-cli
-# Run the PHP entry point behind `wp` with FrankenPHP and Plak's PHPRC.
+# Run the PHP entry point behind `wp` with the FrankenPHP distribution and PHPRC.
 # No eval or shell execution is used to inspect wrappers.
 
 plak_core_version_valid() {
@@ -6544,6 +6550,57 @@ plak_wp_resolve_phar() {
 
 # Caller owns a local PLAK_WP_COMMAND array (Bash dynamic scope), so paths
 # and arguments never need to be serialized into a shell command string.
+plak_php_cli_resolve() {
+    local frank="$1" version probe direct companion candidate
+    PLAK_PHP_COMMAND=("$frank" php-cli)
+    version=$("$frank" version 2>/dev/null) || version=""
+    # Upstream #2690 affects 1.13.0's PHP<8.6 emulation. Test behavior so a
+    # downstream backport or a native CLI SAPI stays on the direct path.
+    case "$version" in 'FrankenPHP v1.13.0 '*|'FrankenPHP vv1.13.0 '*) ;; *) return 0 ;; esac
+    probe=$(mktemp) || return 1
+    cat > "$probe" <<'PHP'
+<?php
+$extensions = array_values(array_diff(get_loaded_extensions(), ['frankenphp-cli']));
+sort($extensions);
+$settings = [];
+foreach (['memory_limit', 'disable_functions', 'open_basedir', 'date.timezone', 'phar.readonly'] as $key) $settings[$key] = ini_get($key);
+$fingerprint = hash('sha256', json_encode([PHP_VERSION, PHP_ZTS, PHP_INT_SIZE, php_ini_loaded_file(), php_ini_scanned_files(), $extensions, $settings]));
+$expected = [__FILE__, '__plak_php_probe__', ''];
+$ok = ($argv ?? null) === $expected && ($argc ?? null) === 3
+    && ($_SERVER['argv'] ?? null) === $expected && ($_SERVER['argc'] ?? null) === 3;
+echo 'PLAK_PHP_PROBE|' . $fingerprint . '|' . ($ok ? 'ok' : 'shifted') . "\n";
+PHP
+    direct=$("$frank" php-cli "$probe" __plak_php_probe__ '' </dev/null 2>/dev/null) || direct=""
+    case "$direct" in
+        'PLAK_PHP_PROBE|'*'|ok') rm -f "$probe"; return 0 ;;
+        'PLAK_PHP_PROBE|'*'|shifted') ;;
+        *) rm -f "$probe"; echo 'Error: FrankenPHP PHP script probe failed; cannot select a compatible WP-CLI runtime.' >&2; return 78 ;;
+    esac
+    # Only the sibling provided by this distribution, never an arbitrary php
+    # from PATH. Matching version/ZTS/architecture/config/extensions is mandatory.
+    candidate="$(dirname "$frank")/php-zts"
+    companion=""
+    if [ -x "$candidate" ]; then
+        companion=$("$candidate" "$probe" __plak_php_probe__ '' </dev/null 2>/dev/null) || companion=""
+    fi
+    rm -f "$probe"
+    if [ "$companion" != "${direct%|shifted}|ok" ]; then
+        echo 'Error: FrankenPHP 1.13.0 has broken PHP script arguments (upstream #2690). No matching sibling php-zts passed the version/ZTS/config/extension/argv checks.' >&2
+        echo 'Use the matching php-zts-cli package from the FrankenPHP distribution, or a tested runtime containing upstream fix #2691. No generic PHP fallback or PHP 8.6 upgrade was performed.' >&2
+        return 78
+    fi
+    PLAK_PHP_COMMAND=("$candidate")
+}
+
+plak_wp_command_json() {
+    local separator="" argument
+    printf '['
+    for argument in "${PLAK_WP_COMMAND[@]}"; do
+        printf '%s' "$separator"; plak_json_string "$argument"; separator=,
+    done
+    printf ']'
+}
+
 plak_wp_resolve_command() {
     local wp_path frank
     PLAK_WP_COMMAND=()
@@ -6553,7 +6610,9 @@ plak_wp_resolve_command() {
         return 1
     }
     frank=$(plak_wp_realpath "$frank") || return 1
-    PLAK_WP_COMMAND=("$frank" php-cli "$wp_path")
+    local PLAK_PHP_COMMAND=()
+    plak_php_cli_resolve "$frank" || return $?
+    PLAK_WP_COMMAND=("${PLAK_PHP_COMMAND[@]}" "$wp_path")
     if [ "$(id -u)" -eq 0 ]; then
         PLAK_WP_COMMAND+=(--allow-root)
     fi
@@ -8027,7 +8086,7 @@ plak_site_add() (
     fi
     if [ "$site_type" = wordpress ]; then
         source_config
-        plak_wp_resolve_command || exit 1
+        plak_wp_resolve_command || exit $?
         admin_pass=$(plak_site_random_password 12) || exit 1
         [ -n "$admin_pass" ] || { echo "Error: could not generate an admin password." >&2; exit 1; }
         # Preserve the established database naming convention, including its
@@ -8698,12 +8757,15 @@ plak_site_db_list() {
 
     # This heredoc contains a PHP script to find, connect, and format the database list.
     # We invoke it via frankenphp php-cli -r so we don't depend on a standalone php binary.
+    local PLAK_WP_COMMAND=() wp_command_json
+    plak_wp_resolve_command || return $?
+    wp_command_json=$(plak_wp_command_json) || return 1
     local wp_path
     wp_path=$(plak_wp_resolve_phar) || return 1
     local frank
     frank=$(command -v frankenphp) || return 1
     local php_output
-    php_output=$(DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
+    php_output=$(PLAK_WP_COMMAND_JSON="$wp_command_json" DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" SITES_DIR="$SITES_DIR" JSON_MODE="$json_mode" WP_ROOT_FLAG="$wp_root_flag" WP_PATH="$wp_path" FRANK_BIN="$frank" frankenphp php-cli -r '
         function formatSize(int $bytes): string {
             if ($bytes === 0) return "0 B";
             $units = ["B", "KB", "MB", "GB", "TB"];
@@ -8727,8 +8789,7 @@ plak_site_db_list() {
 
         function wpConfig(string $key, string $public): string {
             global $frank_bin, $wp_path, $wp_root_flag;
-            $args = [$frank_bin, "php-cli", $wp_path];
-            if ($wp_root_flag) $args[] = $wp_root_flag;
+            $args = json_decode(getenv("PLAK_WP_COMMAND_JSON"), true, 512, JSON_THROW_ON_ERROR);
             array_push($args, "config", "get", $key, "--skip-plugins", "--skip-themes", "--quiet");
             $pipes = [];
             $proc = proc_open($args, [0 => ["pipe", "r"], 1 => ["pipe", "w"], 2 => ["pipe", "w"]], $pipes, $public);
@@ -9636,6 +9697,9 @@ plak_history() {
         plak_history_schedule "$site" "$@"
         return $?
     fi
+    local PLAK_WP_COMMAND=() wp_command_json
+    plak_wp_resolve_command || return $?
+    wp_command_json=$(plak_wp_command_json) || return 1
     local wp_path frank root_flag="" args_json='[' separator="" arg
     wp_path=$(plak_wp_resolve_phar) || return 1
     frank=$(type -P frankenphp) || { plak_ui_error 'FrankenPHP is required.'; return 1; }
@@ -9650,7 +9714,7 @@ plak_history() {
     # FrankenPHP's -r mode does not populate argv on every supported build.
     for arg in "$@"; do args_json+="$separator$(plak_json_string "$arg")"; separator=','; done
     args_json+=']'
-    PLAK_HISTORY_SITE="$site_dir" PLAK_HISTORY_WP="$wp_path" PLAK_HISTORY_FRANK="$frank" PLAK_HISTORY_ROOT_FLAG="$root_flag" PLAK_HISTORY_ARGS="$args_json" \
+    PLAK_HISTORY_WP_COMMAND="$wp_command_json" PLAK_HISTORY_SITE="$site_dir" PLAK_HISTORY_WP="$wp_path" PLAK_HISTORY_FRANK="$frank" PLAK_HISTORY_ROOT_FLAG="$root_flag" PLAK_HISTORY_ARGS="$args_json" \
         "$frank" php-cli -r "$(plak_history_program)"
 }
 
@@ -10415,7 +10479,8 @@ plak_site_install() {
     # Note: Don't call plak_site_configure_mariadb_port here — it creates
     # plak.cnf which conflicts with Homebrew's MariaDB default config.
 
-    # No standalone PHP install — wp-cli is invoked through frankenphp php-cli
+    # No unrelated standalone PHP install — WP uses frankenphp php-cli, or a
+    # fingerprint-matched sibling php-zts for the upstream 1.13.0 CLI regression.
     # (see get_wp_cmd in main), so FrankenPHP's bundled PHP is the single PHP
     # runtime for both web and CLI. On Linux the php-zts-* extensions installed
     # above provide WordPress's required extensions to FrankenPHP.
