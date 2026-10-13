@@ -31,6 +31,7 @@ Commands:
   email               Send an email through wp_mail.
   find recent-files   List recently modified files.
   find slow-plugins   Measure active plugin impact on WP-CLI bootstrap time.
+  find stuck-plugin   Identify a plugin causing WP-CLI commands to hang.
   find hidden-plugins Detect plugins hidden from the normal active list.
   find malware        Scan for suspicious PHP patterns and verify checksums.
   find php-tags       Find outdated PHP short tags.
@@ -89,7 +90,7 @@ go_command_help() {
             echo "Usage: _go email --to=<email> --subject=<subject> [--content=<html>] [--content-file=<file>]"
             ;;
         find)
-            echo "Usage: _go find <recent-files|slow-plugins|hidden-plugins|malware|php-tags> [arguments]"
+            echo "Usage: _go find <recent-files|slow-plugins|stuck-plugin|hidden-plugins|malware|php-tags> [arguments]"
             ;;
         https)
             echo "Usage: _go https [--www|--no-www] [--yes]"
@@ -191,6 +192,9 @@ go_main() {
                     ;;
                 slow-plugins)
                     go_find_slow_plugins "$@"
+                    ;;
+                stuck-plugin)
+                    go_find_stuck_plugin "$@"
                     ;;
                 hidden-plugins)
                     go_find_hidden_plugins "$@"
@@ -1390,6 +1394,70 @@ go_find_php_tags() {
         echo "Potential outdated PHP tags:"
         echo "$found_tags"
     fi
+}
+
+# ----------------------------------------------------
+#  Identifies a plugin that may be causing WP-CLI commands to hang.
+#  Ported from CaptainCore/do (MIT; see THIRD_PARTY_NOTICES.md).
+#  Read-only: every probe runs under `timeout`, nothing is modified.
+#  A baseline that fails fast (exit other than 0/124) is a WP-CLI error,
+#  not a hang, and aborts before any plugin is tested.
+# ----------------------------------------------------
+go_find_stuck_plugin() {
+    local timeout_secs="${1:-3}"
+    [[ "$timeout_secs" =~ ^[0-9]+$ ]] && [ "$timeout_secs" -ge 1 ] || {
+        go_error "Timeout must be a positive number of seconds."
+        return 1
+    }
+    local wp_cmd timeout_cmd rc plugins plugin
+    wp_cmd=$(go_wp_cli) || return 1
+    "$wp_cmd" core is-installed --quiet || {
+        go_error "This does not appear to be a WordPress installation."
+        return 1
+    }
+    timeout_cmd=$(command -v timeout || command -v gtimeout) || {
+        go_error "'timeout' command not found. This is required to detect hanging processes."
+        return 1
+    }
+
+    echo "Performing a baseline check to confirm WP-CLI is hanging..."
+    rc=0
+    "$timeout_cmd" "${timeout_secs}s" "$wp_cmd" option get home >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "Baseline check successful. WP-CLI doesn't appear to be hanging."
+        return 0
+    elif [ "$rc" -ne 124 ]; then
+        go_error "Baseline check failed with exit $rc (not a timeout); fix the underlying WP-CLI error first."
+        return 1
+    fi
+    echo "Baseline check timed out. WP-CLI appears to be hanging; testing each active plugin."
+
+    plugins=$("$wp_cmd" plugin list --field=name --status=active --skip-plugins)
+    if [ -z "$plugins" ]; then
+        echo "No active plugins found to test."
+        return 0
+    fi
+
+    for plugin in $plugins; do
+        echo -n "Testing with '$plugin' skipped..."
+        rc=0
+        "$timeout_cmd" "${timeout_secs}s" "$wp_cmd" option get home --skip-plugins="$plugin" >/dev/null 2>&1 || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo " SUCCESS!"
+            echo "--------------------------------------------------------"
+            echo "Found the culprit! The site responded quickly when skipping:"
+            echo "  $plugin"
+            echo "--------------------------------------------------------"
+            return 0
+        elif [ "$rc" -eq 124 ]; then
+            echo " Timeout."
+        else
+            echo " Inconclusive (exit $rc, not a timeout)."
+        fi
+    done
+
+    echo "--------------------------------------------------------"
+    echo "Finished testing all plugins. No single plugin could be identified as the culprit."
 }
 
 # Source: commands/https
