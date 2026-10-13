@@ -237,7 +237,7 @@ HELP
             plak_network_usage
             ;;
         db)
-            echo "Usage: plak db <backup|list>"
+            echo "Usage: plak db <backup|list|port>"
             ;;
         version)
             echo "Usage: plak version"
@@ -396,6 +396,9 @@ main() {
                     ;;
                 list)
                     plak_site_db_list "$@"
+                    ;;
+                port)
+                    plak_site_db_port "$@"
                     ;;
                 *)
                     plak_display_command_help "db"

@@ -237,7 +237,7 @@ HELP
             plak_network_usage
             ;;
         db)
-            echo "Usage: plak db <backup|list>"
+            echo "Usage: plak db <backup|list|port>"
             ;;
         version)
             echo "Usage: plak version"
@@ -396,6 +396,9 @@ main() {
                     ;;
                 list)
                     plak_site_db_list "$@"
+                    ;;
+                port)
+                    plak_site_db_port "$@"
                     ;;
                 *)
                     plak_display_command_help "db"
@@ -1687,10 +1690,42 @@ prompt_custom_ports() {
     done
 }
 
+# Plak's own MariaDB server config file. Only this file is ever written:
+# Homebrew's my.cnf.d/plak.cnf on macOS, 99-plak.cnf (or my.cnf.d/plak.cnf)
+# on Linux. Other server configs are never edited. An explicit path argument
+# overrides detection (used by tests to avoid touching /etc).
+plak_mariadb_conf_file() {
+    if [ -n "${1:-}" ]; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    if [ "$OS" = "macos" ]; then
+        printf '%s\n' "$(brew --prefix)/etc/my.cnf.d/plak.cnf"
+    else
+        local mariadb_conf_file="/etc/mysql/mariadb.conf.d/99-plak.cnf"
+        if [ ! -d "$(dirname "$mariadb_conf_file")" ]; then
+            mariadb_conf_file="/etc/my.cnf.d/plak.cnf"
+        fi
+        printf '%s\n' "$mariadb_conf_file"
+    fi
+}
+
+# Restart the local MariaDB service. Separated so the explicit port command
+# (and its tests) can stub it; production behavior matches `plak install`.
+plak_site_db_restart_mariadb() {
+    if [ "$OS" = "macos" ]; then
+        brew services restart mariadb
+    else
+        $SUDO_CMD systemctl restart "$(get_mariadb_service_name)"
+    fi
+}
+
 # Reconfigure an existing MariaDB server to listen on DB_PORT. Not called by
-# `plak install` (it would rewrite a system/Homebrew-managed config); kept as
-# the basis for an explicit port-change command. See the CLI ticket for it.
+# `plak install` (it would rewrite a system/Homebrew-managed config); the
+# explicit `plak db port set` command owns that decision with confirmation,
+# backup, restart verification and rollback. See CLI-30 / GH #37.
 plak_site_configure_mariadb_port() {
+    local conf_override="${1:-}"
     DB_HOST="${DB_HOST:-127.0.0.1}"
     DB_PORT="${DB_PORT:-3306}"
     config_set DB_HOST "$DB_HOST"
@@ -1700,7 +1735,12 @@ plak_site_configure_mariadb_port() {
         local brew_prefix mariadb_conf_dir mariadb_conf_file mariadb_socket
         brew_prefix=$(brew --prefix)
         mariadb_conf_dir="$brew_prefix/etc/my.cnf.d"
-        mariadb_conf_file="$mariadb_conf_dir/plak.cnf"
+        if [ -n "$conf_override" ]; then
+            mariadb_conf_file="$conf_override"
+            mariadb_conf_dir="$(dirname "$mariadb_conf_file")"
+        else
+            mariadb_conf_file="$mariadb_conf_dir/plak.cnf"
+        fi
         mariadb_socket="$PLAK_SITE_DIR/mariadb.sock"
         mkdir -p "$mariadb_conf_dir"
         if [ ! -f "$brew_prefix/etc/my.cnf" ]; then
@@ -1726,10 +1766,8 @@ socket=$mariadb_socket
 EOF
         echo "   - MariaDB configured for $DB_HOST:$DB_PORT ($mariadb_conf_file)"
     elif [ "$OS" = "linux" ]; then
-        local mariadb_conf_file="/etc/mysql/mariadb.conf.d/99-plak.cnf"
-        if [ ! -d "$(dirname "$mariadb_conf_file")" ]; then
-            mariadb_conf_file="/etc/my.cnf.d/plak.cnf"
-        fi
+        local mariadb_conf_file
+        mariadb_conf_file=$(plak_mariadb_conf_file "$conf_override")
         $SUDO_CMD mkdir -p "$(dirname "$mariadb_conf_file")"
         printf '[client]\nhost=%s\nport=%s\n\n[mariadb]\nbind-address=%s\nport=%s\n\n[mysqld]\nbind-address=%s\nport=%s\n' \
             "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" "$DB_HOST" "$DB_PORT" \
@@ -8784,6 +8822,204 @@ plak_site_db_list() {
             echo "$php_output" | gum style --border normal --margin "1" --padding "1 2" --border-foreground 212
         fi
     fi
+}
+
+# -----------------------------------------------------------------
+#  plak db port [set <port>] [--yes] [--dry-run]
+#  Explicit MariaDB port management (CLI-30 / GH #37). Never runs as a
+#  side effect of `plak install` and never moves MariaDB automatically
+#  on conflict: the operator confirms each change.
+#
+#  Only Plak's own server file is written (see plak_mariadb_conf_file).
+#  Rollback: when the restart/verification of the new port fails, the
+#  previous server file and Plak config are restored and the old service
+#  is restarted best-effort. Site wp-config migration failures do NOT
+#  roll back a healthy server change; they are reported per site with a
+#  nonzero exit so nothing claims success silently.
+# -----------------------------------------------------------------
+plak_site_db_port() {
+    local action="show" new_port="" auto_yes=false dry_run=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            set)
+                action="set"; new_port="${2:-}"
+                shift 2 || { echo "Error: 'set' requires a port (e.g. plak db port set 3307)." >&2; return 1; }
+                ;;
+            --yes|-y|--force) auto_yes=true; shift ;;
+            --dry-run) dry_run=true; shift ;;
+            -h|--help)
+                echo "Usage: plak db port [set <port>] [--yes] [--dry-run]"
+                echo "Show or explicitly change the MariaDB port. Only Plak's own server"
+                echo "config file is written; the service is restarted and verified before"
+                echo "site configs are migrated. Rollback restores the previous server file"
+                echo "and Plak config when the new port fails to answer."
+                return 0
+                ;;
+            *)
+                echo "Error: unknown argument '$1'. Usage: plak db port [set <port>] [--yes] [--dry-run]." >&2
+                return 1
+                ;;
+        esac
+    done
+    # Non-interactive shells have no TTY for gum confirm; respect flags.
+    if [ ! -t 0 ]; then
+        auto_yes=true
+    fi
+    if [ "$action" = show ]; then
+        plak_site_db_port_show
+    else
+        plak_site_db_port_set "$new_port" "$auto_yes" "$dry_run"
+    fi
+}
+
+plak_site_db_port_show() {
+    source_config
+    local conf_file answers
+    conf_file=$(plak_mariadb_conf_file)
+    if db_port_is_mariadb "$DB_PORT"; then
+        answers="reachable"
+    else
+        answers="not answering"
+    fi
+    echo "MariaDB port: $DB_HOST:$DB_PORT ($answers)"
+    echo "Server config: $conf_file"
+}
+
+plak_site_db_port_set() {
+    local new_port="$1" auto_yes="$2" dry_run="$3"
+    [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ] || {
+        echo "Error: invalid MariaDB port '$new_port'; use 1-65535." >&2; return 1;
+    }
+    source_config
+    local old_port="$DB_PORT" old_host="$DB_HOST"
+    if [ "$new_port" = "$old_port" ]; then
+        echo "MariaDB port is already $new_port; nothing to change."
+        return 0
+    fi
+    # Refuse a target held by a non-MariaDB service. A port that already
+    # answers as MariaDB is adopted without rewriting the server config.
+    local server_already=false
+    if db_port_is_mariadb "$new_port"; then
+        server_already=true
+    elif db_port_has_conflict "$new_port"; then
+        echo "Error: port $new_port is in use by $(port_listening_app "$new_port"); Plak does not move other services. Free it or pick another port." >&2
+        return 1
+    fi
+    local conf_file
+    conf_file=$(plak_mariadb_conf_file)
+    # Preview without touching anything.
+    if [ "$dry_run" = true ]; then
+        echo "Would change MariaDB port $old_port -> $new_port."
+        if [ "$server_already" = true ]; then
+            echo "Server already answers on $new_port; no server config rewrite or restart needed."
+        else
+            echo "Would rewrite $conf_file, restart MariaDB, verify $DB_HOST:$new_port, then update Plak config and site wp-config DB_HOST values."
+        fi
+        plak_site_db_port_plan_sites "$old_host" "$old_port" "$new_port"
+        return 0
+    fi
+    if [ "$auto_yes" != true ]; then
+        if ! gum confirm "Change MariaDB port $old_port -> $new_port? Only Plak's own server file ($conf_file) is rewritten, with backup and rollback on failure."; then
+            echo "Cancelled."
+            return 1
+        fi
+    fi
+    local backup_dir
+    backup_dir=$(mktemp -d) || return 1
+    # shellcheck disable=SC2064 # Intentional: expand paths now for EXIT cleanup.
+    trap "rm -rf '$backup_dir'" RETURN
+    if [ -f "$conf_file" ]; then
+        cp "$conf_file" "$backup_dir/server.cnf" || return 1
+    fi
+    printf '%s\n' "$old_port" > "$backup_dir/db_port"
+    printf '%s\n' "$old_host" > "$backup_dir/db_host"
+    if [ "$server_already" != true ]; then
+        DB_PORT="$new_port"
+        plak_site_configure_mariadb_port || {
+            echo "Error: could not write $conf_file; nothing was changed." >&2; return 1;
+        }
+        if ! plak_site_db_restart_mariadb; then
+            plak_site_db_port_rollback "$backup_dir" "$conf_file"
+            echo "Error: MariaDB restart failed; previous config restored." >&2
+            return 1
+        fi
+        local i=0
+        while ! mysqladmin -h "$DB_HOST" -P "$new_port" ping --silent >/dev/null 2>&1; do
+            sleep 1; i=$((i + 1))
+            if [ "$i" -ge 20 ]; then
+                plak_site_db_port_rollback "$backup_dir" "$conf_file"
+                echo "Error: MariaDB did not become available on $DB_HOST:$new_port; previous config restored." >&2
+                return 1
+            fi
+        done
+    fi
+    config_set DB_PORT "$new_port"
+    local failed_sites=()
+    plak_site_db_port_migrate_sites "$old_host" "$old_port" "$new_port" failed_sites || true
+    if [ "${#failed_sites[@]}" -gt 0 ]; then
+        echo "Error: MariaDB now answers on $DB_HOST:$new_port, but ${#failed_sites[@]} site(s) kept their old DB_HOST: ${failed_sites[*]}. Update their wp-config DB_HOST to $DB_HOST:$new_port manually." >&2
+        return 1
+    fi
+    echo "MariaDB port changed $old_port -> $new_port."
+}
+
+# Print which sites would have their DB_HOST migrated. Read-only preview.
+plak_site_db_port_plan_sites() {
+    local old_host="$1" old_port="$2" new_port="$3" site_path current
+    [ -d "$SITES_DIR" ] || { echo "No sites directory; no site configs to migrate."; return 0; }
+    for site_path in "$SITES_DIR"/*; do
+        [ -d "$site_path" ] && [ -f "$site_path/public/wp-config.php" ] || continue
+        current=$(plak_multisite_wp "$site_path/public" config get DB_HOST 2>/dev/null) || current=""
+        if [ "$current" = "$old_host:$old_port" ] || [ "$current" = "$old_host" ] && [ "$old_port" = 3306 ]; then
+            echo "Would update $(basename "$site_path"): DB_HOST $current -> $old_host:$new_port."
+        fi
+    done
+}
+
+# Migrate every site wp-config DB_HOST from the old port to the new one.
+# Appends failing site names to the nameref array; never fails silently.
+plak_site_db_port_migrate_sites() {
+    local old_host="$1" old_port="$2" new_port="$3" failures_ref="$4"
+    local -n failures="$failures_ref"
+    local site_path current
+    [ -d "$SITES_DIR" ] || return 0
+    for site_path in "$SITES_DIR"/*; do
+        [ -d "$site_path" ] && [ -f "$site_path/public/wp-config.php" ] || continue
+        current=$(plak_multisite_wp "$site_path/public" config get DB_HOST 2>/dev/null) || { failures+=("$(basename "$site_path")"); continue; }
+        if [ "$current" = "$DB_HOST:$new_port" ]; then
+            continue
+        fi
+        if [ "$current" = "$old_host:$old_port" ] || { [ "$current" = "$old_host" ] && [ "$old_port" = 3306 ]; }; then
+            if ! plak_multisite_wp "$site_path/public" config set DB_HOST "$DB_HOST:$new_port" >/dev/null 2>&1; then
+                failures+=("$(basename "$site_path")")
+            fi
+        fi
+    done
+}
+
+# Restore the previous server file and Plak config after a failed change,
+# then restart the old service best-effort. Reports nothing on its own;
+# callers own the error message so causes stay distinct.
+plak_site_db_port_rollback() {
+    local backup_dir="$1" conf_file="$2"
+    if [ -f "$backup_dir/server.cnf" ]; then
+        if [ "$OS" = "linux" ]; then
+            $SUDO_CMD cp "$backup_dir/server.cnf" "$conf_file" >/dev/null 2>&1 || true
+        else
+            cp "$backup_dir/server.cnf" "$conf_file" >/dev/null 2>&1 || true
+        fi
+    else
+        if [ "$OS" = "linux" ]; then
+            $SUDO_CMD rm -f "$conf_file" >/dev/null 2>&1 || true
+        else
+            rm -f "$conf_file" >/dev/null 2>&1 || true
+        fi
+    fi
+    config_set DB_HOST "$(cat "$backup_dir/db_host")" >/dev/null 2>&1 || true
+    config_set DB_PORT "$(cat "$backup_dir/db_port")" >/dev/null 2>&1 || true
+    DB_HOST="$(cat "$backup_dir/db_host")"
+    DB_PORT="$(cat "$backup_dir/db_port")"
+    plak_site_db_restart_mariadb >/dev/null 2>&1 || true
 }
 
 # Source: commands/site/delete
