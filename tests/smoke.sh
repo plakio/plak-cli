@@ -114,5 +114,6 @@ bash ./tests/wsl-hosts.sh
 bash ./tests/trust-linuxbrew.sh
 bash ./tests/wp-cli.sh
 bash ./tests/agent.sh
+bash ./tests/go-find.sh
 
 echo "Smoke tests passed."

@@ -31,6 +31,7 @@ Commands:
   email               Send an email through wp_mail.
   find recent-files   List recently modified files.
   find slow-plugins   Measure active plugin impact on WP-CLI bootstrap time.
+  find stuck-plugin   Identify a plugin causing WP-CLI commands to hang.
   find hidden-plugins Detect plugins hidden from the normal active list.
   find malware        Scan for suspicious PHP patterns and verify checksums.
   find php-tags       Find outdated PHP short tags.
@@ -89,7 +90,7 @@ go_command_help() {
             echo "Usage: _go email --to=<email> --subject=<subject> [--content=<html>] [--content-file=<file>]"
             ;;
         find)
-            echo "Usage: _go find <recent-files|slow-plugins|hidden-plugins|malware|php-tags> [arguments]"
+            echo "Usage: _go find <recent-files|slow-plugins|stuck-plugin|hidden-plugins|malware|php-tags> [arguments]"
             ;;
         https)
             echo "Usage: _go https [--www|--no-www] [--yes]"
@@ -191,6 +192,9 @@ go_main() {
                     ;;
                 slow-plugins)
                     go_find_slow_plugins "$@"
+                    ;;
+                stuck-plugin)
+                    go_find_stuck_plugin "$@"
                     ;;
                 hidden-plugins)
                     go_find_hidden_plugins "$@"
