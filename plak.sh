@@ -6601,6 +6601,91 @@ plak_ui_success() {
     fi
 }
 
+# True when the command can drive an interactive gum selector.
+# gum draws the selector on stderr and reads the keys from the terminal, so
+# both streams have to be a terminal for the interaction to be visible, and
+# the terminal needs room for the selector.
+plak_ui_interactive() {
+    plak_command_exists gum || return 1
+    [ -t 1 ] || return 1
+    [ -t 2 ] || return 1
+    # The selector reads the keys from the controlling terminal.
+    [ -r /dev/tty ] || return 1
+    plak_ui_selector_height 1 >/dev/null || return 1
+    return 0
+}
+
+# Print the size of the interactive terminal as "<rows> <cols>".
+# Falls back to a regular 80x24 terminal when the size cannot be read.
+plak_ui_terminal_size() {
+    local size rows cols
+    size=$( { stty size < /dev/tty; } 2>/dev/null || true)
+    if [ -n "$size" ]; then
+        rows=${size%% *}
+        cols=${size##* }
+    else
+        rows=$(tput lines 2>/dev/null || true)
+        cols=$(tput cols 2>/dev/null || true)
+    fi
+    case "$rows" in ''|*[!0-9]*) rows=24 ;; esac
+    case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
+    [ "$rows" -gt 0 ] || rows=24
+    [ "$cols" -gt 0 ] || cols=80
+    printf '%s %s\n' "$rows" "$cols"
+}
+
+# How many rows a selector may show without overflowing the terminal.
+# The selector draws a header, the list, a pagination hint, a blank line and
+# the keybind footer: five lines more than the list itself. A view that fills
+# the whole terminal makes the renderer of gum 2 repaint in a loop, so the list
+# keeps one line spare and never grows past the number of rows to show.
+plak_ui_selector_height() {
+    local total="${1:-0}"
+    local size rows height
+    size=$(plak_ui_terminal_size)
+    rows=${size%% *}
+    height=$(( rows - 6 ))
+    [ "$height" -lt 1 ] && return 1
+    [ "$height" -gt "$total" ] && height="$total"
+    printf '%s\n' "$height"
+}
+
+# Show pre-formatted rows in a navigable selector and print the selected row.
+#
+#   plak_ui_select_table "<header>" "<rows>"
+#
+# Rows are newline separated and already aligned by the caller. Arrow keys
+# move the cursor, enter selects the row under it and esc quits without
+# selecting. The selector is drawn with `gum choose` instead of `gum table`:
+# the interactive table of gum 2 renders its header and its footer but never
+# the rows themselves, because the viewport behind them has no width.
+plak_ui_select_table() {
+    local header="${1:-}"
+    local rows="${2:-}"
+    local total height selected
+    local args=()
+
+    [ -n "$rows" ] || return 1
+    plak_command_exists gum || return 1
+
+    total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
+    if ! height=$(plak_ui_selector_height "$total"); then
+        return 1
+    fi
+
+    args=(--height "$height")
+    if [ -n "$header" ]; then
+        args+=(--header "$header")
+    fi
+
+    if selected=$(printf '%s\n' "$rows" | gum choose "${args[@]}"); then
+        [ -n "$selected" ] || return 1
+        printf '%s\n' "$selected"
+        return 0
+    fi
+    return 1
+}
+
 # Emit a JSON string literal (including the surrounding quotes) with the
 # backslash and control characters JSON requires. Hand-rolled because Plak
 # has no jq dependency at runtime.
@@ -6947,14 +7032,20 @@ plak_hosts_list() {
         return 0
     fi
 
-    if plak_command_exists gum && [ -t 1 ]; then
-        {
-            echo "IP,Domain"
-            echo "$rows"
-        } | gum table --separator ","
-    else
-        echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
+    if plak_ui_interactive; then
+        local table header body
+        table=$(printf "IP,Domain\n%s\n" "$rows" | column -t -s ',' 2>/dev/null || printf "IP,Domain\n%s\n" "$rows")
+        header=$(printf '%s\n' "$table" | head -n 1)
+        body=$(printf '%s\n' "$table" | tail -n +2)
+        # The selector puts a two column cursor in front of every row, so the
+        # header keeps the same offset to stay aligned with them.
+        if plak_ui_select_table "  $header" "$body"; then
+            return 0
+        fi
+        return 1
     fi
+
+    echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
 }
 
 plak_hosts_add() {
@@ -7313,16 +7404,22 @@ plak_remote_list() {
         return 0
     fi
 
-    if plak_command_exists gum && [ -t 1 ]; then
-        {
-            echo "Name"$'\t'"Host"$'\t'"User"$'\t'"Port"$'\t'"Path"
-            printf "%s\n" "$filtered" | awk -F'|' 'BEGIN { OFS="\t" } { print $1, $2, $3, $4, ($6 == "" ? "(no path)" : $6) }'
-        } | gum table --columns "Name,Host,User,Port,Path" --widths "16,28,12,6,22" --border rounded --padding "0 1"
-    else
-        printf "%-16s %-28s %-12s %-6s %s\n" "Name" "Host" "User" "Port" "Path"
-        printf "%-16s %-28s %-12s %-6s %s\n" "----------------" "----------------------------" "------------" "------" "----------------------"
-        printf "%s\n" "$filtered" | awk -F'|' '{ p = ($6 == "" ? "(no path)" : $6); printf "%-16s %-28s %-12s %-6s %s\n", $1, $2, $3, $4, p }'
+    local header rows
+    header=$(printf "%-16s %-28s %-12s %-6s %s" "Name" "Host" "User" "Port" "Path")
+    rows=$(printf "%s\n" "$filtered" | awk -F'|' '{ p = ($6 == "" ? "(no path)" : $6); printf "%-16s %-28s %-12s %-6s %s\n", $1, $2, $3, $4, p }')
+
+    if plak_ui_interactive; then
+        # The selector puts a two column cursor in front of every row, so the
+        # header keeps the same offset to stay aligned with them.
+        if plak_ui_select_table "  $header" "$rows"; then
+            return 0
+        fi
+        return 1
     fi
+
+    printf '%s\n' "$header"
+    printf "%-16s %-28s %-12s %-6s %s\n" "----------------" "----------------------------" "------------" "------" "----------------------"
+    printf '%s\n' "$rows"
 }
 
 plak_remote_pick_identity() {
@@ -15197,14 +15294,20 @@ plak_sshkey_list() {
         return 0
     fi
 
-    if plak_command_exists gum && [ -t 1 ]; then
-        {
-            echo "Name,Public Key,Path"
-            echo "$rows"
-        } | gum table --separator ","
-    else
-        echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
+    if plak_ui_interactive; then
+        local table header body
+        table=$(printf "Name,Public Key,Path\n%s\n" "$rows" | column -t -s ',' 2>/dev/null || printf "Name,Public Key,Path\n%s\n" "$rows")
+        header=$(printf '%s\n' "$table" | head -n 1)
+        body=$(printf '%s\n' "$table" | tail -n +2)
+        # The selector puts a two column cursor in front of every row, so the
+        # header keeps the same offset to stay aligned with them.
+        if plak_ui_select_table "  $header" "$body"; then
+            return 0
+        fi
+        return 1
     fi
+
+    echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
 }
 
 plak_sshkey_show_details() {

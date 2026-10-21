@@ -202,16 +202,22 @@ plak_remote_list() {
         return 0
     fi
 
-    if plak_command_exists gum && [ -t 1 ]; then
-        {
-            echo "Name"$'\t'"Host"$'\t'"User"$'\t'"Port"$'\t'"Path"
-            printf "%s\n" "$filtered" | awk -F'|' 'BEGIN { OFS="\t" } { print $1, $2, $3, $4, ($6 == "" ? "(no path)" : $6) }'
-        } | gum table --columns "Name,Host,User,Port,Path" --widths "16,28,12,6,22" --border rounded --padding "0 1"
-    else
-        printf "%-16s %-28s %-12s %-6s %s\n" "Name" "Host" "User" "Port" "Path"
-        printf "%-16s %-28s %-12s %-6s %s\n" "----------------" "----------------------------" "------------" "------" "----------------------"
-        printf "%s\n" "$filtered" | awk -F'|' '{ p = ($6 == "" ? "(no path)" : $6); printf "%-16s %-28s %-12s %-6s %s\n", $1, $2, $3, $4, p }'
+    local header rows
+    header=$(printf "%-16s %-28s %-12s %-6s %s" "Name" "Host" "User" "Port" "Path")
+    rows=$(printf "%s\n" "$filtered" | awk -F'|' '{ p = ($6 == "" ? "(no path)" : $6); printf "%-16s %-28s %-12s %-6s %s\n", $1, $2, $3, $4, p }')
+
+    if plak_ui_interactive; then
+        # The selector puts a two column cursor in front of every row, so the
+        # header keeps the same offset to stay aligned with them.
+        if plak_ui_select_table "  $header" "$rows"; then
+            return 0
+        fi
+        return 1
     fi
+
+    printf '%s\n' "$header"
+    printf "%-16s %-28s %-12s %-6s %s\n" "----------------" "----------------------------" "------------" "------" "----------------------"
+    printf '%s\n' "$rows"
 }
 
 plak_remote_pick_identity() {
