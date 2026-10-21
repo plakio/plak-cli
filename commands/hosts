@@ -129,14 +129,20 @@ plak_hosts_list() {
         return 0
     fi
 
-    if plak_command_exists gum && [ -t 1 ]; then
-        {
-            echo "IP,Domain"
-            echo "$rows"
-        } | gum table --separator ","
-    else
-        echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
+    if plak_ui_interactive; then
+        local table header body
+        table=$(printf "IP,Domain\n%s\n" "$rows" | column -t -s ',' 2>/dev/null || printf "IP,Domain\n%s\n" "$rows")
+        header=$(printf '%s\n' "$table" | head -n 1)
+        body=$(printf '%s\n' "$table" | tail -n +2)
+        # The selector puts a two column cursor in front of every row, so the
+        # header keeps the same offset to stay aligned with them.
+        if plak_ui_select_table "  $header" "$body"; then
+            return 0
+        fi
+        return 1
     fi
+
+    echo "$rows" | column -t -s ',' 2>/dev/null || echo "$rows"
 }
 
 plak_hosts_add() {
