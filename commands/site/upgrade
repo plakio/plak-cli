@@ -96,6 +96,49 @@ upgrade_frankenphp() {
     return 0
 }
 
+plak_upgrade_replace_plak_script() {
+    # Run in a subshell so the EXIT/INT/TERM traps only cover this replacement.
+    # The download is staged next to the destination and renamed atomically;
+    # any failure leaves the current installation untouched.
+    (
+        set -e
+        tag="$1"
+        install_path="$2"
+        install_dir=$(dirname "$install_path")
+        url=$(plak_release_script_url "$tag")
+        temp_script=""
+
+        trap '[ -z "$temp_script" ] || rm -f "$temp_script"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
+
+        if [ -d "$install_path" ]; then
+            echo "Cannot replace $install_path: it is a directory." >&2
+            exit 1
+        fi
+        if ! temp_script=$(mktemp "$install_dir/.plak-upgrade.XXXXXX"); then
+            echo "Could not create a temporary file in $install_dir." >&2
+            exit 1
+        fi
+
+        if ! curl -fsSL --connect-timeout 10 --max-time 120 "$url" -o "$temp_script"; then
+            echo "Could not download Plak ${tag} from ${url}." >&2
+            exit 1
+        fi
+        if ! plak_release_validate_script "$temp_script" "${tag#v}" >/dev/null; then
+            exit 1
+        fi
+
+        chmod 755 "$temp_script"
+        if ! mv -f "$temp_script" "$install_path"; then
+            echo "Could not replace ${install_path}." >&2
+            exit 1
+        fi
+        temp_script=""
+    )
+}
+
 plak_site_upgrade() {
     local auto_yes=false
     for arg in "$@"; do
@@ -107,11 +150,9 @@ plak_site_upgrade() {
     # (only shown when the local version can't be parsed) doesn't hang.
     [ -t 0 ] || auto_yes=true
 
-    echo "🔎 Checking for the latest version of Plak..."
+    echo "🔎 Checking for the latest stable version of Plak..."
 
-    local download_url="https://raw.githubusercontent.com/plakio/plak-cli/main/plak.sh"
-    local temp_script="/tmp/plak.sh.latest"
-    local install_path
+    local install_path latest_tag latest_version current_version
 
     # Find the real path of the currently running script
     install_path=$(command -v plak)
@@ -119,60 +160,49 @@ plak_site_upgrade() {
         install_path="/usr/local/bin/plak" # Fallback to default
     fi
 
-    # 1. Download the latest script
-    echo "   - Downloading latest Plak script from GitHub..."
-    if ! curl -L --fail --progress-bar "$download_url" -o "$temp_script"; then
-        echo "❌ Error: Failed to download the latest version. Please check your connection."
-        rm -f "$temp_script" 2>/dev/null
+    current_version="${PLAK_VERSION:-}"
+
+    if ! plak_release_is_version "$current_version"; then
+        echo "❌ Error: The current Plak version ('$current_version') is not a stable semantic version." >&2
+        echo "   Reinstall with: curl -fsSL https://plak.sh/install | bash" >&2
         return 1
     fi
 
-    # 2. Make it executable
-    chmod +x "$temp_script"
-
-    # 3. Get the new version from the downloaded script
-    local new_version
-    new_version=$("$temp_script" version | awk '{print $2}' | sed 's/^v//')
-
-    if [ -z "$new_version" ]; then
-        echo "❌ Error: Could not determine the version from the downloaded script."
-        rm -f "$temp_script" 2>/dev/null
+    # Stable channel: resolve the newest published vMAJOR.MINOR.PATCH tag.
+    # There is deliberately no fallback to main or releases/latest.
+    if ! latest_tag=$(plak_release_resolve_latest_tag); then
+        echo "❌ Error: Could not determine the latest stable Plak release. Your current installation was left unchanged." >&2
         return 1
     fi
+    latest_version="${latest_tag#v}"
 
-    # 4. Get the current version from the running script
-    local current_version="$PLAK_VERSION"
-    echo "   - Current Plak version:         $current_version"
-    echo "   - Latest available Plak version: $new_version"
+    echo "   - Current Plak version:   $current_version"
+    echo "   - Latest stable Plak tag: $latest_tag"
 
-    # 5. Compare versions
-    local latest
-    latest=$(printf '%s\n' "$current_version" "$new_version" | sort -V | tail -n1)
-
-    if [[ "$latest" == "$current_version" ]] && [[ "$new_version" != "$current_version" ]]; then
-         echo "✅ Your current Plak version ($current_version) is newer than the latest release ($new_version). No action taken."
-         rm -f "$temp_script" 2>/dev/null
-    elif [[ "$latest" == "$current_version" ]]; then
-        echo "✅ You are already using the latest version of Plak."
-        rm -f "$temp_script" 2>/dev/null
+    if ! plak_release_version_gt "$latest_version" "$current_version"; then
+        if [ "$latest_version" = "$current_version" ]; then
+            echo "✅ You are already using the latest stable version of Plak ($current_version)."
+        else
+            echo "✅ Your current Plak version ($current_version) is newer than the latest stable release ($latest_version). No action taken."
+        fi
     else
-        # 6. Perform the Plak upgrade
-        echo "🚀 Upgrading Plak to version $new_version..."
+        echo "🚀 Upgrading Plak to version $latest_version ($latest_tag)..."
 
-        if [ ! -w "$(dirname "$install_path")" ]; then
-            echo "❌ Error: No write permissions for '$(dirname "$install_path")'."
+        local install_dir
+        install_dir=$(dirname "$install_path")
+        if [ ! -w "$install_dir" ]; then
+            echo "❌ Error: No write permissions for '$install_dir'."
             echo "   Please try running with sudo: 'sudo plak upgrade'"
-            rm -f "$temp_script" 2>/dev/null
             return 1
         fi
 
-        if ! mv "$temp_script" "$install_path"; then
-            echo "❌ Error: Failed to replace the old script at '$install_path'."
-            rm -f "$temp_script" 2>/dev/null
-        else
-            echo "✅ Plak has been successfully upgraded to version $new_version!"
-            echo "   Run 'plak version' to see the new version."
+        if ! plak_upgrade_replace_plak_script "$latest_tag" "$install_path"; then
+            echo "❌ Error: Failed to replace the Plak script. Your existing installation at '$install_path' was left unchanged." >&2
+            return 1
         fi
+
+        echo "✅ Plak has been successfully upgraded to version $latest_version!"
+        echo "   Run 'plak version' to see the new version."
     fi
 
     # --- New Section: FrankenPHP Upgrade Check ---
