@@ -1,5 +1,7 @@
 name: Notify Homebrew Tap
 
+# Publication is tag-driven. Pushing a v* tag is the release trigger; GitHub
+# Release pages are optional editorial extras and are not required.
 on:
   push:
     tags:
