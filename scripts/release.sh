@@ -20,6 +20,7 @@ What this does:
   3. Commits "Release <version>"
   4. Pushes main, tags v<version>, and pushes the tag
   5. The tag triggers the automated Homebrew tap update
+  6. Does not create a GitHub Release page: the tag is the publication channel
 USAGE
 }
 
@@ -156,7 +157,10 @@ echo "==> Pushing main"
 git push origin main
 
 echo "==> Creating and pushing tag $TAG"
+# The tag is the publication channel. Do not add a GitHub Release page here:
+# Homebrew, install.sh and plak upgrade do not need one.
 git tag "$TAG"
 git push origin "$TAG"
 
-echo "==> Release $VERSION complete; GitHub Actions will update the Homebrew tap."
+echo "==> Release $VERSION complete; the tag is published and GitHub Actions will update the Homebrew tap."
+echo "==> No GitHub Release page was created (tags are the publication channel)."
