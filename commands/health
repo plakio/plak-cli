@@ -3,6 +3,7 @@ plak_health() {
     case "${1:-}" in
         opcache) shift; plak_health_opcache "$@" ;;
         http2) shift; plak_health_http2 "$@" ;;
+        php) shift; plak_health_php "$@" ;;
         -h|--help) plak_display_command_help health ;;
         *) plak_health_report "$@" ;;
     esac
@@ -19,6 +20,118 @@ plak_health_web() {
         'json:{"source":"web",'*|'text:Web PHP: '*) printf '%s\n' "$response" ;;
         *) return 1 ;;
     esac
+}
+
+# The web probe reports the PHP version of the process actually serving
+# sites. A missing probe is unknown, never evidence that the CLI runtime is
+# what serves them.
+plak_health_php_web_version() {
+    local response
+    response=$(plak_health_web json 2>/dev/null) || return 1
+    printf '%s' "$response" | sed -n 's/.*"php_version":"\([^"]*\)".*/\1/p'
+}
+
+plak_health_php() {
+    local json=false
+    case "${1:-}" in
+        --json) json=true; shift ;;
+        -h|--help)
+            echo "Usage: plak health php [--json]"
+            echo ""
+            echo "Reports the PHP embedded in the FrankenPHP binary used for sites and"
+            echo "WP-CLI, plus the PHP version reported by the running web process."
+            echo "Returns 0 when patched, 1 when below the upstream security floor,"
+            echo "2 when a package build cannot be verified from its version and"
+            echo "3 when the runtime cannot be probed."
+            return 0
+            ;;
+    esac
+    if [ "$#" -ne 0 ]; then
+        plak_ui_error 'Usage: plak health php [--json]'
+        return 1
+    fi
+
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel
+    local cli_status="" status="" rc=0 cli_rc=0
+    local web_version="" web_status="" web_rc=0
+    bin=$(command -v "$caddy" 2>/dev/null) || {
+        if [ "$json" = true ]; then
+            printf '{"binary":null,"channel":null,"frankenphp_version":null,"php_version":null,"status":"unknown","cli_status":null,"web_php_version":null,"web_status":null,"advisory":'
+            plak_json_string "$PLAK_PHP_SECURITY_ADVISORY"
+            printf ',"advisory_url":'
+            plak_json_string "$PLAK_PHP_SECURITY_ADVISORY_URL"
+            printf ',"fixed_versions":{"8.2":"8.2.35","8.3":"8.3.36","8.4":"8.4.27","8.5":"8.5.12"}}\n'
+        else
+            plak_ui_error 'FrankenPHP not found. Run plak install.'
+        fi
+        return 3
+    }
+    version=$(plak_php_runtime_php_version "$bin") || version=""
+    frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
+    channel=$(plak_php_runtime_channel "$bin")
+    cli_status=$(plak_php_runtime_status "$bin") || cli_rc=$?
+    status="$cli_status"
+    rc="$cli_rc"
+    web_version=$(plak_health_php_web_version) || web_version=""
+    if [ -n "$web_version" ]; then
+        web_status=$(plak_php_version_status "$web_version") || web_rc=$?
+        # The web process is what serves sites. If it still runs an older
+        # unpatched PHP after a binary update, the CLI being patched is not
+        # enough: the service needs a full restart. Apply the same package
+        # backport caveat as the CLI probe.
+        if [ "$web_rc" -eq 1 ]; then
+            case "$channel" in
+                apt|dnf|brew|package) web_status="unverified"; web_rc=2 ;;
+            esac
+        fi
+        if [ "$web_rc" -eq 1 ] || { [ "$web_rc" -eq 2 ] && [ "$rc" -eq 0 ]; }; then
+            status="$web_status"
+            rc="$web_rc"
+        fi
+    fi
+
+    if [ "$json" = true ]; then
+        plak_php_runtime_json "$web_version" "$web_status" "$status"
+        printf '\n'
+        return "$rc"
+    fi
+
+    plak_ui_title 'PHP runtime (read-only)'
+    printf 'Binary:       %s\n' "$bin"
+    printf 'Channel:      %s\n' "$channel"
+    printf 'FrankenPHP:   %s\n' "${frank:-unknown}"
+    printf 'PHP (CLI):    %s [%s]\n' "${version:-unknown}" "$cli_status"
+    if [ -n "$web_version" ]; then
+        printf 'PHP (web):    %s [%s]\n' "$web_version" "$web_status"
+    else
+        printf 'PHP (web):    unknown (service/probe unavailable)\n'
+    fi
+    printf 'Advisory:     %s (%s)\n' "$PLAK_PHP_SECURITY_ADVISORY" "$PLAK_PHP_SECURITY_DATE"
+    printf 'Fixed:        PHP 8.2.35, 8.3.36, 8.4.27 or 8.5.12\n'
+    case "$status" in
+        patched)
+            echo 'Result:       patched. This runtime reports a fixed upstream PHP version.'
+            ;;
+        vulnerable)
+            echo 'Result:       VULNERABLE. Update this runtime before serving sites.'
+            echo "              Run 'plak upgrade'; the first static FrankenPHP release"
+            echo '              documented with PHP 8.5.12 is v1.13.2.'
+            ;;
+        unverified)
+            echo 'Result:       UNVERIFIED. This is a package-managed runtime below the'
+            echo '              upstream fixed version. Update it through its package'
+            echo '              manager and confirm the vendor advisory/changelog; a vendor'
+            echo '              backport can keep the upstream version number.'
+            ;;
+        *)
+            echo 'Result:       UNKNOWN. The runtime did not report a usable PHP version.'
+            ;;
+    esac
+    if [ -n "$web_version" ] && [ "$web_version" != "$version" ]; then
+        echo 'Warning:      The web process reports a different PHP version than the CLI.'
+        echo "              Restart the Plak service ('plak reload' is not a full restart)."
+    fi
+    return "$rc"
 }
 
 plak_health_service() {
@@ -48,12 +161,21 @@ plak_health_report() {
     case "${1:-}" in --json) json=true; shift ;; esac
     [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health [--json]'; return 1; }
     local frank db mail version="" free=null used=null signals="" abandoned="" web=null item
+    local php_runtime php_version="" php_status="unknown"
     frank=$(plak_health_service frankenphp)
     db=$(plak_health_service mariadb)
     mail=$(plak_health_service mailpit)
     if command -v "$CADDY_CMD" >/dev/null 2>&1; then
         version=$("$CADDY_CMD" version 2>/dev/null) || version=""
     fi
+    php_runtime=$(plak_php_runtime_json) || true
+    case "$php_runtime" in
+        ''|null) php_runtime=null ;;
+        *)
+            php_version=$(printf '%s' "$php_runtime" | sed -n 's/.*"php_version":"\([^"]*\)".*/\1/p')
+            php_status=$(printf '%s' "$php_runtime" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
+            ;;
+    esac
     if [ -d "$PLAK_SITE_DIR" ]; then
         used=$(du -sk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==1 {printf "%.0f", $1*1024}')
         free=$(df -Pk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==2 {printf "%.0f", $4*1024}')
@@ -83,10 +205,11 @@ plak_health_report() {
         printf ',"disk":{"used_bytes":%s,"free_bytes":%s},"failure_signals":' "${used:-null}" "${free:-null}"
         plak_json_string "$signals"
         printf ',"abandoned_candidates":'; plak_json_string "$abandoned"
-        printf ',"web_php":%s}\n' "${web:-null}"
+        printf ',"php_runtime":%s,"web_php":%s}\n' "${php_runtime:-null}" "${web:-null}"
     else
         plak_ui_title 'Plak health (read-only)'
         printf 'Platform: %s\nFrankenPHP: %s (%s)\nMariaDB: %s\nMailpit: %s\n' "$OS" "$frank" "${version:-version unknown}" "$db" "$mail"
+        printf 'PHP (FrankenPHP): %s [%s]\n' "${php_version:-unknown}" "$php_status"
         printf 'Disk: used=%s bytes; free=%s bytes (null = unknown)\n' "${used:-null}" "${free:-null}"
         printf '\nAvailable failure signals (not proven crash causes):\n%s\n' "${signals:-none available}"
         printf '\nRecovery/old-job candidates (inspect before removing):\n%s\n' "${abandoned:-none available}"

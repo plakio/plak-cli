@@ -104,6 +104,7 @@ if grep -q 'maxdepth 2.*wp-config.php' commands/site/install; then
 fi
 
 ./tests/migration.sh
+bash ./tests/php-security.sh
 bash ./tests/snapshots.sh
 bash ./tests/import.sh
 bash ./tests/clone.sh

@@ -415,6 +415,17 @@ plak_site_install() {
         fi
     fi
 
+    # PHP2Shell (CVE-2026-109618 / CVE-2026-109619): an existing FrankenPHP
+    # installation is not assumed patched. Probe the embedded PHP and update
+    # through the owning channel before installing anything that will serve
+    # sites. Static/upstream builds fail closed; a distro package below the
+    # upstream floor is reported as unverified rather than silently accepted.
+    if ! plak_php_ensure_safe_runtime; then
+        gum style --foreground red "❌ PHP runtime verification failed; installation stopped."
+        gum style --foreground yellow "   See docs/php-security.md. Do not serve sites with the current runtime."
+        exit 1
+    fi
+
     # MariaDB - Database server
     install_dependency "mariadb" "mariadb" "mariadb-server" "mariadb-server" ""
 
