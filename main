@@ -188,14 +188,17 @@ HELP
             ;;
         health)
             echo "Usage: plak health [--json]"
+            echo "       plak health php [--json]"
             echo "       plak health opcache [--json]"
             echo "       plak health opcache set <directive>=<value>... [--restart]"
             echo "       plak health http2 [--json]"
             echo ""
-            echo "  Reports services, FrankenPHP, disk, recent failure signals and"
-            echo "  abandoned resources without changing anything. 'opcache' reads the"
-            echo "  web process cache; 'opcache set' tunes validated directives and only"
-            echo "  applies them when asked. 'http2' probes protocol negotiation."
+            echo "  Reports services, FrankenPHP, PHP security status, disk, recent"
+            echo "  failure signals and abandoned resources without changing anything."
+            echo "  'php' probes the PHP embedded in FrankenPHP and the running web"
+            echo "  process (exit 1 vulnerable, 2 unverified package build). 'opcache'"
+            echo "  reads the web process cache; 'opcache set' tunes validated directives"
+            echo "  and only applies them when asked. 'http2' probes protocol negotiation."
             ;;
         add)
             echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--plain] [--agent|--no-agent] [--no-reload]"

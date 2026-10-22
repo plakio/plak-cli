@@ -73,6 +73,7 @@ WP-CLI's exit code. Use `plak wp --help` for Plak's wrapper help.
 
 ```bash
 plak --json status         # inspect dependencies and services
+plak health php            # embedded CLI/web PHP + PHP2Shell security floor
 plak --json version        # {name, version}
 plak install --yes         # non-interactive install (auto-accept defaults)
 plak enable

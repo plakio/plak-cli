@@ -188,14 +188,17 @@ HELP
             ;;
         health)
             echo "Usage: plak health [--json]"
+            echo "       plak health php [--json]"
             echo "       plak health opcache [--json]"
             echo "       plak health opcache set <directive>=<value>... [--restart]"
             echo "       plak health http2 [--json]"
             echo ""
-            echo "  Reports services, FrankenPHP, disk, recent failure signals and"
-            echo "  abandoned resources without changing anything. 'opcache' reads the"
-            echo "  web process cache; 'opcache set' tunes validated directives and only"
-            echo "  applies them when asked. 'http2' probes protocol negotiation."
+            echo "  Reports services, FrankenPHP, PHP security status, disk, recent"
+            echo "  failure signals and abandoned resources without changing anything."
+            echo "  'php' probes the PHP embedded in FrankenPHP and the running web"
+            echo "  process (exit 1 vulnerable, 2 unverified package build). 'opcache'"
+            echo "  reads the web process cache; 'opcache set' tunes validated directives"
+            echo "  and only applies them when asked. 'http2' probes protocol negotiation."
             ;;
         add)
             echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--plain] [--agent|--no-agent] [--no-reload]"
@@ -1260,6 +1263,245 @@ plak_multisite_rewrite() {
         fi
     done
     plak_multisite_validate_local "$public" "$new" || return 1
+}
+
+# Source: shared/site/php-security
+# shellcheck disable=SC2034
+# PHP runtime security checks.
+#
+# On 2026-10-21 the PHP project published two critical, unauthenticated RCE
+# fixes: CVE-2026-109618 (OOM corruption) and CVE-2026-109619 (stale global
+# state). The first upstream releases containing both fixes are:
+#   PHP 8.2.35, 8.3.36, 8.4.27 and 8.5.12
+# FrankenPHP v1.13.2 is the first release documented with PHP 8.5.12 in its
+# static binaries. Some older release assets were rebuilt after the PHP
+# release too (v1.13.1 reports 8.5.12); others embed 8.5.11 or earlier. Probe
+# the binary instead of trusting either version string.
+#
+# A version string is evidence only for the build that reports it. Linux
+# distributions commonly backport security fixes without changing the
+# upstream version, so a package-managed runtime below these floors is
+# reported as "unverified", not as safe or as definitely vulnerable. Only
+# the vendor's advisory/changelog can establish a backport.
+PLAK_PHP_SECURITY_ADVISORY="CVE-2026-109618, CVE-2026-109619"
+PLAK_PHP_SECURITY_ADVISORY_URL="https://www.php.net/archive/2026.php#2026-10-21-5"
+PLAK_PHP_SECURITY_DATE="2026-10-21"
+PLAK_FRANKENPHP_SECURITY_FLOOR="1.13.2"
+# v1.13.2 stopped publishing an Intel macOS static asset. Its v1.13.1
+# assets were rebuilt after the PHP release and report PHP 8.5.12, so they
+# are a validated fallback for that platform only. The installed binary is
+# always probed before it replaces a working one.
+PLAK_FRANKENPHP_STATIC_FALLBACK="1.13.1"
+
+# Normalize a PHP version to major.minor.patch. A suffix such as
+# -1ubuntu0.1 is accepted and ignored; prerelease suffixes are handled by
+# plak_php_version_status because they are not the released fixed build.
+plak_php_version_normalize() {
+    local value="${1:-}"
+    [[ "$value" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
+    printf '%s.%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+# Print -1, 0 or 1 for the normalized versions passed as $1 and $2.
+plak_php_version_compare() {
+    local a b am aj ap bm bj bp
+    a=$(plak_php_version_normalize "$1") || return 2
+    b=$(plak_php_version_normalize "$2") || return 2
+    am=${a%%.*}
+    a=${a#*.}
+    aj=${a%%.*}
+    ap=${a#*.}
+    bm=${b%%.*}
+    b=${b#*.}
+    bj=${b%%.*}
+    bp=${b#*.}
+    if [ "$am" -ne "$bm" ]; then
+        [ "$am" -gt "$bm" ] && printf '1\n' || printf '%s\n' '-1'
+    elif [ "$aj" -ne "$bj" ]; then
+        [ "$aj" -gt "$bj" ] && printf '1\n' || printf '%s\n' '-1'
+    elif [ "$ap" -ne "$bp" ]; then
+        [ "$ap" -gt "$bp" ] && printf '1\n' || printf '%s\n' '-1'
+    else
+        printf '0\n'
+    fi
+}
+
+plak_php_version_ge() {
+    local comparison
+    comparison=$(plak_php_version_compare "$1" "$2") || return 1
+    [ "$comparison" != "-1" ]
+}
+
+# Classify a PHP_VERSION string against the upstream fixed releases.
+# 0 = patched, 1 = below the upstream fixed release, 2 = not verifiable from
+# the version alone (EOL branch below the floor, or prerelease build).
+plak_php_version_status() {
+    local value="${1:-}" normalized major minor fixed comparison
+    case "$value" in
+        *RC*|*rc*|*alpha*|*beta*|*Alpha*|*Beta*|*DEV*|*dev*) printf 'unverified\n'; return 2 ;;
+    esac
+    normalized=$(plak_php_version_normalize "$value") || { printf 'unverified\n'; return 2; }
+    major=${normalized%%.*}
+    minor=${normalized#*.}
+    minor=${minor%%.*}
+    case "$major.$minor" in
+        8.2) fixed="8.2.35" ;;
+        8.3) fixed="8.3.36" ;;
+        8.4) fixed="8.4.27" ;;
+        8.5) fixed="8.5.12" ;;
+        *)
+            # A later stable upstream branch is built from main after these
+            # fixes were merged; older/EOL branches need a vendor backport.
+            if plak_php_version_ge "$normalized" "8.5.12"; then
+                printf 'patched\n'
+                return 0
+            fi
+            printf 'unverified\n'
+            return 2
+            ;;
+    esac
+    comparison=$(plak_php_version_compare "$normalized" "$fixed") || { printf 'unverified\n'; return 2; }
+    if [ "$comparison" = "-1" ]; then
+        printf 'vulnerable\n'
+        return 1
+    fi
+    printf 'patched\n'
+    return 0
+}
+
+# Resolve symlinks without following the binary itself.
+plak_php_runtime_realpath() {
+    local path="$1" target hops=0
+    while [ -L "$path" ]; do
+        if [ "$hops" -ge 40 ]; then
+            printf '%s\n' "$1"
+            return 0
+        fi
+        target=$(readlink "$path" 2>/dev/null) || break
+        case "$target" in
+            /*) path="$target" ;;
+            *) path="$(dirname "$path")/$target" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    printf '%s\n' "$path"
+}
+
+# Where the runtime comes from determines how it must be updated. A static
+# FrankenPHP binary is replaced; a Homebrew, apt or dnf package must be
+# upgraded through its package manager instead of being overwritten.
+plak_php_runtime_channel() {
+    local original="$1" resolved
+    resolved=$(plak_php_runtime_realpath "$original")
+    case "$original:$resolved" in
+        *:/opt/homebrew/*|*:/usr/local/Cellar/*|*:/usr/local/opt/*|*:/home/linuxbrew/*|*:*/.linuxbrew/*)
+            printf 'brew\n'
+            return 0
+            ;;
+        *:/Cellar/*|*:/homebrew/*|*:/linuxbrew/*)
+            printf 'brew\n'
+            return 0
+            ;;
+    esac
+    case "$original" in
+        /usr/bin/frankenphp|/usr/sbin/frankenphp)
+            if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -S "$resolved" >/dev/null 2>&1; then
+                # The static-php/FrankenPHP repository builds PHP itself and
+                # does not carry distribution backports; its version string is
+                # authoritative for the embedded PHP release.
+                local apt_origin
+                apt_origin=$(apt-cache policy frankenphp 2>/dev/null | awk '/https?:\/\// {print; exit}')
+                case "$apt_origin" in
+                    *henderkes*|*static-php*) printf 'apt-upstream\n' ;;
+                    *) printf 'apt\n' ;;
+                esac
+                return 0
+            fi
+            if command -v rpm >/dev/null 2>&1 && rpm -qf "$resolved" >/dev/null 2>&1; then
+                local rpm_info
+                rpm_info=$(rpm -qi frankenphp 2>/dev/null)
+                case "$rpm_info" in
+                    *henderkes*|*static-php*) printf 'dnf-upstream\n' ;;
+                    *) printf 'dnf\n' ;;
+                esac
+                return 0
+            fi
+            printf 'package\n'
+            return 0
+            ;;
+    esac
+    printf 'static\n'
+}
+
+plak_php_runtime_php_version() {
+    local bin="${1:-frankenphp}"
+    [ -x "$bin" ] || return 1
+    "$bin" php-cli -r 'echo PHP_VERSION;' 2>/dev/null
+}
+
+plak_php_runtime_frankenphp_version() {
+    local bin="${1:-frankenphp}"
+    [ -x "$bin" ] || return 1
+    "$bin" version 2>/dev/null | awk 'NR==1 {
+        for (i=1; i<=NF; i++) {
+            if ($i ~ /^v?[0-9]+\.[0-9]+\.[0-9]+/) {
+                sub(/^v/, "", $i)
+                print $i
+                exit
+            }
+        }
+    }'
+}
+
+# Runtime status adds the package-manager caveat: a version below the
+# upstream floor is only "vulnerable" for a static/upstream build.
+plak_php_runtime_status() {
+    local bin="${1:-frankenphp}" version base channel
+    version=$(plak_php_runtime_php_version "$bin") || { printf 'unknown\n'; return 3; }
+    base=$(plak_php_version_status "$version")
+    local rc=$?
+    channel=$(plak_php_runtime_channel "$bin")
+    if [ "$rc" -eq 1 ]; then
+        case "$channel" in
+            apt|dnf|brew|package) printf 'unverified\n'; return 2 ;;
+        esac
+    fi
+    printf '%s\n' "$base"
+    return "$rc"
+}
+
+# Emit one JSON object for the selected FrankenPHP runtime. $1 and $2 are
+# optional web-process PHP version/status fields. Returns the status code
+# from plak_php_runtime_status (0 patched, 1 vulnerable, 2 unverified,
+# 3 unknown); callers that only render data may ignore it.
+plak_php_runtime_json() {
+    local web_version="${1:-}" web_status="${2:-}"
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel status rc=0
+    bin=$(command -v "$caddy" 2>/dev/null) || { printf 'null'; return 3; }
+    version=$(plak_php_runtime_php_version "$bin") || version=""
+    frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
+    channel=$(plak_php_runtime_channel "$bin")
+    status=$(plak_php_runtime_status "$bin") || rc=$?
+    printf '{"binary":'
+    plak_json_string "$bin"
+    printf ',"channel":'
+    plak_json_string "$channel"
+    printf ',"frankenphp_version":'
+    if [ -n "$frank" ]; then plak_json_string "$frank"; else printf 'null'; fi
+    printf ',"php_version":'
+    if [ -n "$version" ]; then plak_json_string "$version"; else printf 'null'; fi
+    printf ',"status":'
+    plak_json_string "$status"
+    printf ',"web_php_version":'
+    if [ -n "$web_version" ]; then plak_json_string "$web_version"; else printf 'null'; fi
+    printf ',"web_status":'
+    if [ -n "$web_status" ]; then plak_json_string "$web_status"; else printf 'null'; fi
+    printf ',"advisory":'
+    plak_json_string "$PLAK_PHP_SECURITY_ADVISORY"
+    printf ',"advisory_url":'
+    plak_json_string "$PLAK_PHP_SECURITY_ADVISORY_URL"
+    printf ',"fixed_versions":{"8.2":"8.2.35","8.3":"8.3.36","8.4":"8.4.27","8.5":"8.5.12"}}'
+    return "$rc"
 }
 
 # Source: shared/site/remote-transfer
@@ -6731,6 +6973,7 @@ plak_health() {
     case "${1:-}" in
         opcache) shift; plak_health_opcache "$@" ;;
         http2) shift; plak_health_http2 "$@" ;;
+        php) shift; plak_health_php "$@" ;;
         -h|--help) plak_display_command_help health ;;
         *) plak_health_report "$@" ;;
     esac
@@ -6747,6 +6990,115 @@ plak_health_web() {
         'json:{"source":"web",'*|'text:Web PHP: '*) printf '%s\n' "$response" ;;
         *) return 1 ;;
     esac
+}
+
+# The web probe reports the PHP version of the process actually serving
+# sites. A missing probe is unknown, never evidence that the CLI runtime is
+# what serves them.
+plak_health_php_web_version() {
+    local response
+    response=$(plak_health_web json 2>/dev/null) || return 1
+    printf '%s' "$response" | sed -n 's/.*"php_version":"\([^"]*\)".*/\1/p'
+}
+
+plak_health_php() {
+    local json=false
+    case "${1:-}" in
+        --json) json=true; shift ;;
+        -h|--help)
+            echo "Usage: plak health php [--json]"
+            echo ""
+            echo "Reports the PHP embedded in the FrankenPHP binary used for sites and"
+            echo "WP-CLI, plus the PHP version reported by the running web process."
+            echo "Returns 0 when patched, 1 when below the upstream security floor,"
+            echo "2 when a package build cannot be verified from its version and"
+            echo "3 when the runtime cannot be probed."
+            return 0
+            ;;
+    esac
+    if [ "$#" -ne 0 ]; then
+        plak_ui_error 'Usage: plak health php [--json]'
+        return 1
+    fi
+
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel status rc=0
+    local web_version="" web_status="" web_rc=0
+    bin=$(command -v "$caddy" 2>/dev/null) || {
+        if [ "$json" = true ]; then
+            printf '{"binary":null,"channel":null,"frankenphp_version":null,"php_version":null,"status":"unknown","web_php_version":null,"web_status":null,"advisory":'
+            plak_json_string "$PLAK_PHP_SECURITY_ADVISORY"
+            printf ',"advisory_url":'
+            plak_json_string "$PLAK_PHP_SECURITY_ADVISORY_URL"
+            printf ',"fixed_versions":{"8.2":"8.2.35","8.3":"8.3.36","8.4":"8.4.27","8.5":"8.5.12"}}\n'
+        else
+            plak_ui_error 'FrankenPHP not found. Run plak install.'
+        fi
+        return 3
+    }
+    version=$(plak_php_runtime_php_version "$bin") || version=""
+    frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
+    channel=$(plak_php_runtime_channel "$bin")
+    status=$(plak_php_runtime_status "$bin") || rc=$?
+    web_version=$(plak_health_php_web_version) || web_version=""
+    if [ -n "$web_version" ]; then
+        web_status=$(plak_php_version_status "$web_version") || web_rc=$?
+        # The web process is what serves sites. If it still runs an older
+        # unpatched PHP after a binary update, the CLI being patched is not
+        # enough: the service needs a full restart. Apply the same package
+        # backport caveat as the CLI probe.
+        if [ "$web_rc" -eq 1 ]; then
+            case "$channel" in
+                apt|dnf|brew|package) web_status="unverified"; web_rc=2 ;;
+            esac
+        fi
+        if [ "$web_rc" -eq 1 ] || { [ "$web_rc" -eq 2 ] && [ "$rc" -eq 0 ]; }; then
+            status="$web_status"
+            rc="$web_rc"
+        fi
+    fi
+
+    if [ "$json" = true ]; then
+        plak_php_runtime_json "$web_version" "$web_status"
+        printf '\n'
+        return "$rc"
+    fi
+
+    plak_ui_title 'PHP runtime (read-only)'
+    printf 'Binary:       %s\n' "$bin"
+    printf 'Channel:      %s\n' "$channel"
+    printf 'FrankenPHP:   %s\n' "${frank:-unknown}"
+    printf 'PHP (CLI):    %s [%s]\n' "${version:-unknown}" "$status"
+    if [ -n "$web_version" ]; then
+        printf 'PHP (web):    %s [%s]\n' "$web_version" "$web_status"
+    else
+        printf 'PHP (web):    unknown (service/probe unavailable)\n'
+    fi
+    printf 'Advisory:     %s (%s)\n' "$PLAK_PHP_SECURITY_ADVISORY" "$PLAK_PHP_SECURITY_DATE"
+    printf 'Fixed:        PHP 8.2.35, 8.3.36, 8.4.27 or 8.5.12\n'
+    case "$status" in
+        patched)
+            echo 'Result:       patched. This runtime reports a fixed upstream PHP version.'
+            ;;
+        vulnerable)
+            echo 'Result:       VULNERABLE. Update this runtime before serving sites.'
+            echo "              Run 'plak upgrade'; the first static FrankenPHP release"
+            echo '              documented with PHP 8.5.12 is v1.13.2.'
+            ;;
+        unverified)
+            echo 'Result:       UNVERIFIED. This is a package-managed runtime below the'
+            echo '              upstream fixed version. Update it through its package'
+            echo '              manager and confirm the vendor advisory/changelog; a vendor'
+            echo '              backport can keep the upstream version number.'
+            ;;
+        *)
+            echo 'Result:       UNKNOWN. The runtime did not report a usable PHP version.'
+            ;;
+    esac
+    if [ -n "$web_version" ] && [ "$web_version" != "$version" ]; then
+        echo 'Warning:      The web process reports a different PHP version than the CLI.'
+        echo "              Restart the Plak service ('plak reload' is not a full restart)."
+    fi
+    return "$rc"
 }
 
 plak_health_service() {
@@ -6776,12 +7128,21 @@ plak_health_report() {
     case "${1:-}" in --json) json=true; shift ;; esac
     [ "$#" -eq 0 ] || { plak_ui_error 'Usage: plak health [--json]'; return 1; }
     local frank db mail version="" free=null used=null signals="" abandoned="" web=null item
+    local php_runtime php_version="" php_status="unknown"
     frank=$(plak_health_service frankenphp)
     db=$(plak_health_service mariadb)
     mail=$(plak_health_service mailpit)
     if command -v "$CADDY_CMD" >/dev/null 2>&1; then
         version=$("$CADDY_CMD" version 2>/dev/null) || version=""
     fi
+    php_runtime=$(plak_php_runtime_json) || true
+    case "$php_runtime" in
+        ''|null) php_runtime=null ;;
+        *)
+            php_version=$(printf '%s' "$php_runtime" | sed -n 's/.*"php_version":"\([^"]*\)".*/\1/p')
+            php_status=$(printf '%s' "$php_runtime" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
+            ;;
+    esac
     if [ -d "$PLAK_SITE_DIR" ]; then
         used=$(du -sk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==1 {printf "%.0f", $1*1024}')
         free=$(df -Pk "$PLAK_SITE_DIR" 2>/dev/null | awk 'NR==2 {printf "%.0f", $4*1024}')
@@ -6811,10 +7172,11 @@ plak_health_report() {
         printf ',"disk":{"used_bytes":%s,"free_bytes":%s},"failure_signals":' "${used:-null}" "${free:-null}"
         plak_json_string "$signals"
         printf ',"abandoned_candidates":'; plak_json_string "$abandoned"
-        printf ',"web_php":%s}\n' "${web:-null}"
+        printf ',"php_runtime":%s,"web_php":%s}\n' "${php_runtime:-null}" "${web:-null}"
     else
         plak_ui_title 'Plak health (read-only)'
         printf 'Platform: %s\nFrankenPHP: %s (%s)\nMariaDB: %s\nMailpit: %s\n' "$OS" "$frank" "${version:-version unknown}" "$db" "$mail"
+        printf 'PHP (FrankenPHP): %s [%s]\n' "${php_version:-unknown}" "$php_status"
         printf 'Disk: used=%s bytes; free=%s bytes (null = unknown)\n' "${used:-null}" "${free:-null}"
         printf '\nAvailable failure signals (not proven crash causes):\n%s\n' "${signals:-none available}"
         printf '\nRecovery/old-job candidates (inspect before removing):\n%s\n' "${abandoned:-none available}"
@@ -10426,6 +10788,17 @@ plak_site_install() {
             $SUDO_CMD systemctl disable frankenphp.service &>/dev/null || true
             $SUDO_CMD systemctl mask frankenphp.service &>/dev/null || true
         fi
+    fi
+
+    # PHP2Shell (CVE-2026-109618 / CVE-2026-109619): an existing FrankenPHP
+    # installation is not assumed patched. Probe the embedded PHP and update
+    # through the owning channel before installing anything that will serve
+    # sites. Static/upstream builds fail closed; a distro package below the
+    # upstream floor is reported as unverified rather than silently accepted.
+    if ! plak_php_ensure_safe_runtime; then
+        gum style --foreground red "❌ PHP runtime verification failed; installation stopped."
+        gum style --foreground yellow "   See docs/php-security.md. Do not serve sites with the current runtime."
+        exit 1
     fi
 
     # MariaDB - Database server
@@ -14414,106 +14787,331 @@ plak_site_trust() {
 }
 
 # Source: commands/site/upgrade
+# The -gnu static builds require glibc 2.28 or later. The presence of
+# GNU_LIBC_VERSION alone is not enough: older glibc hosts need the musl build.
+plak_frankenphp_glibc_supports_gnu() {
+    local version major minor
+    version=$(getconf GNU_LIBC_VERSION 2>/dev/null) || return 1
+    version=${version##* }
+    major=${version%%.*}
+    minor=${version#*.}
+    minor=${minor%%.*}
+    case "$major:$minor" in
+        [0-9]*:[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 28 ]; }
+}
+
+# Print the release asset for this host. Linux gets the glibc build when the
+# host glibc is new enough, otherwise the fully static musl build.
+plak_frankenphp_asset_name() {
+    local os arch
+    os=$(uname -s)
+    arch=$(uname -m)
+    case "$os:$arch" in
+        Linux:x86_64|Linux:aarch64)
+            if plak_frankenphp_glibc_supports_gnu; then
+                printf 'frankenphp-linux-%s-gnu\n' "$arch"
+            else
+                printf 'frankenphp-linux-%s\n' "$arch"
+            fi
+            ;;
+        Darwin:arm64)
+            printf 'frankenphp-mac-arm64\n'
+            ;;
+        Darwin:x86_64)
+            # v1.13.2 dropped this asset; the validated fallback still has it.
+            printf 'frankenphp-mac-x86_64\n'
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+plak_frankenphp_latest_version() {
+    local url version
+    url=$(curl -fsSL --max-time 30 -o /dev/null -w '%{url_effective}' \
+        https://github.com/php/frankenphp/releases/latest 2>/dev/null) || return 1
+    version=${url##*/}
+    version=${version#v}
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    printf '%s\n' "$version"
+}
+
+plak_frankenphp_asset_exists() {
+    local tag="$1" asset="$2"
+    curl -fsIL --max-time 20 \
+        "https://github.com/php/frankenphp/releases/download/${tag}/${asset}" >/dev/null 2>&1
+}
+
+# Download, validate and atomically install a static FrankenPHP binary.
+# The downloaded artifact must run on this host and embed a patched PHP
+# before the existing binary is touched.
+plak_php_install_static_frankenphp() {
+    local target="$1" asset="$2" tag="$3"
+    local target_dir tmp downloaded_version downloaded_php status status_rc
+    target_dir=$(dirname "$target")
+    tmp=$(mktemp "${TMPDIR:-/tmp}/frankenphp.XXXXXX") || return 1
+    echo "   - Downloading FrankenPHP ${tag} (${asset})..."
+    if ! curl -fL --progress-bar \
+        "https://github.com/php/frankenphp/releases/download/${tag}/${asset}" -o "$tmp"; then
+        rm -f "$tmp"
+        gum style --foreground red "❌ Failed to download ${tag}/${asset}."
+        return 1
+    fi
+    if [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        gum style --foreground red "❌ Downloaded ${tag}/${asset} is empty."
+        return 1
+    fi
+    chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
+    downloaded_version=$(plak_php_runtime_frankenphp_version "$tmp") || downloaded_version=""
+    if [ -z "$downloaded_version" ]; then
+        rm -f "$tmp"
+        gum style --foreground red "❌ Downloaded ${asset} is not a runnable FrankenPHP binary for this host."
+        return 1
+    fi
+    if [ "$downloaded_version" != "${tag#v}" ]; then
+        rm -f "$tmp"
+        gum style --foreground red \
+            "❌ Downloaded ${asset} reports FrankenPHP ${downloaded_version}, expected ${tag#v}; refusing to install it."
+        return 1
+    fi
+    downloaded_php=$(plak_php_runtime_php_version "$tmp") || downloaded_php=""
+    status=$(plak_php_version_status "$downloaded_php")
+    status_rc=$?
+    if [ "$status_rc" -ne 0 ]; then
+        rm -f "$tmp"
+        gum style --foreground red \
+            "❌ ${tag} ${asset} embeds PHP ${downloaded_php:-unknown} (${status}); refusing to install it."
+        return 1
+    fi
+
+    # Stage next to the target, then rename. A failed copy never destroys the
+    # working binary, and a partial download cannot be mistaken for one.
+    local staged="$target_dir/.frankenphp.new.$$"
+    if ! $SUDO_CMD cp "$tmp" "$staged"; then
+        rm -f "$tmp" "$staged"
+        gum style --foreground red "❌ Failed to stage FrankenPHP in ${target_dir}."
+        return 1
+    fi
+    if ! $SUDO_CMD chmod 0755 "$staged"; then
+        rm -f "$tmp" "$staged"
+        return 1
+    fi
+    if ! $SUDO_CMD mv -f "$staged" "$target"; then
+        rm -f "$tmp" "$staged"
+        gum style --foreground red "❌ Failed to replace ${target}."
+        return 1
+    fi
+    rm -f "$tmp"
+    hash -r
+    if command -v setcap >/dev/null 2>&1; then
+        $SUDO_CMD setcap 'cap_net_bind_service=+ep' "$target" 2>/dev/null || true
+    fi
+    echo "   - ✅ Installed FrankenPHP ${downloaded_version} with PHP ${downloaded_php}."
+    return 0
+}
+
+plak_php_upgrade_blocked() {
+    local channel="$1" version="$2" status="$3"
+    gum style --foreground red \
+        "❌ The selected runtime still reports PHP ${version:-unknown} (${status})."
+    case "$channel" in
+        apt|apt-upstream|dnf|dnf-upstream|package)
+            echo "   The package manager did not provide a verified fixed build." >&2
+            echo "   Distribution packages can carry a backport without changing the" >&2
+            echo "   upstream version; check the vendor security notice and changelog." >&2
+            ;;
+        brew)
+            echo "   Homebrew has not provided a verified fixed frankenphp build." >&2
+            ;;
+        *)
+            echo "   No verified patched static artifact was installed." >&2
+            ;;
+    esac
+    echo "   Do not keep serving sites with this runtime. See docs/php-security.md." >&2
+}
+
+# Replace/update the FrankenPHP runtime through the channel that owns it and
+# then require the embedded PHP (not just the FrankenPHP version) to be fixed.
 upgrade_frankenphp() {
-    local frankenphp_path
-    frankenphp_path=$(command -v frankenphp)
+    local frankenphp_path channel php_before
+    frankenphp_path=$(command -v frankenphp) || {
+        gum style --foreground red "❌ FrankenPHP not found."
+        return 1
+    }
+    frankenphp_path=$(plak_php_runtime_realpath "$frankenphp_path")
+    channel=$(plak_php_runtime_channel "$frankenphp_path")
+    php_before=$(plak_php_runtime_php_version "$frankenphp_path") || php_before=""
+    PLAK_PHP_UNVERIFIED=false
+    echo "   - Runtime: ${frankenphp_path} (${channel})"
+    echo "   - Embedded PHP before update: ${php_before:-unknown}"
 
-    # Check if installed via package manager (typically at /usr/bin/frankenphp)
-    if [ "$frankenphp_path" = "/usr/bin/frankenphp" ]; then
-        # Package manager installation - use apt/dnf to upgrade
-        if [ "$PKG_MANAGER" = "apt" ]; then
-            echo "   - FrankenPHP installed via apt. Upgrading with apt..."
-            if $SUDO_CMD apt update && $SUDO_CMD apt install --only-upgrade -y frankenphp; then
-                echo "   - ✅ FrankenPHP upgraded successfully via apt."
-            else
-                gum style --foreground red "❌ Failed to upgrade FrankenPHP via apt."
+    case "$channel" in
+        apt|apt-upstream|package)
+            if [ "$PKG_MANAGER" != "apt" ]; then
+                gum style --foreground red "❌ Package-managed FrankenPHP needs apt, but the package manager is '${PKG_MANAGER:-unknown}'."
                 return 1
             fi
-        elif [ "$PKG_MANAGER" = "dnf" ]; then
-            echo "   - FrankenPHP installed via dnf. Upgrading with dnf..."
-            if $SUDO_CMD dnf upgrade -y frankenphp; then
-                echo "   - ✅ FrankenPHP upgraded successfully via dnf."
-            else
-                gum style --foreground red "❌ Failed to upgrade FrankenPHP via dnf."
+            echo "   - Updating the apt package..."
+            if ! $SUDO_CMD apt-get update -qq || ! $SUDO_CMD apt-get install --only-upgrade -y frankenphp; then
+                gum style --foreground red "❌ Failed to update FrankenPHP via apt."
                 return 1
             fi
-        else
-            echo "   - ⚠️ Unknown package manager for FrankenPHP at /usr/bin. Skipping upgrade."
-            return 1
-        fi
-    else
-        # Static binary installation - download directly
-        local target_bin_dir
-        if [ -n "$frankenphp_path" ]; then
-            target_bin_dir=$(dirname "$frankenphp_path")
-            echo "   - Detected static FrankenPHP binary in '$target_bin_dir'."
-        else
-            target_bin_dir="$BIN_DIR"
-            echo "   - FrankenPHP not found. Using default: $target_bin_dir"
-        fi
-
-        echo "   - Downloading latest FrankenPHP static binary..."
-
-        # Determine the correct binary for this platform
-        local arch=$(uname -m)
-        local os=$(uname -s)
-        local binary_name=""
-
-        if [ "$os" = "Linux" ]; then
-            case $arch in
-                x86_64) binary_name="frankenphp-linux-x86_64" ;;
-                aarch64) binary_name="frankenphp-linux-aarch64" ;;
-            esac
-            # Check for glibc
-            if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
-                binary_name="${binary_name}-gnu"
+            ;;
+        dnf|dnf-upstream)
+            echo "   - Updating the dnf package..."
+            if ! $SUDO_CMD dnf upgrade -y frankenphp; then
+                gum style --foreground red "❌ Failed to update FrankenPHP via dnf."
+                return 1
             fi
-        elif [ "$os" = "Darwin" ]; then
-            case $arch in
-                arm64) binary_name="frankenphp-mac-arm64" ;;
-                x86_64) binary_name="frankenphp-mac-x86_64" ;;
-            esac
-        fi
-
-        if [ -z "$binary_name" ]; then
-            gum style --foreground red "❌ No precompiled FrankenPHP binary available for $os/$arch"
-            return 1
-        fi
-
-        local temp_binary="/tmp/frankenphp_new"
-        if curl -L --progress-bar "https://github.com/php/frankenphp/releases/latest/download/${binary_name}" -o "$temp_binary"; then
-            chmod +x "$temp_binary"
-            if sudo mv "$temp_binary" "$target_bin_dir/frankenphp"; then
-                # Set capability to bind to low ports without root
-                if command -v setcap &>/dev/null; then
-                    $SUDO_CMD setcap 'cap_net_bind_service=+ep' "$target_bin_dir/frankenphp" 2>/dev/null || true
+            ;;
+        brew)
+            if ! command -v brew >/dev/null 2>&1; then
+                gum style --foreground red "❌ Homebrew-managed FrankenPHP found, but brew is not on PATH."
+                return 1
+            fi
+            if ! brew list --versions frankenphp >/dev/null 2>&1; then
+                gum style --foreground red "❌ ${frankenphp_path} looks Homebrew-managed, but the frankenphp formula is not installed."
+                return 1
+            fi
+            echo "   - Updating the Homebrew formula..."
+            if ! brew upgrade frankenphp; then
+                gum style --foreground red "❌ Failed to update FrankenPHP via Homebrew."
+                return 1
+            fi
+            ;;
+        static)
+            local asset latest selected_tag local_version comparison
+            asset=$(plak_frankenphp_asset_name) || {
+                gum style --foreground red "❌ No precompiled FrankenPHP binary is published for $(uname -s)/$(uname -m)."
+                echo "   Build FrankenPHP v${PLAK_FRANKENPHP_SECURITY_FLOOR} from source with PHP 8.5.12." >&2
+                return 1
+            }
+            latest=$(plak_frankenphp_latest_version) || {
+                gum style --foreground red "❌ Could not determine the latest FrankenPHP release."
+                return 1
+            }
+            selected_tag="v${latest}"
+            if ! plak_frankenphp_asset_exists "$selected_tag" "$asset"; then
+                if [ "$latest" = "$PLAK_FRANKENPHP_STATIC_FALLBACK" ]; then
+                    gum style --foreground red "❌ ${selected_tag} has no ${asset} asset."
+                    return 1
                 fi
-                echo "   - ✅ FrankenPHP upgraded successfully."
-            else
-                gum style --foreground red "❌ Failed to move FrankenPHP to $target_bin_dir"
-                rm -f "$temp_binary"
-                return 1
+                local_version=$(plak_php_runtime_frankenphp_version "$frankenphp_path") || local_version=""
+                if [ -n "$local_version" ]; then
+                    comparison=$(plak_php_version_compare "$local_version" "$PLAK_FRANKENPHP_STATIC_FALLBACK") || comparison=0
+                    if [ "$comparison" = "1" ]; then
+                        gum style --foreground red "❌ ${selected_tag} has no ${asset} asset, and installing v${PLAK_FRANKENPHP_STATIC_FALLBACK} would downgrade FrankenPHP ${local_version}."
+                        echo "   Build FrankenPHP ${selected_tag} from source with PHP 8.5.12." >&2
+                        return 1
+                    fi
+                fi
+                gum style --foreground yellow "⚠️ ${selected_tag} has no ${asset} asset; trying v${PLAK_FRANKENPHP_STATIC_FALLBACK}, whose assets were rebuilt with PHP 8.5.12."
+                selected_tag="v${PLAK_FRANKENPHP_STATIC_FALLBACK}"
+                if ! plak_frankenphp_asset_exists "$selected_tag" "$asset"; then
+                    gum style --foreground red "❌ ${selected_tag} has no ${asset} asset either."
+                    echo "   Build FrankenPHP from source with PHP 8.5.12 or use a vendor package." >&2
+                    return 1
+                fi
             fi
-        else
-            gum style --foreground red "❌ Failed to download FrankenPHP binary."
+            plak_php_install_static_frankenphp "$frankenphp_path" "$asset" "$selected_tag" || return 1
+            if [ "$selected_tag" != "v${latest}" ]; then
+                gum style --foreground yellow "⚠️ Installed ${selected_tag} because ${latest} has no ${asset} asset."
+                echo "   This fixes PHP2Shell but does not include the FrankenPHP fixes in ${latest}." >&2
+                echo "   Build ${latest} from source when an Intel macOS static build is unavailable." >&2
+            fi
+            ;;
+        *)
+            gum style --foreground red "❌ Unknown FrankenPHP installation channel: ${channel}"
             return 1
-        fi
+            ;;
+    esac
+
+    local resolved_path
+    resolved_path=$(command -v frankenphp 2>/dev/null) || resolved_path="$frankenphp_path"
+    frankenphp_path="$resolved_path"
+    local php_after status_after rc=0
+    php_after=$(plak_php_runtime_php_version "$frankenphp_path") || php_after=""
+    status_after=$(plak_php_runtime_status "$frankenphp_path") || rc=$?
+    echo "   - Embedded PHP after update: ${php_after:-unknown} (${status_after})"
+    if [ "$rc" -eq 2 ]; then
+        # A distribution package may contain a backport without changing
+        # PHP_VERSION. Plak cannot verify that from here, so it must not
+        # report the runtime as patched.
+        gum style --foreground yellow \
+            "⚠️ PHP ${php_after:-unknown} is below the upstream fixed version, but this package-managed build may contain a vendor backport."
+        echo "   Verify the vendor security notice/changelog before treating it as patched." >&2
+        PLAK_PHP_UNVERIFIED=true
+    elif [ "$rc" -ne 0 ]; then
+        plak_php_upgrade_blocked "$channel" "$php_after" "$status_after"
+        return 1
     fi
 
     # Verify mysqli is available after upgrade
     echo "   - Verifying PHP mysqli extension..."
-    if ! frankenphp php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
+    if ! "$frankenphp_path" php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
         gum style --foreground yellow "⚠️ Warning: mysqli extension not found in FrankenPHP."
         gum style --foreground yellow "   WordPress sites may not work correctly."
         return 1
     fi
     echo "   - ✅ mysqli extension verified."
-
+    PLAK_FRANKENPHP_UPDATED=true
     return 0
+}
+
+# Used by both `plak install` and `plak upgrade`: probe the actual embedded
+# PHP, update through the owning channel when needed, and fail closed if the
+# runtime still cannot be verified as fixed.
+plak_php_ensure_safe_runtime() {
+    local bin status rc=0
+    bin=$(command -v frankenphp 2>/dev/null) || {
+        echo "❌ FrankenPHP is not installed." >&2
+        return 1
+    }
+    status=$(plak_php_runtime_status "$bin") || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "✅ FrankenPHP embeds patched PHP $(plak_php_runtime_php_version "$bin")."
+        return 0
+    fi
+    echo "⚠️  FrankenPHP embeds PHP $(plak_php_runtime_php_version "$bin") (${status})."
+    echo "   Trying to update the runtime before continuing..."
+    upgrade_frankenphp || return 1
+    bin=$(command -v frankenphp 2>/dev/null) || return 1
+    status=$(plak_php_runtime_status "$bin") || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        echo "⚠️  PHP $(plak_php_runtime_php_version "$bin") is still below the upstream fixed version." >&2
+        echo "    This package-managed build may contain a vendor backport; Plak cannot" >&2
+        echo "    verify that. Check the vendor security notice before serving sites." >&2
+        return 0
+    fi
+    if [ "$rc" -ne 0 ]; then
+        echo "❌ Refusing to continue with a runtime that is not verified as patched." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Decide whether the runtime needs an update. The FrankenPHP version alone is
+# not enough: an equal version can still embed a vulnerable PHP, and an older
+# release asset can have been rebuilt with the fix. $3 is the exit status from
+# plak_php_runtime_status (0 patched, non-zero needs attention).
+plak_frankenphp_needs_update() {
+    local local_version="$1" latest="$2" php_rc="$3" comparison
+    if [ -n "$local_version" ]; then
+        comparison=$(plak_php_version_compare "$local_version" "$latest") || comparison=0
+        [ "$comparison" = "-1" ] && return 0
+    fi
+    [ "$php_rc" -ne 0 ]
 }
 
 plak_site_upgrade() {
     local auto_yes=false
+    PLAK_FRANKENPHP_UPDATED=false
+    PLAK_PHP_UNVERIFIED=false
     for arg in "$@"; do
         case "$arg" in
             --yes|-y|--force) auto_yes=true ;;
@@ -14591,50 +15189,50 @@ plak_site_upgrade() {
         fi
     fi
 
-    # --- New Section: FrankenPHP Upgrade Check ---
+    # --- FrankenPHP and embedded PHP check ---
     echo ""
-    echo "🔎 Checking for FrankenPHP updates..."
+    echo "🔎 Checking the FrankenPHP/PHP runtime..."
 
     if ! command -v frankenphp &> /dev/null; then
         echo "   - ⚠️ FrankenPHP not found. Skipping update check."
         return 0
     fi
 
-    # Get local version (strip 'v' prefix if present)
-    local local_frankenphp_version
-    local_frankenphp_version=$(frankenphp version | awk '{print $2}' | sed 's/^v//')
-    if [ -z "$local_frankenphp_version" ]; then
-        echo "   - ❌ Could not determine local FrankenPHP version. Skipping update check."
-        return 1
-    fi
+    local frankenphp_bin local_frankenphp_version php_before php_status php_rc=0
+    frankenphp_bin=$(command -v frankenphp)
+    local_frankenphp_version=$(plak_php_runtime_frankenphp_version "$frankenphp_bin") || local_frankenphp_version=""
+    php_before=$(plak_php_runtime_php_version "$frankenphp_bin") || php_before=""
+    php_status=$(plak_php_runtime_status "$frankenphp_bin") || php_rc=$?
 
-    # Get latest version from GitHub redirect (strip 'v' prefix)
+    echo "   - Current FrankenPHP version:  ${local_frankenphp_version:-unknown}"
+    echo "   - Embedded PHP version:        ${php_before:-unknown} (${php_status})"
+
     local latest_frankenphp_version
-    latest_frankenphp_version=$(curl -sL -o /dev/null -w '%{url_effective}' https://github.com/php/frankenphp/releases/latest | sed 's/.*\/v//')
-
-    if [ -z "$latest_frankenphp_version" ]; then
+    latest_frankenphp_version=$(plak_frankenphp_latest_version) || {
         echo "   - ❌ Could not determine the latest FrankenPHP version from GitHub. Skipping update check."
         return 1
-    fi
-
-    echo "   - Current FrankenPHP version:  $local_frankenphp_version"
+    }
     echo "   - Latest available version:    $latest_frankenphp_version"
 
-    # Compare versions using sort -V (works without PHP)
+    # The FrankenPHP version alone is not proof: assets for an older release
+    # have been rebuilt with the PHP fix, and a package version can stay the
+    # same while the embedded PHP changes. Probe PHP and update whenever it
+    # is not verified as patched, even if the FrankenPHP version matches.
     local needs_upgrade="false"
-    if [ "$local_frankenphp_version" != "$latest_frankenphp_version" ]; then
-        local older_version
-        older_version=$(printf '%s\n' "$local_frankenphp_version" "$latest_frankenphp_version" | sort -V | head -n1)
-        if [ "$older_version" = "$local_frankenphp_version" ]; then
-            needs_upgrade="true"
-        fi
+    if plak_frankenphp_needs_update "$local_frankenphp_version" "$latest_frankenphp_version" "$php_rc"; then
+        needs_upgrade="true"
+        [ "$php_rc" -ne 0 ] && echo "   - The embedded PHP is not verified as patched; a runtime update is required."
     fi
 
-    if [ "$needs_upgrade" == "true" ]; then
-        echo "🚀 Upgrading FrankenPHP to version $latest_frankenphp_version..."
-        upgrade_frankenphp
+    if [ "$needs_upgrade" = "true" ]; then
+        echo "🚀 Updating FrankenPHP and its embedded PHP..."
+        if ! upgrade_frankenphp; then
+            echo "❌ The PHP runtime could not be updated safely." >&2
+            echo "   Do not serve sites with this runtime. See docs/php-security.md." >&2
+            return 1
+        fi
     else
-        echo "✅ FrankenPHP is already up to date."
+        echo "✅ FrankenPHP and its embedded PHP are already patched."
     fi
 
     # --- Adminer Upgrade Check ---
@@ -14764,12 +15362,76 @@ plak_site_upgrade() {
         echo "   (plak reload below regenerates the Caddyfile so the web server picks up the new limits.)"
     fi
 
-    # --- Reload to pull in any UI updates ---
+    # --- Reload and, when the runtime changed, restart ---
+    # A Caddy reload keeps the same FrankenPHP process and therefore the same
+    # embedded PHP. Replacing the binary on disk is not enough to patch the
+    # PHP that is actually serving sites.
+    local service_was_running=false web_before="" cli_php=""
+    is_caddy_running && service_was_running=true
+    cli_php=$(plak_php_runtime_php_version "$(command -v frankenphp)") || cli_php=""
+    if [ "$service_was_running" = true ]; then
+        web_before=$(plak_health_php_web_version) || web_before=""
+    fi
+
     # Invoke the on-disk binary so a freshly-upgraded script's new functions are used
     # (the currently-running process still holds the pre-upgrade functions in memory).
     echo ""
     echo "🔄 Reloading Plak to apply UI updates..."
-    "$install_path" reload
+    if ! "$install_path" reload; then
+        echo "⚠️ Plak reload failed; run 'plak reload' after resolving the error." >&2
+    fi
+
+    local restart_needed=false
+    [ "$PLAK_FRANKENPHP_UPDATED" = true ] && restart_needed=true
+    # The probe may not have existed before this upgrade; reload deploys it.
+    if [ "$service_was_running" = true ] && [ -z "$web_before" ]; then
+        web_before=$(plak_health_php_web_version) || web_before=""
+    fi
+    if [ -n "$web_before" ]; then
+        plak_php_version_status "$web_before" >/dev/null || restart_needed=true
+        if [ -n "$cli_php" ] && [ "$web_before" != "$cli_php" ]; then
+            restart_needed=true
+        fi
+    fi
+    if [ "$restart_needed" = true ] && [ "$service_was_running" = true ]; then
+        echo "🔄 Restarting the Plak service so the web process loads the selected PHP runtime..."
+        if ! start_caddy_service; then
+            echo "❌ Could not restart the Plak service; the old PHP process may still be serving sites." >&2
+            return 1
+        fi
+    fi
+
+    if [ "$restart_needed" = true ] || [ "$PLAK_FRANKENPHP_UPDATED" = true ]; then
+        if is_caddy_running; then
+            local tries=0 web_after="" web_status="" web_rc=0
+            while [ "$tries" -lt 5 ]; do
+                web_after=$(plak_health_php_web_version) || web_after=""
+                [ -n "$web_after" ] && break
+                tries=$((tries + 1))
+                sleep 1
+            done
+            if [ -n "$web_after" ]; then
+                web_status=$(plak_php_version_status "$web_after") || web_rc=$?
+                if [ "$web_rc" -eq 0 ]; then
+                    echo "✅ Web process PHP verified: $web_after"
+                elif [ "$web_rc" -eq 2 ] || [ "$PLAK_PHP_UNVERIFIED" = true ]; then
+                    echo "⚠️ Web process reports PHP $web_after (${web_status}); verify the vendor build."
+                else
+                    echo "❌ Web process still reports PHP $web_after (${web_status})." >&2
+                    echo "   The update did not reach the running service; run 'plak health php'." >&2
+                    return 1
+                fi
+            else
+                echo "⚠️ Could not read the web PHP probe; run 'plak health php' after the service starts."
+            fi
+        fi
+    fi
+
+    if [ "$PLAK_PHP_UNVERIFIED" = true ]; then
+        echo "⚠️ The package-managed PHP build could not be verified as patched."
+        echo "   Check the vendor security notice/changelog before serving sites."
+        return 2
+    fi
 }
 
 # Source: commands/site/url

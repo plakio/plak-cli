@@ -1,0 +1,237 @@
+# shellcheck disable=SC2034
+# PHP runtime security checks.
+#
+# On 2026-10-21 the PHP project published two critical, unauthenticated RCE
+# fixes: CVE-2026-109618 (OOM corruption) and CVE-2026-109619 (stale global
+# state). The first upstream releases containing both fixes are:
+#   PHP 8.2.35, 8.3.36, 8.4.27 and 8.5.12
+# FrankenPHP v1.13.2 is the first release documented with PHP 8.5.12 in its
+# static binaries. Some older release assets were rebuilt after the PHP
+# release too (v1.13.1 reports 8.5.12); others embed 8.5.11 or earlier. Probe
+# the binary instead of trusting either version string.
+#
+# A version string is evidence only for the build that reports it. Linux
+# distributions commonly backport security fixes without changing the
+# upstream version, so a package-managed runtime below these floors is
+# reported as "unverified", not as safe or as definitely vulnerable. Only
+# the vendor's advisory/changelog can establish a backport.
+PLAK_PHP_SECURITY_ADVISORY="CVE-2026-109618, CVE-2026-109619"
+PLAK_PHP_SECURITY_ADVISORY_URL="https://www.php.net/archive/2026.php#2026-10-21-5"
+PLAK_PHP_SECURITY_DATE="2026-10-21"
+PLAK_FRANKENPHP_SECURITY_FLOOR="1.13.2"
+# v1.13.2 stopped publishing an Intel macOS static asset. Its v1.13.1
+# assets were rebuilt after the PHP release and report PHP 8.5.12, so they
+# are a validated fallback for that platform only. The installed binary is
+# always probed before it replaces a working one.
+PLAK_FRANKENPHP_STATIC_FALLBACK="1.13.1"
+
+# Normalize a PHP version to major.minor.patch. A suffix such as
+# -1ubuntu0.1 is accepted and ignored; prerelease suffixes are handled by
+# plak_php_version_status because they are not the released fixed build.
+plak_php_version_normalize() {
+    local value="${1:-}"
+    [[ "$value" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
+    printf '%s.%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+# Print -1, 0 or 1 for the normalized versions passed as $1 and $2.
+plak_php_version_compare() {
+    local a b am aj ap bm bj bp
+    a=$(plak_php_version_normalize "$1") || return 2
+    b=$(plak_php_version_normalize "$2") || return 2
+    am=${a%%.*}
+    a=${a#*.}
+    aj=${a%%.*}
+    ap=${a#*.}
+    bm=${b%%.*}
+    b=${b#*.}
+    bj=${b%%.*}
+    bp=${b#*.}
+    if [ "$am" -ne "$bm" ]; then
+        [ "$am" -gt "$bm" ] && printf '1\n' || printf '%s\n' '-1'
+    elif [ "$aj" -ne "$bj" ]; then
+        [ "$aj" -gt "$bj" ] && printf '1\n' || printf '%s\n' '-1'
+    elif [ "$ap" -ne "$bp" ]; then
+        [ "$ap" -gt "$bp" ] && printf '1\n' || printf '%s\n' '-1'
+    else
+        printf '0\n'
+    fi
+}
+
+plak_php_version_ge() {
+    local comparison
+    comparison=$(plak_php_version_compare "$1" "$2") || return 1
+    [ "$comparison" != "-1" ]
+}
+
+# Classify a PHP_VERSION string against the upstream fixed releases.
+# 0 = patched, 1 = below the upstream fixed release, 2 = not verifiable from
+# the version alone (EOL branch below the floor, or prerelease build).
+plak_php_version_status() {
+    local value="${1:-}" normalized major minor fixed comparison
+    case "$value" in
+        *RC*|*rc*|*alpha*|*beta*|*Alpha*|*Beta*|*DEV*|*dev*) printf 'unverified\n'; return 2 ;;
+    esac
+    normalized=$(plak_php_version_normalize "$value") || { printf 'unverified\n'; return 2; }
+    major=${normalized%%.*}
+    minor=${normalized#*.}
+    minor=${minor%%.*}
+    case "$major.$minor" in
+        8.2) fixed="8.2.35" ;;
+        8.3) fixed="8.3.36" ;;
+        8.4) fixed="8.4.27" ;;
+        8.5) fixed="8.5.12" ;;
+        *)
+            # A later stable upstream branch is built from main after these
+            # fixes were merged; older/EOL branches need a vendor backport.
+            if plak_php_version_ge "$normalized" "8.5.12"; then
+                printf 'patched\n'
+                return 0
+            fi
+            printf 'unverified\n'
+            return 2
+            ;;
+    esac
+    comparison=$(plak_php_version_compare "$normalized" "$fixed") || { printf 'unverified\n'; return 2; }
+    if [ "$comparison" = "-1" ]; then
+        printf 'vulnerable\n'
+        return 1
+    fi
+    printf 'patched\n'
+    return 0
+}
+
+# Resolve symlinks without following the binary itself.
+plak_php_runtime_realpath() {
+    local path="$1" target hops=0
+    while [ -L "$path" ]; do
+        if [ "$hops" -ge 40 ]; then
+            printf '%s\n' "$1"
+            return 0
+        fi
+        target=$(readlink "$path" 2>/dev/null) || break
+        case "$target" in
+            /*) path="$target" ;;
+            *) path="$(dirname "$path")/$target" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    printf '%s\n' "$path"
+}
+
+# Where the runtime comes from determines how it must be updated. A static
+# FrankenPHP binary is replaced; a Homebrew, apt or dnf package must be
+# upgraded through its package manager instead of being overwritten.
+plak_php_runtime_channel() {
+    local original="$1" resolved
+    resolved=$(plak_php_runtime_realpath "$original")
+    case "$original:$resolved" in
+        *:/opt/homebrew/*|*:/usr/local/Cellar/*|*:/usr/local/opt/*|*:/home/linuxbrew/*|*:*/.linuxbrew/*)
+            printf 'brew\n'
+            return 0
+            ;;
+        *:/Cellar/*|*:/homebrew/*|*:/linuxbrew/*)
+            printf 'brew\n'
+            return 0
+            ;;
+    esac
+    case "$original" in
+        /usr/bin/frankenphp|/usr/sbin/frankenphp)
+            if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -S "$resolved" >/dev/null 2>&1; then
+                # The static-php/FrankenPHP repository builds PHP itself and
+                # does not carry distribution backports; its version string is
+                # authoritative for the embedded PHP release.
+                local apt_origin
+                apt_origin=$(apt-cache policy frankenphp 2>/dev/null | awk '/https?:\/\// {print; exit}')
+                case "$apt_origin" in
+                    *henderkes*|*static-php*) printf 'apt-upstream\n' ;;
+                    *) printf 'apt\n' ;;
+                esac
+                return 0
+            fi
+            if command -v rpm >/dev/null 2>&1 && rpm -qf "$resolved" >/dev/null 2>&1; then
+                local rpm_info
+                rpm_info=$(rpm -qi frankenphp 2>/dev/null)
+                case "$rpm_info" in
+                    *henderkes*|*static-php*) printf 'dnf-upstream\n' ;;
+                    *) printf 'dnf\n' ;;
+                esac
+                return 0
+            fi
+            printf 'package\n'
+            return 0
+            ;;
+    esac
+    printf 'static\n'
+}
+
+plak_php_runtime_php_version() {
+    local bin="${1:-frankenphp}"
+    [ -x "$bin" ] || return 1
+    "$bin" php-cli -r 'echo PHP_VERSION;' 2>/dev/null
+}
+
+plak_php_runtime_frankenphp_version() {
+    local bin="${1:-frankenphp}"
+    [ -x "$bin" ] || return 1
+    "$bin" version 2>/dev/null | awk 'NR==1 {
+        for (i=1; i<=NF; i++) {
+            if ($i ~ /^v?[0-9]+\.[0-9]+\.[0-9]+/) {
+                sub(/^v/, "", $i)
+                print $i
+                exit
+            }
+        }
+    }'
+}
+
+# Runtime status adds the package-manager caveat: a version below the
+# upstream floor is only "vulnerable" for a static/upstream build.
+plak_php_runtime_status() {
+    local bin="${1:-frankenphp}" version base channel
+    version=$(plak_php_runtime_php_version "$bin") || { printf 'unknown\n'; return 3; }
+    base=$(plak_php_version_status "$version")
+    local rc=$?
+    channel=$(plak_php_runtime_channel "$bin")
+    if [ "$rc" -eq 1 ]; then
+        case "$channel" in
+            apt|dnf|brew|package) printf 'unverified\n'; return 2 ;;
+        esac
+    fi
+    printf '%s\n' "$base"
+    return "$rc"
+}
+
+# Emit one JSON object for the selected FrankenPHP runtime. $1 and $2 are
+# optional web-process PHP version/status fields. Returns the status code
+# from plak_php_runtime_status (0 patched, 1 vulnerable, 2 unverified,
+# 3 unknown); callers that only render data may ignore it.
+plak_php_runtime_json() {
+    local web_version="${1:-}" web_status="${2:-}"
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel status rc=0
+    bin=$(command -v "$caddy" 2>/dev/null) || { printf 'null'; return 3; }
+    version=$(plak_php_runtime_php_version "$bin") || version=""
+    frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
+    channel=$(plak_php_runtime_channel "$bin")
+    status=$(plak_php_runtime_status "$bin") || rc=$?
+    printf '{"binary":'
+    plak_json_string "$bin"
+    printf ',"channel":'
+    plak_json_string "$channel"
+    printf ',"frankenphp_version":'
+    if [ -n "$frank" ]; then plak_json_string "$frank"; else printf 'null'; fi
+    printf ',"php_version":'
+    if [ -n "$version" ]; then plak_json_string "$version"; else printf 'null'; fi
+    printf ',"status":'
+    plak_json_string "$status"
+    printf ',"web_php_version":'
+    if [ -n "$web_version" ]; then plak_json_string "$web_version"; else printf 'null'; fi
+    printf ',"web_status":'
+    if [ -n "$web_status" ]; then plak_json_string "$web_status"; else printf 'null'; fi
+    printf ',"advisory":'
+    plak_json_string "$PLAK_PHP_SECURITY_ADVISORY"
+    printf ',"advisory_url":'
+    plak_json_string "$PLAK_PHP_SECURITY_ADVISORY_URL"
+    printf ',"fixed_versions":{"8.2":"8.2.35","8.3":"8.3.36","8.4":"8.4.27","8.5":"8.5.12"}}'
+    return "$rc"
+}
