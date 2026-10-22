@@ -49,6 +49,14 @@ Use `scripts/release.sh` from the repository root. Commit functional changes fir
 
 This auto-increments the patch version from `PLAK_VERSION`, compiles `plak.sh`, runs smoke tests, commits the release bump, pushes `main`, and creates and pushes the GitHub tag. The tag triggers the automated Homebrew tap update.
 
+Publishing is **tag-driven**: the Git tag is the source of truth and the only release channel.
+
+1. `scripts/release.sh` pushes the version bump to `main` and pushes tag `v<version>`.
+2. The tag starts `.github/workflows/notify-homebrew-tap.yml`.
+3. That workflow dispatches the update to `plakio/homebrew-tap`.
+
+`scripts/release.sh` does **not** create a GitHub Release page, and "publish a version" does not authorize creating one. GitHub Releases are not needed by Homebrew, the universal installer (`install.sh`) or `plak upgrade`; Homebrew builds from the tag archive, while the installer and `plak upgrade` read `main/plak.sh` directly. If a GitHub Release page is ever wanted for editorial notes, it is a separate, explicitly authorized step after the tag and the tap update, and it must not be treated as the publication trigger.
+
 For an explicit version:
 
 ```bash

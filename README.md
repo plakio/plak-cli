@@ -126,7 +126,7 @@ Install the local compiled script as `plak`:
 ./install.sh --dev
 ```
 
-See [docs/homebrew.md](docs/homebrew.md) for release and tap maintenance.
+See [docs/homebrew.md](docs/homebrew.md) for the tag-driven release flow and tap maintenance.
 
 ## Project Structure
 

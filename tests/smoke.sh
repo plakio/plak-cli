@@ -118,5 +118,6 @@ bash ./tests/wp-cli.sh
 bash ./tests/agent.sh
 bash ./tests/go-find.sh
 bash ./tests/remote-list.sh
+bash ./tests/release-tooling.sh
 
 echo "Smoke tests passed."
