@@ -55,7 +55,9 @@ Publishing is **tag-driven**: the Git tag is the source of truth and the only re
 2. The tag starts `.github/workflows/notify-homebrew-tap.yml`.
 3. That workflow dispatches the update to `plakio/homebrew-tap`.
 
-`scripts/release.sh` does **not** create a GitHub Release page, and "publish a version" does not authorize creating one. GitHub Releases are not needed by Homebrew, the universal installer (`install.sh`) or `plak upgrade`; Homebrew builds from the tag archive, while the installer and `plak upgrade` read `main/plak.sh` directly. If a GitHub Release page is ever wanted for editorial notes, it is a separate, explicitly authorized step after the tag and the tap update, and it must not be treated as the publication trigger.
+`scripts/release.sh` compiles `plak.sh` before creating the tag, so the tag archive used by Homebrew and the `plak.sh` downloaded by the stable channel contain the same compiled release source.
+
+`scripts/release.sh` does **not** create a GitHub Release page, and "publish a version" does not authorize creating one. GitHub Releases are not needed by Homebrew, the universal installer (`install.sh`, served by `https://plak.sh/install`) or `plak upgrade`. Homebrew builds from the tag archive; the installer and `plak upgrade` resolve the newest stable `vMAJOR.MINOR.PATCH` tag from the GitHub tags API and download `plak.sh` from that exact tag. They never fall back to `main` or `releases/latest`. See the stable channel section in `docs/homebrew.md`. If a GitHub Release page is ever wanted for editorial notes, it is a separate, explicitly authorized step after the tag and the tap update, and it must not be treated as the publication trigger.
 
 For an explicit version:
 

@@ -27,7 +27,7 @@ open https://plak.localhost
 
 ## Requirements
 
-- Bash
+- Bash 3.2 or newer (the macOS system Bash works)
 - `gum`
 - `ssh` and `ssh-keygen`
 - `frankenphp`, `mariadb`, `mailpit`, and `wp-cli` for local site management
@@ -53,6 +53,8 @@ You can also install Plak directly with the installer script:
 ```bash
 curl -fsSL https://plak.sh/install | bash
 ```
+
+The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior.
 
 Install the Plak agent skill for Codex, Claude Code, OpenCode, Hermes, Pi, or the global agent skills directory:
 
