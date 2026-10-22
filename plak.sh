@@ -14784,6 +14784,11 @@ plak_site_upgrade() {
         return 1
     fi
 
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "❌ Error: curl is required to check for the latest stable Plak release." >&2
+        return 1
+    fi
+
     # Stable channel: resolve the newest published vMAJOR.MINOR.PATCH tag.
     # There is deliberately no fallback to main or releases/latest.
     if ! latest_tag=$(plak_release_resolve_latest_tag); then
