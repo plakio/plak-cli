@@ -82,6 +82,25 @@ For local development, Plak can also install/check the local site stack:
 ./plak.sh install
 ```
 
+### PHP runtime security
+
+Sites are served by PHP embedded in FrankenPHP, not by the host `php` and not
+by the Bash CLI. `plak install` and `plak upgrade` probe that embedded PHP and
+verify it before replacing the runtime; `plak health php` reports the effective
+CLI and web versions and whether they include the fixes for
+CVE-2026-109618/CVE-2026-109619 (PHP 8.5.12, 8.4.27, 8.3.36 or 8.2.35):
+
+```bash
+plak health php
+plak health php --json
+```
+
+Updating `plak-cli` with Homebrew or patching the host PHP does not patch the
+runtime that serves sites. `plak upgrade` updates the owning channel, validates
+the artifact, replaces it atomically and restarts the service; a Caddy reload
+alone keeps the old PHP process. See [docs/php-security.md](docs/php-security.md)
+for the advisory, component matrix, verification commands and migration steps.
+
 ## Development
 
 Compile the distributable script:

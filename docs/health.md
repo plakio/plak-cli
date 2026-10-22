@@ -1,9 +1,18 @@
 # Stack health
 
-`plak health` is read-only: services, FrankenPHP version, disk, bounded log
-signals and recovery/old-job candidates. `unknown` / JSON `null` means the
-measurement could not be obtained; a log match does not establish a crash cause.
-Candidate resources are never removed automatically.
+`plak health` is read-only: services, FrankenPHP version, embedded PHP security
+status, disk, bounded log signals and recovery/old-job candidates. `unknown` /
+JSON `null` means the measurement could not be obtained; a log match does not
+establish a crash cause. Candidate resources are never removed automatically.
+
+`plak health php [--json]` probes the PHP embedded in FrankenPHP and the PHP
+reported by the running web process. It distinguishes the CLI runtime from the
+web process after an upgrade: a Caddy reload keeps the old PHP process, so the
+web version is the one that matters for sites. Exit codes are 0 patched,
+1 below the upstream fixed release, 2 package-managed build that may carry a
+vendor backport (not locally verifiable), and 3 runtime unavailable. The main
+report's `php_runtime` object carries the same data. See
+[php-security.md](php-security.md) for the version floor and migration steps.
 
 The web probe distinguishes shared-cache metrics from `opcache_ini` settings.
 Invalid negative memory counters, a zero enabled-cache limit or non-finite
