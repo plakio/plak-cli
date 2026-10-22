@@ -118,5 +118,6 @@ bash ./tests/agent.sh
 bash ./tests/go-find.sh
 bash ./tests/remote-list.sh
 bash ./tests/release-tooling.sh
+bash ./tests/release-channel.sh
 
 echo "Smoke tests passed."
