@@ -164,8 +164,12 @@ plak wp my-site eval 'echo PHP_VERSION, " ", PHP_SAPI, PHP_EOL;'
 | 3 | The runtime could not be probed. |
 
 `plak health --json` includes a `php_runtime` object with `binary`, `channel`,
-`frankenphp_version`, `php_version`, `status`, `web_php_version`, `web_status`,
-the advisory URL and the fixed versions.
+`frankenphp_version`, `php_version`, `cli_status`, `status`, `web_php_version`,
+`web_status`, the advisory URL and the fixed versions. `cli_status` describes
+the embedded CLI runtime; `status` is the overall result and therefore also
+covers a stale web process. When the CLI is patched but the web process still
+reports a vulnerable PHP, `cli_status` is `patched`, `status` is `vulnerable`
+and the command exits 1.
 
 ### Do not confuse these versions
 

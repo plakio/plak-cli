@@ -1471,17 +1471,30 @@ plak_php_runtime_status() {
 }
 
 # Emit one JSON object for the selected FrankenPHP runtime. $1 and $2 are
-# optional web-process PHP version/status fields. Returns the status code
-# from plak_php_runtime_status (0 patched, 1 vulnerable, 2 unverified,
-# 3 unknown); callers that only render data may ignore it.
+# optional web-process PHP version/status fields; $3 is an optional overall
+# status (the CLI status is always reported separately as cli_status).
+# Returns 0 patched, 1 vulnerable, 2 unverified or 3 unknown.
 plak_php_runtime_json() {
-    local web_version="${1:-}" web_status="${2:-}"
-    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel status rc=0
+    local web_version="${1:-}" web_status="${2:-}" overall_status="${3:-}"
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel
+    local cli_status="" status="" rc=0 cli_rc=0
     bin=$(command -v "$caddy" 2>/dev/null) || { printf 'null'; return 3; }
     version=$(plak_php_runtime_php_version "$bin") || version=""
     frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
     channel=$(plak_php_runtime_channel "$bin")
-    status=$(plak_php_runtime_status "$bin") || rc=$?
+    cli_status=$(plak_php_runtime_status "$bin") || cli_rc=$?
+    if [ -n "$overall_status" ]; then
+        status="$overall_status"
+        case "$status" in
+            patched) rc=0 ;;
+            vulnerable) rc=1 ;;
+            unverified) rc=2 ;;
+            *) rc=3 ;;
+        esac
+    else
+        status="$cli_status"
+        rc="$cli_rc"
+    fi
     printf '{"binary":'
     plak_json_string "$bin"
     printf ',"channel":'
@@ -1492,6 +1505,8 @@ plak_php_runtime_json() {
     if [ -n "$version" ]; then plak_json_string "$version"; else printf 'null'; fi
     printf ',"status":'
     plak_json_string "$status"
+    printf ',"cli_status":'
+    plak_json_string "$cli_status"
     printf ',"web_php_version":'
     if [ -n "$web_version" ]; then plak_json_string "$web_version"; else printf 'null'; fi
     printf ',"web_status":'
@@ -7021,11 +7036,12 @@ plak_health_php() {
         return 1
     fi
 
-    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel status rc=0
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel
+    local cli_status="" status="" rc=0 cli_rc=0
     local web_version="" web_status="" web_rc=0
     bin=$(command -v "$caddy" 2>/dev/null) || {
         if [ "$json" = true ]; then
-            printf '{"binary":null,"channel":null,"frankenphp_version":null,"php_version":null,"status":"unknown","web_php_version":null,"web_status":null,"advisory":'
+            printf '{"binary":null,"channel":null,"frankenphp_version":null,"php_version":null,"status":"unknown","cli_status":null,"web_php_version":null,"web_status":null,"advisory":'
             plak_json_string "$PLAK_PHP_SECURITY_ADVISORY"
             printf ',"advisory_url":'
             plak_json_string "$PLAK_PHP_SECURITY_ADVISORY_URL"
@@ -7038,7 +7054,9 @@ plak_health_php() {
     version=$(plak_php_runtime_php_version "$bin") || version=""
     frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
     channel=$(plak_php_runtime_channel "$bin")
-    status=$(plak_php_runtime_status "$bin") || rc=$?
+    cli_status=$(plak_php_runtime_status "$bin") || cli_rc=$?
+    status="$cli_status"
+    rc="$cli_rc"
     web_version=$(plak_health_php_web_version) || web_version=""
     if [ -n "$web_version" ]; then
         web_status=$(plak_php_version_status "$web_version") || web_rc=$?
@@ -7058,7 +7076,7 @@ plak_health_php() {
     fi
 
     if [ "$json" = true ]; then
-        plak_php_runtime_json "$web_version" "$web_status"
+        plak_php_runtime_json "$web_version" "$web_status" "$status"
         printf '\n'
         return "$rc"
     fi
@@ -7067,7 +7085,7 @@ plak_health_php() {
     printf 'Binary:       %s\n' "$bin"
     printf 'Channel:      %s\n' "$channel"
     printf 'FrankenPHP:   %s\n' "${frank:-unknown}"
-    printf 'PHP (CLI):    %s [%s]\n' "${version:-unknown}" "$status"
+    printf 'PHP (CLI):    %s [%s]\n' "${version:-unknown}" "$cli_status"
     if [ -n "$web_version" ]; then
         printf 'PHP (web):    %s [%s]\n' "$web_version" "$web_status"
     else
@@ -15420,6 +15438,9 @@ plak_php_ensure_safe_runtime() {
     echo "   Trying to update the runtime before continuing..."
     upgrade_frankenphp || return 1
     bin=$(command -v frankenphp 2>/dev/null) || return 1
+    # Upgrade success is not enough: re-probe from a clean status so a
+    # previous "vulnerable" code cannot leak into the patched result.
+    rc=0
     status=$(plak_php_runtime_status "$bin") || rc=$?
     if [ "$rc" -eq 2 ]; then
         echo "⚠️  PHP $(plak_php_runtime_php_version "$bin") is still below the upstream fixed version." >&2

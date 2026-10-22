@@ -128,9 +128,17 @@ printf '%s' "$json" | python3 -c '
 import json, sys
 r=json.load(sys.stdin)
 assert r["php_version"] == "8.5.12", r
+assert r["status"] == "vulnerable", r
+assert r["cli_status"] == "patched", r
 assert r["web_php_version"] == "8.5.11", r
 assert r["web_status"] == "vulnerable", r
-' || fail "web-process version mismatch was not reported"
+' || fail "web-process version mismatch was not reported consistently"
+text=$(plak_health_php)
+text_rc=$?
+[ "$text_rc" -eq 1 ] || fail "stale web process text report returned $text_rc"
+grep -q 'PHP (CLI):    8.5.12 \[patched\]' <<<"$text" || fail "CLI line inherited the web status"
+grep -q 'PHP (web):    8.5.11 \[vulnerable\]' <<<"$text" || fail "web line did not report the stale runtime"
+grep -q 'Result:       VULNERABLE' <<<"$text" || fail "overall result did not report the stale web runtime"
 plak_health_web() { return 1; }
 
 # A distribution package below the floor is unverified, not called vulnerable;
@@ -194,6 +202,14 @@ make_frankenphp "$tmpdir/bad-asset" 8.5.11 1.13.2
 
     upgrade_frankenphp > "$tmpdir/upgrade-good.log" 2>&1
     [ "$?" -eq 0 ] || { cat "$tmpdir/upgrade-good.log"; exit 1; }
+    [ "$(plak_php_runtime_php_version "$static_bin/frankenphp")" = "8.5.12" ] || exit 1
+
+    # `plak install` healing: the first probe fails, the upgrade succeeds, and
+    # the second probe must reset the old exit status instead of refusing.
+    make_frankenphp "$static_bin/frankenphp" 8.5.11 1.13.1
+    fake_asset="$tmpdir/good-asset"
+    plak_php_ensure_safe_runtime > "$tmpdir/ensure-healed.log" 2>&1
+    [ "$?" -eq 0 ] || { cat "$tmpdir/ensure-healed.log"; exit 1; }
     [ "$(plak_php_runtime_php_version "$static_bin/frankenphp")" = "8.5.12" ] || exit 1
 
     # A downloaded artifact with vulnerable PHP must never replace the old one.

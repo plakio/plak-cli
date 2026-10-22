@@ -631,6 +631,9 @@ plak_php_ensure_safe_runtime() {
     echo "   Trying to update the runtime before continuing..."
     upgrade_frankenphp || return 1
     bin=$(command -v frankenphp 2>/dev/null) || return 1
+    # Upgrade success is not enough: re-probe from a clean status so a
+    # previous "vulnerable" code cannot leak into the patched result.
+    rc=0
     status=$(plak_php_runtime_status "$bin") || rc=$?
     if [ "$rc" -eq 2 ]; then
         echo "⚠️  PHP $(plak_php_runtime_php_version "$bin") is still below the upstream fixed version." >&2

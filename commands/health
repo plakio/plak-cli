@@ -51,11 +51,12 @@ plak_health_php() {
         return 1
     fi
 
-    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel status rc=0
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel
+    local cli_status="" status="" rc=0 cli_rc=0
     local web_version="" web_status="" web_rc=0
     bin=$(command -v "$caddy" 2>/dev/null) || {
         if [ "$json" = true ]; then
-            printf '{"binary":null,"channel":null,"frankenphp_version":null,"php_version":null,"status":"unknown","web_php_version":null,"web_status":null,"advisory":'
+            printf '{"binary":null,"channel":null,"frankenphp_version":null,"php_version":null,"status":"unknown","cli_status":null,"web_php_version":null,"web_status":null,"advisory":'
             plak_json_string "$PLAK_PHP_SECURITY_ADVISORY"
             printf ',"advisory_url":'
             plak_json_string "$PLAK_PHP_SECURITY_ADVISORY_URL"
@@ -68,7 +69,9 @@ plak_health_php() {
     version=$(plak_php_runtime_php_version "$bin") || version=""
     frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
     channel=$(plak_php_runtime_channel "$bin")
-    status=$(plak_php_runtime_status "$bin") || rc=$?
+    cli_status=$(plak_php_runtime_status "$bin") || cli_rc=$?
+    status="$cli_status"
+    rc="$cli_rc"
     web_version=$(plak_health_php_web_version) || web_version=""
     if [ -n "$web_version" ]; then
         web_status=$(plak_php_version_status "$web_version") || web_rc=$?
@@ -88,7 +91,7 @@ plak_health_php() {
     fi
 
     if [ "$json" = true ]; then
-        plak_php_runtime_json "$web_version" "$web_status"
+        plak_php_runtime_json "$web_version" "$web_status" "$status"
         printf '\n'
         return "$rc"
     fi
@@ -97,7 +100,7 @@ plak_health_php() {
     printf 'Binary:       %s\n' "$bin"
     printf 'Channel:      %s\n' "$channel"
     printf 'FrankenPHP:   %s\n' "${frank:-unknown}"
-    printf 'PHP (CLI):    %s [%s]\n' "${version:-unknown}" "$status"
+    printf 'PHP (CLI):    %s [%s]\n' "${version:-unknown}" "$cli_status"
     if [ -n "$web_version" ]; then
         printf 'PHP (web):    %s [%s]\n' "$web_version" "$web_status"
     else
