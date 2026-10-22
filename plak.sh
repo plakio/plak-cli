@@ -14935,6 +14935,19 @@ plak_php_upgrade_blocked() {
     echo "   Do not keep serving sites with this runtime. See docs/php-security.md." >&2
 }
 
+# Decide whether the runtime needs an update. The FrankenPHP version alone is
+# not enough: an equal version can still embed a vulnerable PHP, and an older
+# release asset can have been rebuilt with the fix. $3 is the exit status from
+# plak_php_runtime_status (0 patched, non-zero needs attention).
+plak_frankenphp_needs_update() {
+    local local_version="$1" latest="$2" php_rc="$3" comparison
+    if [ -n "$local_version" ]; then
+        comparison=$(plak_php_version_compare "$local_version" "$latest") || comparison=0
+        [ "$comparison" = "-1" ] && return 0
+    fi
+    [ "$php_rc" -ne 0 ]
+}
+
 # Replace/update the FrankenPHP runtime through the channel that owns it and
 # then require the embedded PHP (not just the FrankenPHP version) to be fixed.
 upgrade_frankenphp() {
@@ -15063,60 +15076,15 @@ upgrade_frankenphp() {
     return 0
 }
 
-# Used by both `plak install` and `plak upgrade`: probe the actual embedded
-# PHP, update through the owning channel when needed, and fail closed if the
-# runtime still cannot be verified as fixed.
-plak_php_ensure_safe_runtime() {
-    local bin status rc=0
-    bin=$(command -v frankenphp 2>/dev/null) || {
-        echo "❌ FrankenPHP is not installed." >&2
-        return 1
-    }
-    status=$(plak_php_runtime_status "$bin") || rc=$?
-    if [ "$rc" -eq 0 ]; then
-        echo "✅ FrankenPHP embeds patched PHP $(plak_php_runtime_php_version "$bin")."
-        return 0
-    fi
-    echo "⚠️  FrankenPHP embeds PHP $(plak_php_runtime_php_version "$bin") (${status})."
-    echo "   Trying to update the runtime before continuing..."
-    upgrade_frankenphp || return 1
-    bin=$(command -v frankenphp 2>/dev/null) || return 1
-    status=$(plak_php_runtime_status "$bin") || rc=$?
-    if [ "$rc" -eq 2 ]; then
-        echo "⚠️  PHP $(plak_php_runtime_php_version "$bin") is still below the upstream fixed version." >&2
-        echo "    This package-managed build may contain a vendor backport; Plak cannot" >&2
-        echo "    verify that. Check the vendor security notice before serving sites." >&2
-        return 0
-    fi
-    if [ "$rc" -ne 0 ]; then
-        echo "❌ Refusing to continue with a runtime that is not verified as patched." >&2
-        return 1
-    fi
-    return 0
-}
-
-# Decide whether the runtime needs an update. The FrankenPHP version alone is
-# not enough: an equal version can still embed a vulnerable PHP, and an older
-# release asset can have been rebuilt with the fix. $3 is the exit status from
-# plak_php_runtime_status (0 patched, non-zero needs attention).
-plak_frankenphp_needs_update() {
-    local local_version="$1" latest="$2" php_rc="$3" comparison
-    if [ -n "$local_version" ]; then
-        comparison=$(plak_php_version_compare "$local_version" "$latest") || comparison=0
-        [ "$comparison" = "-1" ] && return 0
-    fi
-    [ "$php_rc" -ne 0 ]
-}
-
 plak_site_upgrade() {
     local auto_yes=false
-    PLAK_FRANKENPHP_UPDATED=false
-    PLAK_PHP_UNVERIFIED=false
     for arg in "$@"; do
         case "$arg" in
             --yes|-y|--force) auto_yes=true ;;
         esac
     done
+    PLAK_FRANKENPHP_UPDATED=false
+    PLAK_PHP_UNVERIFIED=false
     # Non-interactive callers have no TTY — auto-yes so the Adminer prompt
     # (only shown when the local version can't be parsed) doesn't hang.
     [ -t 0 ] || auto_yes=true
@@ -15189,7 +15157,7 @@ plak_site_upgrade() {
         fi
     fi
 
-    # --- FrankenPHP and embedded PHP check ---
+    # --- New Section: FrankenPHP Upgrade Check ---
     echo ""
     echo "🔎 Checking the FrankenPHP/PHP runtime..."
 
@@ -15432,6 +15400,38 @@ plak_site_upgrade() {
         echo "   Check the vendor security notice/changelog before serving sites."
         return 2
     fi
+}
+
+# Used by both `plak install` and `plak upgrade`: probe the actual embedded
+# PHP, update through the owning channel when needed, and fail closed if the
+# runtime still cannot be verified as fixed.
+plak_php_ensure_safe_runtime() {
+    local bin status rc=0
+    bin=$(command -v frankenphp 2>/dev/null) || {
+        echo "❌ FrankenPHP is not installed." >&2
+        return 1
+    }
+    status=$(plak_php_runtime_status "$bin") || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "✅ FrankenPHP embeds patched PHP $(plak_php_runtime_php_version "$bin")."
+        return 0
+    fi
+    echo "⚠️  FrankenPHP embeds PHP $(plak_php_runtime_php_version "$bin") (${status})."
+    echo "   Trying to update the runtime before continuing..."
+    upgrade_frankenphp || return 1
+    bin=$(command -v frankenphp 2>/dev/null) || return 1
+    status=$(plak_php_runtime_status "$bin") || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        echo "⚠️  PHP $(plak_php_runtime_php_version "$bin") is still below the upstream fixed version." >&2
+        echo "    This package-managed build may contain a vendor backport; Plak cannot" >&2
+        echo "    verify that. Check the vendor security notice before serving sites." >&2
+        return 0
+    fi
+    if [ "$rc" -ne 0 ]; then
+        echo "❌ Refusing to continue with a runtime that is not verified as patched." >&2
+        return 1
+    fi
+    return 0
 }
 
 # Source: commands/site/url
