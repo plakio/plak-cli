@@ -29,7 +29,7 @@ A download, API, or validation failure leaves the current executable untouched. 
 - Only `vMAJOR.MINOR.PATCH` tags are eligible. The highest numeric version wins, regardless of the order returned by the API.
 - Prereleases (`-rc1`, `-beta`), build metadata (`+build`), tags without the `v` prefix, non-semver names, and tags with leading zeroes are ignored.
 - The tag and the embedded `PLAK_VERSION` must match. A mismatch is an error.
-- Network failures, API errors, rate limits, missing tags, and invalid or incomplete downloads stop with an actionable message. They never install `main` or an arbitrary commit, and they do not silently fall back to an older tag when the selected tag's artifact is missing or invalid.
+- Network failures, API errors, rate limits, missing tags, invalid or incomplete downloads, and permission-setting (chmod/staging) failures stop with an actionable message. They never install `main` or an arbitrary commit, and they do not silently fall back to an older tag when the selected tag's artifact is missing or invalid.
 - `GITHUB_TOKEN` or `GH_TOKEN` is used when present to raise the unauthenticated GitHub API rate limit. The token is only sent to `api.github.com`.
 - Downloads and staging use `mktemp` with unique names. Downloads are mode 0600 and the installed script is mode 0755. Temporary files are removed on success, error, and interruption; concurrent runs do not share paths.
 - `PLAK_INSTALL_URL` remains an explicit override for tests and advanced/offline use. It is not the stable channel and does not trigger an implicit fallback.

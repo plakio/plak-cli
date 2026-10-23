@@ -71,6 +71,15 @@ done
 grep -Fq 'plak_release_script_url' commands/site/upgrade \
     || fail "plak upgrade does not download from the selected tag"
 
+# The upgrade helper runs under `if !`, which suppresses `set -e` inside it:
+# every staging step (including chmod) must be checked explicitly, or a failed
+# chmod would swap in a non-executable file while reporting success.
+if grep -Eq '^[[:space:]]*chmod [^|&]*"\$temp_script"' commands/site/upgrade; then
+    fail "plak upgrade has an unchecked chmod on the staged script"
+fi
+grep -Fq 'if ! chmod 755 "$temp_script"' commands/site/upgrade \
+    || fail "plak upgrade does not check the staging chmod explicitly"
+
 # The tag artifact is compiled before the tag exists, so Homebrew (tag archive)
 # and the universal channel (tag plak.sh) receive the same release source.
 compile_line=$(grep -n '^\./compile\.sh$' scripts/release.sh | head -n1 | cut -d: -f1)

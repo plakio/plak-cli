@@ -573,6 +573,39 @@ fi
 assert_contains "$tmpdir/upgrade.out" "does not match embedded version" "upgrade mismatch message"
 assert_upgrade_preserved "upgrade mismatch"
 
+# A failed chmod during replacement must not swap in a non-executable file.
+# The helper runs under `if !`, which suppresses `set -e`, so the chmod step
+# needs its own explicit check: without it the upgrade reported success after
+# replacing a working executable with mode 0600.
+REAL_CHMOD=$(PATH=/usr/bin:/bin command -v chmod)
+export REAL_CHMOD
+cat > "$tmpdir/fakebin/chmod" <<'CHMOD'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    case "$arg" in
+        *.plak-upgrade.*)
+            if [ "${FAKE_CHMOD_FAIL_UPGRADE:-0}" = "1" ]; then
+                echo "fake chmod: refusing $arg" >&2
+                exit 1
+            fi
+            ;;
+    esac
+done
+exec "$REAL_CHMOD" "$@"
+CHMOD
+chmod +x "$tmpdir/fakebin/chmod"
+reset_upgrade_prior
+: > "$upgrade_log"
+if FAKE_CHMOD_FAIL_UPGRADE=1 run_upgrade "$upgrade_log" "$new_tags" "$new_payload" > "$tmpdir/upgrade.out" 2>&1; then
+    fail "upgrade accepted a chmod failure"
+fi
+assert_contains "$tmpdir/upgrade.out" "Could not set permissions" "upgrade chmod failure message"
+if grep -q 'successfully upgraded' "$tmpdir/upgrade.out"; then
+    fail "upgrade reported success after a chmod failure"
+fi
+assert_upgrade_preserved "upgrade chmod failure"
+assert_eq "plak v${old_version}" "$("$tmpdir/upgrade-bin/plak" version)" "prior executable still runs after chmod failure"
+
 # A pre-existing /tmp/plak.sh.latest-like file is never touched by upgrade.
 printf 'third-party\n' > "$tmpdir/tmp/plak.sh.latest"
 reset_upgrade_prior

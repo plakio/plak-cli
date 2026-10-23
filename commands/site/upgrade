@@ -291,6 +291,11 @@ plak_upgrade_replace_plak_script() {
     # Run in a subshell so the EXIT/INT/TERM traps only cover this replacement.
     # The download is staged next to the destination and renamed atomically;
     # any failure leaves the current installation untouched.
+    # NOTE: this helper is always called as `if ! plak_upgrade_replace_...`,
+    # which suppresses `set -e` inside the whole function/subshell. Every
+    # fallible step below must therefore be checked explicitly; an unchecked
+    # failure (e.g. chmod) would otherwise swap in a broken file and still
+    # report success.
     (
         set -e
         tag="$1"
@@ -321,7 +326,10 @@ plak_upgrade_replace_plak_script() {
             exit 1
         fi
 
-        chmod 755 "$temp_script"
+        if ! chmod 755 "$temp_script"; then
+            echo "Could not set permissions on the downloaded Plak script." >&2
+            exit 1
+        fi
         if ! mv -f "$temp_script" "$install_path"; then
             echo "Could not replace ${install_path}." >&2
             exit 1
