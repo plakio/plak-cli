@@ -62,14 +62,19 @@ plak_frankenphp_asset_exists() {
 # before the existing binary is touched.
 plak_php_install_static_frankenphp() {
     local target="$1" asset="$2" tag="$3"
-    local target_dir tmp downloaded_version downloaded_php status status_rc
-    case "$target" in
+    local target_dir tmp downloaded_version downloaded_php status status_rc resolved_target
+    # Resolve directory symlinks too: opt/<formula> is a directory link into
+    # Cellar, so a raw path check would miss a formula-owned executable. The
+    # caller normally resolves first, but this guard must stand on its own.
+    resolved_target=$(plak_php_runtime_realpath "$target")
+    case "$resolved_target" in
         */Cellar/*|*/Caskroom/*)
-            gum style --foreground red "❌ Refusing to replace a Homebrew-managed path: ${target}"
+            gum style --foreground red "❌ Refusing to replace a Homebrew-managed path: ${resolved_target}"
             echo "   Update that runtime through Homebrew instead." >&2
             return 1
             ;;
     esac
+    target="$resolved_target"
     target_dir=$(dirname "$target")
     tmp=$(mktemp "${TMPDIR:-/tmp}/frankenphp.XXXXXX") || return 1
     echo "   - Downloading FrankenPHP ${tag} (${asset})..."

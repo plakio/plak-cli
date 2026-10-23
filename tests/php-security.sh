@@ -293,6 +293,73 @@ ln -s ../Cellar/frankenphp/1.12.4/bin/frankenphp "$formula_prefix/bin/frankenphp
     }
 ) || fail "tapped formula name was not preserved"
 
+# Homebrew's opt/<formula> is a directory symlink into Cellar. A path such
+# as opt/frankenphp/bin/frankenphp is not itself a symlink, so it must be
+# resolved through its parent directory before deciding ownership.
+opt_prefix="$tmpdir/opt-homebrew-dir-symlink"
+mkdir -p "$opt_prefix/Cellar/frankenphp/1.12.4/bin" "$opt_prefix/opt"
+make_frankenphp "$opt_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" 8.5.7 1.12.4
+ln -s ../Cellar/frankenphp/1.12.4 "$opt_prefix/opt/frankenphp"
+make_frankenphp "$tmpdir/opt-patched" 8.5.12 1.13.3
+(
+    set +e
+    export FAKE_BREW_PREFIX="$opt_prefix"
+    export FAKE_BREW_FORMULAE="dunglas/frankenphp/frankenphp"
+    export FAKE_BREW_VERSION="1.12.4"
+    export FAKE_BREW_LIST_RC=0
+    export FAKE_BREW_VERSIONS_RC=0
+    export FAKE_BREW_UPGRADE_LOG="$tmpdir/opt-brew-upgrade.log"
+    export FAKE_BREW_UPGRADE_SOURCE="$tmpdir/opt-patched"
+    export FAKE_BREW_UPGRADE_TARGET="$opt_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp"
+    : > "$FAKE_BREW_UPGRADE_LOG"
+    PATH="$fakebrew_dir:$opt_prefix/opt/frankenphp/bin:$BASE_PATH"
+    resolved=$(plak_php_runtime_realpath "$opt_prefix/opt/frankenphp/bin/frankenphp")
+    [ "$resolved" = "$opt_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" ] || {
+        echo "opt path resolved to $resolved" >&2
+        exit 1
+    }
+    channel=$(plak_php_runtime_channel "$opt_prefix/opt/frankenphp/bin/frankenphp")
+    [ "$channel" = brew ] || { echo "opt channel was $channel" >&2; exit 1; }
+    SUDO_CMD=""
+    CADDY_CMD="frankenphp"
+    upgrade_frankenphp > "$tmpdir/opt-brew-upgrade.out" 2>&1
+    [ "$?" -eq 0 ] || { cat "$tmpdir/opt-brew-upgrade.out"; exit 1; }
+    grep -qx 'dunglas/frankenphp/frankenphp' "$FAKE_BREW_UPGRADE_LOG" || exit 1
+    [ "$(plak_php_runtime_php_version "$opt_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp")" = "8.5.12" ] || exit 1
+) || fail "opt directory symlink was not upgraded through its Cellar formula"
+
+# With brew absent, the opt directory symlink still resolves to Cellar. It
+# must be treated as Homebrew-managed and left untouched, not replaced as a
+# standalone static binary.
+opt_guard_prefix="$tmpdir/opt-homebrew-no-brew"
+mkdir -p "$opt_guard_prefix/Cellar/frankenphp/1.12.4/bin" "$opt_guard_prefix/opt"
+make_frankenphp "$opt_guard_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" 8.5.7 1.12.4
+ln -s ../Cellar/frankenphp/1.12.4 "$opt_guard_prefix/opt/frankenphp"
+(
+    set +e
+    PATH="$opt_guard_prefix/opt/frankenphp/bin:/usr/bin:/bin"
+    gum() { printf '%s\n' "$*"; }
+    SUDO_CMD=""
+    CADDY_CMD="frankenphp"
+    resolved=$(plak_php_runtime_realpath "$opt_guard_prefix/opt/frankenphp/bin/frankenphp")
+    [ "$resolved" = "$opt_guard_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" ] || exit 1
+    channel=$(plak_php_runtime_channel "$opt_guard_prefix/opt/frankenphp/bin/frankenphp")
+    [ "$channel" = brew ] || { echo "no-brew opt channel was $channel" >&2; exit 1; }
+    before=$(file_hash "$opt_guard_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp")
+    upgrade_frankenphp > "$tmpdir/opt-no-brew-upgrade.out" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    [ "$(file_hash "$opt_guard_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp")" = "$before" ] || exit 1
+    grep -q 'brew is not on PATH' "$tmpdir/opt-no-brew-upgrade.out" || exit 1
+
+    plak_php_install_static_frankenphp \
+        "$opt_guard_prefix/opt/frankenphp/bin/frankenphp" frankenphp-mac-arm64 v1.13.3 \
+        > "$tmpdir/opt-guard.out" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    [ "$(file_hash "$opt_guard_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp")" = "$before" ] || exit 1
+    grep -q 'Refusing to replace a Homebrew-managed path' "$tmpdir/opt-guard.out" || exit 1
+    grep -q "$opt_guard_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" "$tmpdir/opt-guard.out" || exit 1
+) || fail "opt directory symlink bypassed Cellar protection without brew"
+
 # Intel macOS uses /usr/local. The same symlink/metadata rule applies.
 intel_prefix="$tmpdir/usr/local"
 mkdir -p "$intel_prefix/bin" "$intel_prefix/Cellar/frankenphp/1.12.4/bin"

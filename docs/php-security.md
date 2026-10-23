@@ -147,7 +147,13 @@ the upstream installer falls back to the prefix directory. The same applies
 to an Intel `/usr/local/bin/frankenphp` and to Homebrew on Linux.
 
 Plak resolves the selected path and decides ownership from package metadata,
-not from the directory name:
+not from the directory name. It resolves every symlink in the selected path,
+including Homebrew's `opt/<formula>` **directory** symlinks, before deciding
+ownership. A path such as `/opt/homebrew/opt/frankenphp/bin/frankenphp`
+therefore resolves to its Cellar keg and is treated as formula-managed even
+though the executable itself is not a symlink. The static installer repeats
+that resolution and refuses a resolved `Cellar`/`Caskroom` target, so a
+directory link cannot be used to overwrite a formula-owned file.
 
 - A resolved path inside `<prefix>/Cellar/<formula>/<version>/` belongs to
   that formula. Plak keeps the tap-qualified name (`user/tap/formula`) for the
@@ -394,13 +400,16 @@ Verified locally on Linux ARM64 (Ubuntu 24.04, glibc 2.39) on 2026-10-22 and
   version, and the `plak upgrade` decision when only PHP is stale.
 - The same suite now covers the ownership regression with a controlled fake
   brew: a regular `/opt/homebrew/bin/frankenphp` with no formula (`static`,
-  PHP 8.5.7 `vulnerable`), a symlink into an installed Cellar keg (`brew`), a
-  tap-qualified formula (`dunglas/frankenphp/frankenphp`), Intel `/usr/local`,
-  a formula shadowed by a regular file (`ambiguous`, no write), missing brew
-  metadata (`ambiguous`), and a qualified `brew upgrade` re-probed after the
-  package manager runs. The standalone prefix case is also driven through a
-  validated static replacement, a rejected vulnerable artifact and a failed
-  download, keeping the working binary intact.
+  PHP 8.5.7 `vulnerable`), a symlink into an installed Cellar keg (`brew`),
+  an `opt/frankenphp` directory symlink with qualified formula metadata and
+  the same link with brew absent (never overwritten; the static installer
+  refuses the resolved Cellar target), a tap-qualified formula
+  (`dunglas/frankenphp/frankenphp`), Intel `/usr/local`, a formula shadowed by
+  a regular file (`ambiguous`, no write), missing brew metadata (`ambiguous`),
+  and a qualified `brew upgrade` re-probed after the package manager runs. The
+  standalone prefix case is also driven through a validated static replacement,
+  a rejected vulnerable artifact and a failed download, keeping the working
+  binary intact.
 
 The macOS 0.4.68 reproduction came from the human's machine, not from a macOS
 run here: `plak upgrade` reported FrankenPHP 1.12.4 with PHP 8.5.7

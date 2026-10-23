@@ -1571,18 +1571,33 @@ plak_php_version_status() {
     return 0
 }
 
-# Resolve symlinks without following the binary itself.
+# Resolve every symlink in the path, including directory symlinks, without
+# executing the binary. Homebrew's `opt/<formula>` entries are directory
+# symlinks into Cellar: a path such as opt/frankenphp/bin/frankenphp is not
+# itself a symlink, so checking only the final component would miss it.
 plak_php_runtime_realpath() {
-    local path="$1" target hops=0
-    while [ -L "$path" ]; do
+    local original="$1" path="$1" target dir base resolved_dir hops=0
+    # Keep a path that does not exist as given. Callers use this for display
+    # and for protection checks; inventing a target would be worse.
+    [ -e "$path" ] || { printf '%s\n' "$original"; return 0; }
+
+    while :; do
+        dir=$(dirname "$path")
+        base=$(basename "$path")
+        resolved_dir=""
+        if resolved_dir=$(cd -P "$dir" 2>/dev/null && pwd -P); then
+            path="$resolved_dir/$base"
+            dir="$resolved_dir"
+        fi
+        [ -L "$path" ] || break
         if [ "$hops" -ge 40 ]; then
-            printf '%s\n' "$1"
+            printf '%s\n' "$original"
             return 0
         fi
         target=$(readlink "$path" 2>/dev/null) || break
         case "$target" in
             /*) path="$target" ;;
-            *) path="$(dirname "$path")/$target" ;;
+            *) path="$dir/$target" ;;
         esac
         hops=$((hops + 1))
     done
@@ -15258,14 +15273,19 @@ plak_frankenphp_asset_exists() {
 # before the existing binary is touched.
 plak_php_install_static_frankenphp() {
     local target="$1" asset="$2" tag="$3"
-    local target_dir tmp downloaded_version downloaded_php status status_rc
-    case "$target" in
+    local target_dir tmp downloaded_version downloaded_php status status_rc resolved_target
+    # Resolve directory symlinks too: opt/<formula> is a directory link into
+    # Cellar, so a raw path check would miss a formula-owned executable. The
+    # caller normally resolves first, but this guard must stand on its own.
+    resolved_target=$(plak_php_runtime_realpath "$target")
+    case "$resolved_target" in
         */Cellar/*|*/Caskroom/*)
-            gum style --foreground red "❌ Refusing to replace a Homebrew-managed path: ${target}"
+            gum style --foreground red "❌ Refusing to replace a Homebrew-managed path: ${resolved_target}"
             echo "   Update that runtime through Homebrew instead." >&2
             return 1
             ;;
     esac
+    target="$resolved_target"
     target_dir=$(dirname "$target")
     tmp=$(mktemp "${TMPDIR:-/tmp}/frankenphp.XXXXXX") || return 1
     echo "   - Downloading FrankenPHP ${tag} (${asset})..."
