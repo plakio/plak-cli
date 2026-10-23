@@ -76,6 +76,12 @@ plak skill install all
 
 `all` installs agent-specific targets only (`codex`, `claude-code`, `opencode`, `hermes`, and `pi`). Use `global` explicitly to install into `~/.agents/skills`.
 
+Skills installed inside WSL are local to WSL. Use `plak skill path <target>` to
+inspect the destination, `plak skill install <target> --windows` to explicitly
+copy to a supported Windows profile, or `--directory /absolute/skills-root` for
+a configured custom root. See [WSL/Windows skill discovery](docs/skills-wsl.md)
+for verified paths, supported targets and limitations.
+
 For local development, Plak can also install/check the local site stack:
 
 ```bash
