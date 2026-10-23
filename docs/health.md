@@ -9,9 +9,10 @@ establish a crash cause. Candidate resources are never removed automatically.
 reported by the running web process. It distinguishes the CLI runtime from the
 web process after an upgrade: a Caddy reload keeps the old PHP process, so the
 web version is the one that matters for sites. Exit codes are 0 patched,
-1 below the upstream fixed release, 2 package-managed build that may carry a
-vendor backport (not locally verifiable), and 3 runtime unavailable. The main
-report's `php_runtime` object carries the same data. See
+1 below the upstream fixed release with no accredited channel backport,
+2 package-managed build that may carry a vendor backport (not locally
+verifiable) or unresolved Homebrew ownership, and 3 runtime unavailable. The
+main report's `php_runtime` object carries the same data. See
 [php-security.md](php-security.md) for the version floor and migration steps.
 
 The web probe distinguishes shared-cache metrics from `opcache_ini` settings.

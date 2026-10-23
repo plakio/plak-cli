@@ -63,6 +63,13 @@ plak_frankenphp_asset_exists() {
 plak_php_install_static_frankenphp() {
     local target="$1" asset="$2" tag="$3"
     local target_dir tmp downloaded_version downloaded_php status status_rc
+    case "$target" in
+        */Cellar/*|*/Caskroom/*)
+            gum style --foreground red "❌ Refusing to replace a Homebrew-managed path: ${target}"
+            echo "   Update that runtime through Homebrew instead." >&2
+            return 1
+            ;;
+    esac
     target_dir=$(dirname "$target")
     tmp=$(mktemp "${TMPDIR:-/tmp}/frankenphp.XXXXXX") || return 1
     echo "   - Downloading FrankenPHP ${tag} (${asset})..."
@@ -137,13 +144,38 @@ plak_php_upgrade_blocked() {
             echo "   upstream version; check the vendor security notice and changelog." >&2
             ;;
         brew)
-            echo "   Homebrew has not provided a verified fixed frankenphp build." >&2
+            echo "   Homebrew still provides a PHP build below the upstream fixed release." >&2
+            echo "   Homebrew formulae are built from upstream PHP releases; do not rely" >&2
+            echo "   on a distribution-style CVE backport for this runtime." >&2
+            echo "   Upgrade or reinstall the frankenphp formula and its PHP dependency," >&2
+            echo "   then run 'plak upgrade' again." >&2
+            ;;
+        ambiguous)
+            echo "   Plak refused to overwrite a path whose Homebrew ownership could not" >&2
+            echo "   be established. Resolve the formula/standalone binary ownership first." >&2
             ;;
         *)
             echo "   No verified patched static artifact was installed." >&2
             ;;
     esac
     echo "   Do not keep serving sites with this runtime. See docs/php-security.md." >&2
+}
+
+# Ask for explicit consent before treating a path as standalone when Homebrew
+# ownership is ambiguous. Non-interactive callers fail closed; they cannot
+# answer the question and must not get a destructive default.
+plak_php_confirm_ambiguous_static() {
+    local path="$1"
+    gum style --foreground yellow \
+        "⚠️ Cannot establish whether ${path} is managed by Homebrew."
+    echo "   A formula that provides this command may be installed, but this file is" >&2
+    echo "   not its linked keg path, or the brew metadata could not be read." >&2
+    echo "   Plak will not overwrite a Homebrew-managed or unproven path." >&2
+    if [ ! -t 0 ]; then
+        echo "   Run 'plak upgrade' interactively to confirm a standalone replacement." >&2
+        return 1
+    fi
+    gum confirm "Replace ${path} with a validated standalone FrankenPHP binary?"
 }
 
 # Decide whether the runtime needs an update. The FrankenPHP version alone is
@@ -162,17 +194,29 @@ plak_frankenphp_needs_update() {
 # Replace/update the FrankenPHP runtime through the channel that owns it and
 # then require the embedded PHP (not just the FrankenPHP version) to be fixed.
 upgrade_frankenphp() {
-    local frankenphp_path channel php_before
+    local frankenphp_path channel channel_label php_before brew_formula
     frankenphp_path=$(command -v frankenphp) || {
         gum style --foreground red "❌ FrankenPHP not found."
         return 1
     }
     frankenphp_path=$(plak_php_runtime_realpath "$frankenphp_path")
     channel=$(plak_php_runtime_channel "$frankenphp_path")
+    channel_label=$(plak_php_runtime_channel_label "$channel" "$frankenphp_path")
     php_before=$(plak_php_runtime_php_version "$frankenphp_path") || php_before=""
     PLAK_PHP_UNVERIFIED=false
-    echo "   - Runtime: ${frankenphp_path} (${channel})"
+    echo "   - Runtime: ${frankenphp_path} (${channel_label})"
     echo "   - Embedded PHP before update: ${php_before:-unknown}"
+
+    # A prefix path is only replaced automatically when it is provably not a
+    # formula link. When ownership is ambiguous, ask before changing channel.
+    if [ "$channel" = ambiguous ]; then
+        if ! plak_php_confirm_ambiguous_static "$frankenphp_path"; then
+            echo "   No changes made to ${frankenphp_path}." >&2
+            return 1
+        fi
+        channel=static
+        echo "   - Confirmed standalone replacement; the file is not managed by a formula."
+    fi
 
     case "$channel" in
         apt|apt-upstream|package)
@@ -198,12 +242,20 @@ upgrade_frankenphp() {
                 gum style --foreground red "❌ Homebrew-managed FrankenPHP found, but brew is not on PATH."
                 return 1
             fi
-            if ! brew list --versions frankenphp >/dev/null 2>&1; then
-                gum style --foreground red "❌ ${frankenphp_path} looks Homebrew-managed, but the frankenphp formula is not installed."
+            brew_formula=$(plak_php_runtime_brew_formula "$frankenphp_path") || brew_formula=""
+            if [ -z "$brew_formula" ]; then
+                gum style --foreground red "❌ Could not identify the Homebrew formula that owns ${frankenphp_path}."
+                echo "   Plak will not overwrite a Homebrew keg with a static binary." >&2
                 return 1
             fi
-            echo "   - Updating the Homebrew formula..."
-            if ! brew upgrade frankenphp; then
+            if ! brew list --versions "$brew_formula" >/dev/null 2>&1; then
+                gum style --foreground red "❌ ${frankenphp_path} is inside the Homebrew formula '${brew_formula}', but that formula is not installed."
+                echo "   Restore it with 'brew install ${brew_formula}' or reinstall Plak." >&2
+                echo "   Plak will not overwrite the Homebrew keg with a static binary." >&2
+                return 1
+            fi
+            echo "   - Updating the Homebrew formula ${brew_formula}..."
+            if ! brew upgrade "$brew_formula"; then
                 gum style --foreground red "❌ Failed to update FrankenPHP via Homebrew."
                 return 1
             fi
@@ -260,16 +312,24 @@ upgrade_frankenphp() {
     frankenphp_path="$resolved_path"
     local php_after status_after rc=0
     php_after=$(plak_php_runtime_php_version "$frankenphp_path") || php_after=""
-    status_after=$(plak_php_runtime_status "$frankenphp_path") || rc=$?
+    status_after=$(plak_php_runtime_status "$frankenphp_path" "$channel") || rc=$?
     echo "   - Embedded PHP after update: ${php_after:-unknown} (${status_after})"
     if [ "$rc" -eq 2 ]; then
-        # A distribution package may contain a backport without changing
-        # PHP_VERSION. Plak cannot verify that from here, so it must not
-        # report the runtime as patched.
-        gum style --foreground yellow \
-            "⚠️ PHP ${php_after:-unknown} is below the upstream fixed version, but this package-managed build may contain a vendor backport."
-        echo "   Verify the vendor security notice/changelog before treating it as patched." >&2
-        PLAK_PHP_UNVERIFIED=true
+        case "$channel" in
+            apt|dnf|package)
+                # A distribution package may contain a backport without
+                # changing PHP_VERSION. Plak cannot verify that from here, so
+                # it must not report the runtime as patched.
+                gum style --foreground yellow \
+                    "⚠️ PHP ${php_after:-unknown} is below the upstream fixed version, but this package-managed build may contain a vendor backport."
+                echo "   Verify the vendor security notice/changelog before treating it as patched." >&2
+                PLAK_PHP_UNVERIFIED=true
+                ;;
+            *)
+                plak_php_upgrade_blocked "$channel" "$php_after" "$status_after"
+                return 1
+                ;;
+        esac
     elif [ "$rc" -ne 0 ]; then
         plak_php_upgrade_blocked "$channel" "$php_after" "$status_after"
         return 1

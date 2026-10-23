@@ -131,6 +131,58 @@ either safety or active compromise from the date alone.
 | **WP-CLI PHAR** | WordPress administration | none; runs under `frankenphp php-cli` | Update the FrankenPHP runtime, not the PHAR, for this CVE. |
 | **Adminer, Whoops, dashboard PHP** | Local tools | run under the embedded runtime | Same runtime as the sites. |
 
+### Homebrew formula versus a standalone binary in the Homebrew prefix
+
+A Homebrew formula does not copy an executable into `bin/`. It links the
+command to its keg:
+
+```
+/opt/homebrew/bin/frankenphp -> ../Cellar/frankenphp/<version>/bin/frankenphp
+```
+
+Therefore a **regular file** at `/opt/homebrew/bin/frankenphp` is not owned by
+a formula, even though its path is inside the Homebrew prefix. This is how
+Plak's own installer places the official static binary on Apple Silicon when
+the upstream installer falls back to the prefix directory. The same applies
+to an Intel `/usr/local/bin/frankenphp` and to Homebrew on Linux.
+
+Plak resolves the selected path and decides ownership from package metadata,
+not from the directory name:
+
+- A resolved path inside `<prefix>/Cellar/<formula>/<version>/` belongs to
+  that formula. Plak keeps the tap-qualified name (`user/tap/formula`) for the
+  upgrade and never writes into the keg.
+- A regular file in `bin/` with no installed formula that provides the
+  command is a standalone static binary. It is updated by replacing that file
+  with a validated static asset; `brew upgrade` is not involved.
+- A formula is installed but the selected file is not its linked keg path, or
+  `brew` metadata cannot be read. Ownership is **ambiguous**. Plak does not
+  guess: interactive upgrades ask for explicit confirmation before treating
+  the file as standalone, and non-interactive runs fail without changing it.
+- A Cellar path stays protected even if `brew` is missing or metadata cannot
+  be read. Plak will not overwrite it with a static binary.
+
+Plak never installs a different formula as a fallback and never infers formula
+ownership from `/opt/homebrew` or `/usr/local` alone. To inspect a machine
+read-only:
+
+```sh
+ls -l /opt/homebrew/bin/frankenphp
+readlink /opt/homebrew/bin/frankenphp || true
+brew --prefix
+brew list --versions frankenphp
+brew list --formula --full-name | grep -i frankenphp || true
+plak health php --json
+```
+
+In the reported macOS 0.4.68 case, `ls` showed a regular executable
+(175,462,408 bytes) at `/opt/homebrew/bin/frankenphp`, and
+`brew list --formula | grep -i franken` returned nothing. That is evidence of
+a standalone static binary in the Homebrew prefix, not of a formula. The
+exact provenance of that file is not independently certified by the listing;
+Plak classifies it by the absence of formula ownership, and its PHP is then
+version-authoritative.
+
 FrankenPHP **v1.13.2** is the first release documented to ship static binaries
 with PHP 8.5.12 and Docker images with PHP 8.2.35, 8.3.36, 8.4.27 and 8.5.12:
 <https://github.com/php/frankenphp/releases/tag/v1.13.2>.
@@ -159,8 +211,8 @@ plak wp my-site eval 'echo PHP_VERSION, " ", PHP_SAPI, PHP_EOL;'
 | Exit | Meaning |
 | --- | --- |
 | 0 | The embedded PHP reports a fixed upstream version. |
-| 1 | The embedded PHP is below the upstream floor. |
-| 2 | A package-managed build is below the floor; a vendor backport is possible but cannot be verified locally. |
+| 1 | The embedded PHP is below the upstream floor and the update channel has no accredited backport (static, upstream or Homebrew build). |
+| 2 | A package-managed build is below the floor and a vendor backport is possible but cannot be verified locally, or Homebrew ownership of the selected binary could not be established. |
 | 3 | The runtime could not be probed. |
 
 `plak health --json` includes a `php_runtime` object with `binary`, `channel`,
@@ -218,6 +270,49 @@ If no runnable, patched artifact exists, `plak upgrade` stops without replacing
 the binary and names the blocker. It does not claim that updating the CLI is
 enough.
 
+### Standalone binary in a Homebrew prefix (reported macOS case)
+
+This is the migration path for a 0.4.68 installation whose FrankenPHP is a
+regular file in `/opt/homebrew/bin` (Apple Silicon) or `/usr/local/bin`
+(Intel) and whose `brew list --formula` has no `frankenphp` entry.
+
+1. Confirm ownership read-only before changing anything:
+
+   ```sh
+   ls -l /opt/homebrew/bin/frankenphp
+   readlink /opt/homebrew/bin/frankenphp || true
+   brew list --versions frankenphp
+   brew list --formula --full-name | grep -i frankenphp || true
+   ```
+
+   A regular file plus no installed formula means the binary is standalone.
+   A symlink into `Cellar/` or an installed formula means it is
+   formula-managed: use the Homebrew path below instead.
+
+2. Install the Plak version that contains the ownership fix, then run
+   `plak upgrade`. It reports the channel as `static` (not `brew`), downloads
+   the matching static asset, validates its embedded PHP, replaces only that
+   standalone file atomically, and restarts the service. Do not delete the
+   existing binary, do not create or remove a symlink, and do not run
+   `brew install frankenphp` as a workaround.
+
+3. Verify the runtime and the web process:
+
+   ```sh
+   frankenphp php-cli -r 'echo PHP_VERSION, " ", PHP_SAPI, PHP_EOL;'
+   plak health php
+   ```
+
+   The CLI and web lines must both report a fixed PHP. A Caddy reload alone
+   keeps the old process; `plak upgrade` performs the full restart when it
+   changed the runtime.
+
+If Plak reports the channel as `ambiguous`, a formula that provides the
+command is installed but the selected file is not its linked keg path, or the
+brew metadata could not be read. Do not answer the confirmation until you have
+established which owner is intended. In a non-interactive run Plak stops
+without touching the file.
+
 ### Linux package
 
 ```sh
@@ -241,8 +336,24 @@ fix.
 
 The `plakio/tap/plak-cli` formula installs only the Bash CLI and depends on
 `gum`; it does not install PHP or FrankenPHP. `brew upgrade plak-cli` only
-updates the CLI. If FrankenPHP itself is managed by a Homebrew formula on the
-machine, update that formula as well and verify with `plak health php`.
+updates the CLI.
+
+If FrankenPHP was installed with the upstream tap
+(`dunglas/frankenphp/frankenphp`), its PHP comes from the
+`shivammathur/php/php-zts` formula. Plak resolves the installed formula and
+runs `brew upgrade <full-name>` without writing into the Cellar. Homebrew
+formulae are built from upstream PHP releases and do not normally carry
+distribution-style CVE backports, so a below-floor PHP reported by a formula
+is classified as **vulnerable**, not silently accepted as unverified. If the
+formula still reports the old PHP after the update, upgrade or reinstall the
+formula and its PHP dependency and rerun `plak health php`. A third-party tap
+that patches PHP may contain a fix, but Plak does not certify it from the
+version string alone.
+
+If the command is instead a standalone static binary in the Homebrew prefix
+(no installed formula owns it), `plak upgrade` uses the static asset channel
+described above. Do not run `brew install frankenphp` just to make detection
+recognise the path; that would add a second, conflicting runtime.
 
 ## Interim mitigations
 
@@ -267,7 +378,8 @@ only to a shell profile, and verify with `plak health php` after a full restart.
 
 ## Evidence and limits
 
-Verified locally on Linux ARM64 (Ubuntu 24.04, glibc 2.39) on 2026-10-22:
+Verified locally on Linux ARM64 (Ubuntu 24.04, glibc 2.39) on 2026-10-22 and
+2026-10-23:
 
 - Official `frankenphp-linux-aarch64` v1.13.2 reports PHP 8.5.12 and loads
   mysqli, curl, gd, xml, mbstring, zip, intl and bcmath.
@@ -280,8 +392,28 @@ Verified locally on Linux ARM64 (Ubuntu 24.04, glibc 2.39) on 2026-10-22:
   downloaded artifact with vulnerable PHP (old binary retained), failed
   downloads, the Intel macOS fallback, package updates at an equal FrankenPHP
   version, and the `plak upgrade` decision when only PHP is stale.
+- The same suite now covers the ownership regression with a controlled fake
+  brew: a regular `/opt/homebrew/bin/frankenphp` with no formula (`static`,
+  PHP 8.5.7 `vulnerable`), a symlink into an installed Cellar keg (`brew`), a
+  tap-qualified formula (`dunglas/frankenphp/frankenphp`), Intel `/usr/local`,
+  a formula shadowed by a regular file (`ambiguous`, no write), missing brew
+  metadata (`ambiguous`), and a qualified `brew upgrade` re-probed after the
+  package manager runs. The standalone prefix case is also driven through a
+  validated static replacement, a rejected vulnerable artifact and a failed
+  download, keeping the working binary intact.
 
-Not verified here: a real macOS run, a real Intel macOS binary, a live apt/dnf
-vendor update, and exploitation behaviour. The advisory's FrankenPHP/`mod_php`
-analogy is not a demonstrated FrankenPHP exploit. No exploit or request was
-sent to a real site during this work.
+The macOS 0.4.68 reproduction came from the human's machine, not from a macOS
+run here: `plak upgrade` reported FrankenPHP 1.12.4 with PHP 8.5.7
+`unverified`, listed `/opt/homebrew/bin/frankenphp` as `brew`, and stopped
+because the formula was not installed. The supplied read-only evidence was
+`ls -l` showing a regular executable (175,462,408 bytes) and
+`brew list --formula | grep -i franken` returning nothing. This work did not
+run upgrades, restarts, deletions, tap changes or service changes on that Mac
+or on any real site.
+
+Not verified here: a real macOS run after this fix, a real Intel macOS binary,
+a live Homebrew formula upgrade, a live apt/dnf vendor update, and exploitation
+behaviour. The fake-brew tests exercise command contracts and file layout, not
+Homebrew's own implementation. The advisory's FrankenPHP/`mod_php` analogy is
+not a demonstrated FrankenPHP exploit. No exploit or request was sent to a real
+site during this work.

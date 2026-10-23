@@ -68,6 +68,45 @@ file_hash() {
     fi
 }
 
+# A fake brew supplies only the metadata each regression needs. It records
+# upgrade arguments and can replace a keg binary with a patched fixture.
+fakebrew_dir="$tmpdir/fakebrew"
+mkdir -p "$fakebrew_dir"
+cat > "$fakebrew_dir/brew" <<'FAKE_BREW'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --prefix)
+        printf '%s\n' "${FAKE_BREW_PREFIX:-}"
+        exit 0
+        ;;
+    list)
+        case "${2:-}" in
+            --formula)
+                [ "${FAKE_BREW_LIST_RC:-0}" -eq 0 ] || exit "${FAKE_BREW_LIST_RC:-1}"
+                [ -n "${FAKE_BREW_FORMULAE:-}" ] && printf '%s\n' "$FAKE_BREW_FORMULAE"
+                exit 0
+                ;;
+            --versions)
+                [ "${FAKE_BREW_VERSIONS_RC:-0}" -eq 0 ] || exit "${FAKE_BREW_VERSIONS_RC:-1}"
+                printf '%s %s\n' "${3:-frankenphp}" "${FAKE_BREW_VERSION:-1.12.4}"
+                exit 0
+                ;;
+        esac
+        ;;
+    upgrade)
+        printf '%s\n' "${2:-}" >> "${FAKE_BREW_UPGRADE_LOG:-/dev/null}"
+        [ "${FAKE_BREW_UPGRADE_RC:-0}" -eq 0 ] || exit "${FAKE_BREW_UPGRADE_RC:-1}"
+        if [ -n "${FAKE_BREW_UPGRADE_SOURCE:-}" ] && [ -n "${FAKE_BREW_UPGRADE_TARGET:-}" ]; then
+            cp "$FAKE_BREW_UPGRADE_SOURCE" "$FAKE_BREW_UPGRADE_TARGET" || exit 1
+            chmod +x "$FAKE_BREW_UPGRADE_TARGET" || exit 1
+        fi
+        exit 0
+        ;;
+esac
+exit 0
+FAKE_BREW
+chmod +x "$fakebrew_dir/brew"
+
 # --- Upstream security floors and non-version cases ---------------------
 check_version_status 8.5.11 vulnerable 1
 check_version_status 8.5.12 patched 0
@@ -155,6 +194,309 @@ make_frankenphp "$probe_bin/frankenphp" 8.5.11 1.13.2
     [ "$status" = "vulnerable" ] || exit 1
 ) || fail "package backport classification failed"
 plak_health_web() { return 1; }
+
+# Homebrew reports the upstream PHP release it built. It does not carry the
+# distro-style CVE backports that make a lower apt/dnf version "unverified".
+check_channel_status() {
+    local version="$1" channel="$2" expected="$3" expected_rc="$4" actual rc
+    actual=$(plak_php_status_for_channel "$version" "$channel")
+    rc=$?
+    if [ "$actual" != "$expected" ] || [ "$rc" -ne "$expected_rc" ]; then
+        fail "PHP $version on $channel => ${actual}/${rc}, expected ${expected}/${expected_rc}"
+    fi
+}
+check_channel_status 8.5.7 apt unverified 2
+check_channel_status 8.5.7 dnf unverified 2
+check_channel_status 8.5.7 package unverified 2
+check_channel_status 8.5.7 ambiguous unverified 2
+check_channel_status 8.5.7 brew vulnerable 1
+check_channel_status 8.5.7 static vulnerable 1
+check_channel_status 8.5.12 brew patched 0
+
+# --- Homebrew prefix is not formula ownership -----------------------------
+# A static binary in bin/ is a regular file. Homebrew links formulae there,
+# so the formula must be detected from the Cellar link and installed metadata,
+# never from /opt/homebrew or /usr/local in the path alone.
+
+# A fake prefix where brew is present but no frankenphp formula is installed:
+# this is the reported Apple Silicon case (/opt/homebrew/bin/frankenphp).
+arm_prefix="$tmpdir/opt-homebrew"
+mkdir -p "$arm_prefix/bin" "$arm_prefix/Cellar"
+make_frankenphp "$arm_prefix/bin/frankenphp" 8.5.7 1.12.4
+(
+    set +e
+    export FAKE_BREW_PREFIX="$arm_prefix"
+    export FAKE_BREW_FORMULAE=""
+    export FAKE_BREW_LIST_RC=0
+    export FAKE_BREW_VERSIONS_RC=1
+    PATH="$fakebrew_dir:$arm_prefix/bin:$BASE_PATH"
+    channel=$(plak_php_runtime_channel "$arm_prefix/bin/frankenphp")
+    [ "$channel" = static ] || { echo "channel was $channel" >&2; exit 1; }
+    formula=$(plak_php_runtime_brew_formula "$arm_prefix/bin/frankenphp")
+    formula_rc=$?
+    [ "$formula_rc" -eq 1 ] || exit 1
+    status=$(plak_php_runtime_status "$arm_prefix/bin/frankenphp")
+    status_rc=$?
+    [ "$status" = vulnerable ] && [ "$status_rc" -eq 1 ] || exit 1
+    label=$(plak_php_runtime_channel_label "$channel" "$arm_prefix/bin/frankenphp")
+    grep -q 'no formula owns it' <<<"$label" || exit 1
+) || fail "manual /opt/homebrew-style binary was not classified as static/vulnerable"
+
+# The same decision must work for the literal Apple Silicon path, without
+# consulting another brew prefix from the test host.
+(
+    set +e
+    export FAKE_BREW_PREFIX="/opt/homebrew"
+    export FAKE_BREW_FORMULAE=""
+    export FAKE_BREW_LIST_RC=0
+    PATH="$fakebrew_dir:$BASE_PATH"
+    channel=$(plak_php_runtime_channel /opt/homebrew/bin/frankenphp)
+    [ "$channel" = static ] || exit 1
+) || fail "literal /opt/homebrew/bin/frankenphp was not classified from formula metadata"
+
+# A symlink into an installed Cellar keg is formula-owned, including an
+# unqualified formula on Apple Silicon.
+formula_prefix="$tmpdir/opt-homebrew-formula"
+mkdir -p "$formula_prefix/bin" "$formula_prefix/opt" "$formula_prefix/Cellar/frankenphp/1.12.4/bin"
+make_frankenphp "$formula_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" 8.5.7 1.12.4
+ln -s ../Cellar/frankenphp/1.12.4 "$formula_prefix/opt/frankenphp"
+ln -s ../Cellar/frankenphp/1.12.4/bin/frankenphp "$formula_prefix/bin/frankenphp"
+(
+    set +e
+    export FAKE_BREW_PREFIX="$formula_prefix"
+    export FAKE_BREW_FORMULAE="frankenphp"
+    export FAKE_BREW_VERSION="1.12.4"
+    export FAKE_BREW_LIST_RC=0
+    export FAKE_BREW_VERSIONS_RC=0
+    PATH="$fakebrew_dir:$formula_prefix/bin:$BASE_PATH"
+    channel=$(plak_php_runtime_channel "$formula_prefix/bin/frankenphp")
+    [ "$channel" = brew ] || { echo "channel was $channel" >&2; exit 1; }
+    formula=$(plak_php_runtime_brew_formula "$formula_prefix/bin/frankenphp")
+    [ "$formula" = frankenphp ] || { echo "formula was $formula" >&2; exit 1; }
+    status=$(plak_php_runtime_status "$formula_prefix/bin/frankenphp")
+    status_rc=$?
+    [ "$status" = vulnerable ] && [ "$status_rc" -eq 1 ] || exit 1
+) || fail "Cellar symlink was not detected as a Homebrew formula"
+
+# A qualified formula from a tap keeps its full name so the upgrade cannot
+# hit an equally named formula in another tap.
+(
+    set +e
+    export FAKE_BREW_PREFIX="$formula_prefix"
+    export FAKE_BREW_FORMULAE="dunglas/frankenphp/frankenphp"
+    export FAKE_BREW_LIST_RC=0
+    PATH="$fakebrew_dir:$formula_prefix/bin:$BASE_PATH"
+    formula=$(plak_php_runtime_brew_formula "$formula_prefix/bin/frankenphp")
+    [ "$formula" = "dunglas/frankenphp/frankenphp" ] || {
+        echo "qualified formula was $formula" >&2
+        exit 1
+    }
+) || fail "tapped formula name was not preserved"
+
+# Intel macOS uses /usr/local. The same symlink/metadata rule applies.
+intel_prefix="$tmpdir/usr/local"
+mkdir -p "$intel_prefix/bin" "$intel_prefix/Cellar/frankenphp/1.12.4/bin"
+make_frankenphp "$intel_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" 8.5.7 1.12.4
+ln -s ../Cellar/frankenphp/1.12.4/bin/frankenphp "$intel_prefix/bin/frankenphp"
+(
+    set +e
+    export FAKE_BREW_PREFIX="$intel_prefix"
+    export FAKE_BREW_FORMULAE="frankenphp"
+    export FAKE_BREW_LIST_RC=0
+    PATH="$fakebrew_dir:$intel_prefix/bin:$BASE_PATH"
+    channel=$(plak_php_runtime_channel "$intel_prefix/bin/frankenphp")
+    [ "$channel" = brew ] || exit 1
+) || fail "Intel /usr/local Cellar symlink was not detected"
+
+# A formula is installed but the selected executable is a regular file that
+# shadows it. Ownership is ambiguous: do not replace it automatically.
+shadow_prefix="$tmpdir/opt-homebrew-shadow"
+mkdir -p "$shadow_prefix/bin" "$shadow_prefix/Cellar/frankenphp/1.12.4/bin"
+make_frankenphp "$shadow_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" 8.5.7 1.12.4
+make_frankenphp "$shadow_prefix/bin/frankenphp" 8.5.7 1.12.4
+(
+    set +e
+    export FAKE_BREW_PREFIX="$shadow_prefix"
+    export FAKE_BREW_FORMULAE="frankenphp"
+    export FAKE_BREW_LIST_RC=0
+    export FAKE_BREW_VERSIONS_RC=0
+    PATH="$fakebrew_dir:$shadow_prefix/bin:$BASE_PATH"
+    channel=$(plak_php_runtime_channel "$shadow_prefix/bin/frankenphp")
+    [ "$channel" = ambiguous ] || { echo "channel was $channel" >&2; exit 1; }
+    status=$(plak_php_runtime_status "$shadow_prefix/bin/frankenphp")
+    status_rc=$?
+    [ "$status" = unverified ] && [ "$status_rc" -eq 2 ] || exit 1
+
+    before=$(file_hash "$shadow_prefix/bin/frankenphp")
+    plak_php_confirm_ambiguous_static() { return 1; }
+    SUDO_CMD=""
+    CADDY_CMD="frankenphp"
+    upgrade_frankenphp > "$tmpdir/upgrade-ambiguous.log" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    [ "$(file_hash "$shadow_prefix/bin/frankenphp")" = "$before" ] || exit 1
+    grep -q 'No changes made' "$tmpdir/upgrade-ambiguous.log" || exit 1
+) || fail "shadowed formula path was not treated as ambiguous"
+
+# brew metadata unavailable: a regular file inside the prefix is ambiguous,
+# never assumed static and overwritten.
+metadata_prefix="$tmpdir/opt-homebrew-metadata"
+mkdir -p "$metadata_prefix/bin"
+make_frankenphp "$metadata_prefix/bin/frankenphp" 8.5.7 1.12.4
+(
+    set +e
+    export FAKE_BREW_PREFIX="$metadata_prefix"
+    export FAKE_BREW_LIST_RC=1
+    PATH="$fakebrew_dir:$metadata_prefix/bin:$BASE_PATH"
+    channel=$(plak_php_runtime_channel "$metadata_prefix/bin/frankenphp")
+    [ "$channel" = ambiguous ] || exit 1
+    status=$(plak_php_runtime_status "$metadata_prefix/bin/frankenphp")
+    [ "$?" -eq 2 ] && [ "$status" = unverified ] || exit 1
+) || fail "missing brew metadata was not treated as ambiguous"
+
+# A Cellar path stays formula-owned even when brew metadata is unavailable.
+(
+    set +e
+    export FAKE_BREW_PREFIX="$formula_prefix"
+    export FAKE_BREW_LIST_RC=1
+    PATH="$fakebrew_dir:$formula_prefix/bin:$BASE_PATH"
+    channel=$(plak_php_runtime_channel "$formula_prefix/bin/frankenphp")
+    [ "$channel" = brew ] || exit 1
+    formula=$(plak_php_runtime_brew_formula "$formula_prefix/bin/frankenphp")
+    [ "$formula" = frankenphp ] || exit 1
+) || fail "Cellar path lost Homebrew protection when metadata failed"
+
+# Defence in depth: the static installer itself refuses keg/cask paths even if
+# a caller reaches it with a bad channel decision.
+protected_cellar="$tmpdir/protected/Cellar/frankenphp/1.12.4/bin"
+mkdir -p "$protected_cellar"
+make_frankenphp "$protected_cellar/frankenphp" 8.5.7 1.12.4
+(
+    set +e
+    before=$(file_hash "$protected_cellar/frankenphp")
+    SUDO_CMD=""
+    plak_php_install_static_frankenphp "$protected_cellar/frankenphp" frankenphp-mac-arm64 v1.13.3 \
+        > "$tmpdir/protected-cellar.log" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    [ "$(file_hash "$protected_cellar/frankenphp")" = "$before" ] || exit 1
+    grep -q 'Refusing to replace a Homebrew-managed path' "$tmpdir/protected-cellar.log" || exit 1
+) || fail "static installer did not protect a Homebrew keg path"
+
+# A Cellar path whose formula is no longer installed still belongs to
+# Homebrew: upgrade must fail without replacing it with a static binary.
+stale_prefix="$tmpdir/stale-cellar"
+mkdir -p "$stale_prefix/Cellar/frankenphp/1.12.4/bin"
+make_frankenphp "$stale_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" 8.5.7 1.12.4
+(
+    set +e
+    export FAKE_BREW_PREFIX="$stale_prefix"
+    export FAKE_BREW_FORMULAE=""
+    export FAKE_BREW_LIST_RC=0
+    export FAKE_BREW_VERSIONS_RC=1
+    PATH="$fakebrew_dir:$stale_prefix/Cellar/frankenphp/1.12.4/bin:$BASE_PATH"
+    channel=$(plak_php_runtime_channel "$stale_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp")
+    [ "$channel" = brew ] || exit 1
+    before=$(file_hash "$stale_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp")
+    SUDO_CMD=""
+    CADDY_CMD="frankenphp"
+    upgrade_frankenphp > "$tmpdir/stale-cellar.log" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    [ "$(file_hash "$stale_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp")" = "$before" ] || exit 1
+    grep -q 'but that formula is not installed' "$tmpdir/stale-cellar.log" || exit 1
+) || fail "missing formula for a Cellar path was overwritten"
+
+# A tapped formula is upgraded by its full name, and the installed PHP is
+# re-probed after the package manager runs.
+brew_upgrade_prefix="$tmpdir/brew-upgrade"
+mkdir -p "$brew_upgrade_prefix/bin" "$brew_upgrade_prefix/Cellar/frankenphp/1.12.4/bin"
+make_frankenphp "$brew_upgrade_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp" 8.5.7 1.12.4
+ln -s ../Cellar/frankenphp/1.12.4/bin/frankenphp "$brew_upgrade_prefix/bin/frankenphp"
+make_frankenphp "$tmpdir/brew-patched" 8.5.12 1.13.3
+(
+    set +e
+    export FAKE_BREW_PREFIX="$brew_upgrade_prefix"
+    export FAKE_BREW_FORMULAE="dunglas/frankenphp/frankenphp"
+    export FAKE_BREW_VERSION="1.12.4"
+    export FAKE_BREW_LIST_RC=0
+    export FAKE_BREW_VERSIONS_RC=0
+    export FAKE_BREW_UPGRADE_LOG="$tmpdir/brew-upgrade.log"
+    export FAKE_BREW_UPGRADE_SOURCE="$tmpdir/brew-patched"
+    export FAKE_BREW_UPGRADE_TARGET="$brew_upgrade_prefix/Cellar/frankenphp/1.12.4/bin/frankenphp"
+    : > "$FAKE_BREW_UPGRADE_LOG"
+    PATH="$fakebrew_dir:$brew_upgrade_prefix/bin:$BASE_PATH"
+    SUDO_CMD=""
+    CADDY_CMD="frankenphp"
+    upgrade_frankenphp > "$tmpdir/brew-upgrade.out" 2>&1
+    [ "$?" -eq 0 ] || { cat "$tmpdir/brew-upgrade.out"; exit 1; }
+    grep -qx 'dunglas/frankenphp/frankenphp' "$FAKE_BREW_UPGRADE_LOG" || exit 1
+    grep -q 'Updating the Homebrew formula dunglas/frankenphp/frankenphp' "$tmpdir/brew-upgrade.out" || exit 1
+    [ "$(plak_php_runtime_php_version "$brew_upgrade_prefix/bin/frankenphp")" = "8.5.12" ] || exit 1
+) || fail "qualified Homebrew formula upgrade failed"
+
+# A standalone binary in a Homebrew prefix is replaced via the static asset
+# path, never with brew upgrade, and only after PHP validation.
+manual_upgrade_prefix="$tmpdir/opt-homebrew-manual-upgrade"
+mkdir -p "$manual_upgrade_prefix/bin"
+make_frankenphp "$manual_upgrade_prefix/bin/frankenphp" 8.5.7 1.12.4
+make_frankenphp "$tmpdir/manual-brew-asset" 8.5.12 1.13.3
+(
+    set +e
+    export FAKE_BREW_PREFIX="$manual_upgrade_prefix"
+    export FAKE_BREW_FORMULAE=""
+    export FAKE_BREW_LIST_RC=0
+    export FAKE_BREW_VERSIONS_RC=1
+    export FAKE_BREW_UPGRADE_LOG="$tmpdir/manual-brew-upgrade.log"
+    : > "$FAKE_BREW_UPGRADE_LOG"
+    PATH="$fakebrew_dir:$manual_upgrade_prefix/bin:$BASE_PATH"
+    SUDO_CMD=""
+    CADDY_CMD="frankenphp"
+    setcap() { :; }
+    fake_asset="$tmpdir/manual-brew-asset"
+    download_fails=0
+    curl() {
+        local out="" prev="" url="" arg
+        for arg in "$@"; do
+            [ "$prev" = "-o" ] && out="$arg"
+            case "$arg" in http*) url="$arg" ;; esac
+            prev="$arg"
+        done
+        case " $* " in
+            *url_effective*)
+                printf '%s\n' 'https://github.com/php/frankenphp/releases/tag/v1.13.3'
+                return 0
+                ;;
+        esac
+        case " $* " in
+            *" -fsIL "*) return 0 ;;
+        esac
+        [ "$download_fails" -eq 1 ] && return 22
+        case "$url" in
+            */download/*) cp "$fake_asset" "$out"; return 0 ;;
+        esac
+        return 22
+    }
+    upgrade_frankenphp > "$tmpdir/manual-brew-upgrade.out" 2>&1
+    [ "$?" -eq 0 ] || { cat "$tmpdir/manual-brew-upgrade.out"; exit 1; }
+    grep -q 'standalone binary in a Homebrew prefix' "$tmpdir/manual-brew-upgrade.out" || exit 1
+    [ ! -s "$FAKE_BREW_UPGRADE_LOG" ] || exit 1
+    [ "$(plak_php_runtime_php_version "$manual_upgrade_prefix/bin/frankenphp")" = "8.5.12" ] || exit 1
+
+    # A vulnerable downloaded artifact or a failed download must leave the
+    # working standalone binary untouched, exactly as for any static runtime.
+    make_frankenphp "$tmpdir/manual-brew-bad-asset" 8.5.7 1.13.3
+    make_frankenphp "$manual_upgrade_prefix/bin/frankenphp" 8.5.7 1.12.4
+    before=$(file_hash "$manual_upgrade_prefix/bin/frankenphp")
+    fake_asset="$tmpdir/manual-brew-bad-asset"
+    upgrade_frankenphp > "$tmpdir/manual-brew-bad.out" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    [ "$(file_hash "$manual_upgrade_prefix/bin/frankenphp")" = "$before" ] || exit 1
+    grep -q 'refusing to install' "$tmpdir/manual-brew-bad.out" || exit 1
+
+    fake_asset="$tmpdir/manual-brew-asset"
+    download_fails=1
+    upgrade_frankenphp > "$tmpdir/manual-brew-download-fail.out" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    [ "$(file_hash "$manual_upgrade_prefix/bin/frankenphp")" = "$before" ] || exit 1
+) || fail "standalone Homebrew-prefix binary was not updated through the static channel"
 
 # --- Static artifact selection: validate before replacing --------------
 static_bin="$tmpdir/static-bin"

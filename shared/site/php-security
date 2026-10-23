@@ -12,9 +12,11 @@
 #
 # A version string is evidence only for the build that reports it. Linux
 # distributions commonly backport security fixes without changing the
-# upstream version, so a package-managed runtime below these floors is
-# reported as "unverified", not as safe or as definitely vulnerable. Only
-# the vendor's advisory/changelog can establish a backport.
+# upstream version, so an apt/dnf-managed runtime below these floors is
+# reported as "unverified", not as safe or as definitely vulnerable. Static,
+# upstream and Homebrew builds report the upstream PHP release they embed;
+# below the floor they are reported as vulnerable. Only the vendor's
+# advisory/changelog can establish a distribution backport.
 PLAK_PHP_SECURITY_ADVISORY="CVE-2026-109618, CVE-2026-109619"
 PLAK_PHP_SECURITY_ADVISORY_URL="https://www.php.net/archive/2026.php#2026-10-21-5"
 PLAK_PHP_SECURITY_DATE="2026-10-21"
@@ -119,22 +121,156 @@ plak_php_runtime_realpath() {
     printf '%s\n' "$path"
 }
 
-# Where the runtime comes from determines how it must be updated. A static
-# FrankenPHP binary is replaced; a Homebrew, apt or dnf package must be
-# upgraded through its package manager instead of being overwritten.
-plak_php_runtime_channel() {
-    local original="$1" resolved
+# Print the Homebrew prefix that contains $1, when it can be established.
+# `brew --prefix` is authoritative; the standard prefixes are only a fallback
+# so a keg path is still protected when brew itself is missing or broken.
+plak_php_runtime_brew_prefix() {
+    local path="$1" prefix
+    [ -n "$path" ] || return 1
+    if command -v brew >/dev/null 2>&1; then
+        prefix=$(brew --prefix 2>/dev/null) || prefix=""
+        if [ -n "$prefix" ]; then
+            case "$path" in
+                "$prefix"|"$prefix"/*) printf '%s\n' "$prefix"; return 0 ;;
+            esac
+        fi
+    fi
+    for prefix in /opt/homebrew /usr/local /home/linuxbrew/.linuxbrew "${HOME:-}/.linuxbrew"; do
+        [ -n "$prefix" ] || continue
+        case "$path" in
+            "$prefix"|"$prefix"/*)
+                if [ -d "$prefix/Cellar" ] || [ -d "$prefix/Homebrew" ] || [ -x "$prefix/bin/brew" ]; then
+                    printf '%s\n' "$prefix"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+    return 1
+}
+
+# Print the installed, fully qualified formula name for a Cellar name.
+# `brew list --formula --full-name` includes the tap for tapped formulae, so
+# an equally named formula in another tap is never upgraded by accident.
+plak_brew_formula_full_name() {
+    local name="$1" list matches count
+    [ -n "$name" ] || return 1
+    if ! command -v brew >/dev/null 2>&1; then
+        printf '%s\n' "$name"
+        return 0
+    fi
+    list=$(brew list --formula --full-name 2>/dev/null) || {
+        printf '%s\n' "$name"
+        return 0
+    }
+    matches=$(printf '%s\n' "$list" | awk -v name="$name" '
+        {
+            base = $0
+            sub(/^.*\//, "", base)
+            if (base == name) { print; found = 1; exit }
+        }
+        END { exit(found ? 0 : 1) }
+    ') || matches=""
+    count=$(printf '%s\n' "$matches" | awk 'NF { n++ } END { print n + 0 }')
+    if [ "$count" -eq 1 ]; then
+        printf '%s\n' "$matches"
+    else
+        printf '%s\n' "$name"
+    fi
+}
+
+# Print an installed formula whose name matches the command basename. This is
+# only used to detect ambiguity for a non-keg path; a formula merely being
+# installed must never turn a manual file into a formula-owned one.
+# Returns 0 found, 1 not found, 2 brew metadata unavailable.
+plak_brew_formula_for_command() {
+    local command_name="$1" list matches
+    [ -n "$command_name" ] || return 1
+    command -v brew >/dev/null 2>&1 || return 2
+    list=$(brew list --formula --full-name 2>/dev/null) || return 2
+    matches=$(printf '%s\n' "$list" | awk -v name="$command_name" '
+        {
+            base = $0
+            sub(/^.*\//, "", base)
+            if (base == name || index(base, name "@") == 1) {
+                print
+                found = 1
+                exit
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ') || matches=""
+    if [ -n "$matches" ]; then
+        printf '%s\n' "$matches"
+        return 0
+    fi
+    return 1
+}
+
+# Decide whether $1 is owned by an installed Homebrew formula.
+# 0 = owned (prints the full formula name), 1 = not owned (static/manual),
+# 2 = ownership cannot be established (do not overwrite it automatically).
+#
+# A path inside a Cellar keg is formula-owned even when brew is unavailable.
+# A regular file in bin/ was not installed by Homebrew: formulae link their
+# executables into bin/. If a formula that provides the same command is also
+# installed, the file may be shadowing it, so the case is ambiguous instead
+# of assumed static.
+plak_php_runtime_brew_formula() {
+    local original="${1:-}" resolved prefix formula candidate metadata_rc
+    [ -n "$original" ] || return 1
     resolved=$(plak_php_runtime_realpath "$original")
-    case "$original:$resolved" in
-        *:/opt/homebrew/*|*:/usr/local/Cellar/*|*:/usr/local/opt/*|*:/home/linuxbrew/*|*:*/.linuxbrew/*)
-            printf 'brew\n'
-            return 0
-            ;;
-        *:/Cellar/*|*:/homebrew/*|*:/linuxbrew/*)
-            printf 'brew\n'
+
+    case "$resolved" in
+        */Cellar/*)
+            formula=${resolved#*/Cellar/}
+            formula=${formula%%/*}
+            [ -n "$formula" ] || return 2
+            plak_brew_formula_full_name "$formula"
             return 0
             ;;
     esac
+
+    prefix=$(plak_php_runtime_brew_prefix "$resolved") || prefix=""
+    # Outside a Homebrew prefix there is no formula to own this path. A
+    # symlink into a keg was already resolved above.
+    [ -n "$prefix" ] || return 1
+
+    if ! command -v brew >/dev/null 2>&1; then
+        # No brew means no formula can be updated here; a non-keg file is
+        # standalone. Keg paths were handled above and stay protected.
+        return 1
+    fi
+
+    candidate=""
+    metadata_rc=0
+    candidate=$(plak_brew_formula_for_command "$(basename "$original")") || metadata_rc=$?
+    case "$metadata_rc" in
+        0)
+            # A formula provides this command, but the selected file is not
+            # its linked keg path. Do not guess which one the user wants.
+            return 2
+            ;;
+        2)
+            # brew exists but its metadata could not be read. Refuse to
+            # overwrite a path that might be formula-managed.
+            return 2
+            ;;
+    esac
+    return 1
+}
+
+# Where the runtime comes from determines how it must be updated. A static
+# FrankenPHP binary is replaced; a Homebrew, apt or dnf package must be
+# upgraded through its package manager instead of being overwritten. A path
+# is never attributed to Homebrew from its location alone: the formula must
+# own the resolved Cellar path, or ownership must be reported as ambiguous.
+plak_php_runtime_channel() {
+    local original="$1" resolved formula_rc
+    resolved=$(plak_php_runtime_realpath "$original")
+
+    # Linux package-managed locations are checked first: they are never
+    # Homebrew paths, and the apt/dnf origin changes the security caveat.
     case "$original" in
         /usr/bin/frankenphp|/usr/sbin/frankenphp)
             if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -S "$resolved" >/dev/null 2>&1; then
@@ -162,7 +298,41 @@ plak_php_runtime_channel() {
             return 0
             ;;
     esac
+
+    formula_rc=0
+    plak_php_runtime_brew_formula "$original" >/dev/null || formula_rc=$?
+    case "$formula_rc" in
+        0) printf 'brew\n'; return 0 ;;
+        2) printf 'ambiguous\n'; return 0 ;;
+    esac
+
+    # Defence in depth: a Cellar path that could not be named is still
+    # Homebrew-managed. Never classify it as a replaceable static binary.
+    case "$resolved" in
+        */Cellar/*) printf 'brew\n'; return 0 ;;
+    esac
     printf 'static\n'
+}
+
+# Human-readable ownership label. The JSON channel stays stable ("static",
+# "brew", "ambiguous"); this text explains the decision in command output.
+plak_php_runtime_channel_label() {
+    local channel="$1" path="${2:-}"
+    case "$channel" in
+        static)
+            if plak_php_runtime_brew_prefix "$path" >/dev/null 2>&1; then
+                printf 'static (standalone binary in a Homebrew prefix; no formula owns it)'
+            else
+                printf 'static'
+            fi
+            ;;
+        ambiguous)
+            printf 'ambiguous (Homebrew ownership could not be established)'
+            ;;
+        *)
+            printf '%s' "$channel"
+            ;;
+    esac
 }
 
 plak_php_runtime_php_version() {
@@ -185,21 +355,37 @@ plak_php_runtime_frankenphp_version() {
     }'
 }
 
-# Runtime status adds the package-manager caveat: a version below the
-# upstream floor is only "vulnerable" for a static/upstream build.
-plak_php_runtime_status() {
-    local bin="${1:-frankenphp}" version base channel
-    version=$(plak_php_runtime_php_version "$bin") || { printf 'unknown\n'; return 3; }
-    base=$(plak_php_version_status "$version")
-    local rc=$?
-    channel=$(plak_php_runtime_channel "$bin")
+# Classify a probed PHP version for a runtime channel. Distribution packages
+# can carry a vendor backport without changing PHP_VERSION, so only apt/dnf
+# (and package paths whose owner is unknown) are "unverified". Static,
+# upstream and Homebrew builds report their actual upstream release: below
+# the floor there is no accredited backport to rely on, so they are
+# "vulnerable". Ambiguous ownership is unverified, never safe.
+plak_php_status_for_channel() {
+    local version="${1:-}" channel="${2:-}" status rc=0
+    status=$(plak_php_version_status "$version") || rc=$?
     if [ "$rc" -eq 1 ]; then
         case "$channel" in
-            apt|dnf|brew|package) printf 'unverified\n'; return 2 ;;
+            apt|dnf|package|ambiguous|"")
+                printf 'unverified\n'
+                return 2
+                ;;
         esac
     fi
-    printf '%s\n' "$base"
+    printf '%s\n' "$status"
     return "$rc"
+}
+
+# Runtime status adds the package-manager caveat: a version below the
+# upstream floor is only "unverified" for a distribution package that may
+# carry a backport. $2 is an optional already-resolved channel.
+plak_php_runtime_status() {
+    local bin="${1:-frankenphp}" channel="${2:-}" version
+    version=$(plak_php_runtime_php_version "$bin") || { printf 'unknown\n'; return 3; }
+    if [ -z "$channel" ]; then
+        channel=$(plak_php_runtime_channel "$bin")
+    fi
+    plak_php_status_for_channel "$version" "$channel"
 }
 
 # Emit one JSON object for the selected FrankenPHP runtime. $1 and $2 are
@@ -214,7 +400,7 @@ plak_php_runtime_json() {
     version=$(plak_php_runtime_php_version "$bin") || version=""
     frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
     channel=$(plak_php_runtime_channel "$bin")
-    cli_status=$(plak_php_runtime_status "$bin") || cli_rc=$?
+    cli_status=$(plak_php_runtime_status "$bin" "$channel") || cli_rc=$?
     if [ -n "$overall_status" ]; then
         status="$overall_status"
         case "$status" in
