@@ -41,8 +41,8 @@ plak_health_php() {
             echo "Reports the PHP embedded in the FrankenPHP binary used for sites and"
             echo "WP-CLI, plus the PHP version reported by the running web process."
             echo "Returns 0 when patched, 1 when below the upstream security floor,"
-            echo "2 when a package build cannot be verified from its version and"
-            echo "3 when the runtime cannot be probed."
+            echo "2 when a package build or an unresolved Homebrew ownership cannot be"
+            echo "verified from the version, and 3 when the runtime cannot be probed."
             return 0
             ;;
     esac
@@ -51,7 +51,7 @@ plak_health_php() {
         return 1
     fi
 
-    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel
+    local caddy="${CADDY_CMD:-frankenphp}" bin version frank channel channel_label
     local cli_status="" status="" rc=0 cli_rc=0
     local web_version="" web_status="" web_rc=0
     bin=$(command -v "$caddy" 2>/dev/null) || {
@@ -69,21 +69,17 @@ plak_health_php() {
     version=$(plak_php_runtime_php_version "$bin") || version=""
     frank=$(plak_php_runtime_frankenphp_version "$bin") || frank=""
     channel=$(plak_php_runtime_channel "$bin")
-    cli_status=$(plak_php_runtime_status "$bin") || cli_rc=$?
+    channel_label=$(plak_php_runtime_channel_label "$channel" "$bin")
+    cli_status=$(plak_php_runtime_status "$bin" "$channel") || cli_rc=$?
     status="$cli_status"
     rc="$cli_rc"
     web_version=$(plak_health_php_web_version) || web_version=""
     if [ -n "$web_version" ]; then
-        web_status=$(plak_php_version_status "$web_version") || web_rc=$?
+        web_status=$(plak_php_status_for_channel "$web_version" "$channel") || web_rc=$?
         # The web process is what serves sites. If it still runs an older
         # unpatched PHP after a binary update, the CLI being patched is not
-        # enough: the service needs a full restart. Apply the same package
-        # backport caveat as the CLI probe.
-        if [ "$web_rc" -eq 1 ]; then
-            case "$channel" in
-                apt|dnf|brew|package) web_status="unverified"; web_rc=2 ;;
-            esac
-        fi
+        # enough: the service needs a full restart. Apply the same channel
+        # caveat as the CLI probe.
         if [ "$web_rc" -eq 1 ] || { [ "$web_rc" -eq 2 ] && [ "$rc" -eq 0 ]; }; then
             status="$web_status"
             rc="$web_rc"
@@ -98,7 +94,7 @@ plak_health_php() {
 
     plak_ui_title 'PHP runtime (read-only)'
     printf 'Binary:       %s\n' "$bin"
-    printf 'Channel:      %s\n' "$channel"
+    printf 'Channel:      %s\n' "$channel_label"
     printf 'FrankenPHP:   %s\n' "${frank:-unknown}"
     printf 'PHP (CLI):    %s [%s]\n' "${version:-unknown}" "$cli_status"
     if [ -n "$web_version" ]; then
@@ -113,15 +109,22 @@ plak_health_php() {
             echo 'Result:       patched. This runtime reports a fixed upstream PHP version.'
             ;;
         vulnerable)
-            echo 'Result:       VULNERABLE. Update this runtime before serving sites.'
-            echo "              Run 'plak upgrade'; the first static FrankenPHP release"
-            echo '              documented with PHP 8.5.12 is v1.13.2.'
+            echo "Result:       VULNERABLE. PHP ${version:-unknown} is below the upstream"
+            echo '              fixed release and this channel has no accredited backport.'
+            echo "              Run 'plak upgrade' before serving sites."
             ;;
         unverified)
-            echo 'Result:       UNVERIFIED. This is a package-managed runtime below the'
-            echo '              upstream fixed version. Update it through its package'
-            echo '              manager and confirm the vendor advisory/changelog; a vendor'
-            echo '              backport can keep the upstream version number.'
+            if [ "$channel" = ambiguous ]; then
+                echo 'Result:       UNVERIFIED. Plak cannot establish whether this binary is'
+                echo '              managed by Homebrew, so it will not overwrite it. Treat it'
+                echo '              as unsafe until ownership is resolved and the runtime is'
+                echo '              updated.'
+            else
+                echo 'Result:       UNVERIFIED. This is a package-managed runtime below the'
+                echo '              upstream fixed version. Update it through its package'
+                echo '              manager and confirm the vendor advisory/changelog; a vendor'
+                echo '              backport can keep the upstream version number.'
+            fi
             ;;
         *)
             echo 'Result:       UNKNOWN. The runtime did not report a usable PHP version.'

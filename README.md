@@ -98,8 +98,11 @@ plak health php --json
 Updating `plak-cli` with Homebrew or patching the host PHP does not patch the
 runtime that serves sites. `plak upgrade` updates the owning channel, validates
 the artifact, replaces it atomically and restarts the service; a Caddy reload
-alone keeps the old PHP process. See [docs/php-security.md](docs/php-security.md)
-for the advisory, component matrix, verification commands and migration steps.
+alone keeps the old PHP process. On macOS, a standalone static binary in the
+Homebrew prefix is not mistaken for a `frankenphp` formula: Plak only uses
+`brew upgrade` when the selected path is actually owned by an installed
+formula. See [docs/php-security.md](docs/php-security.md) for the advisory,
+component matrix, verification commands and migration steps.
 
 ## Development
 
