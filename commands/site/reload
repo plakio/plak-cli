@@ -52,7 +52,7 @@ plak_site_reload() {
         rm -f "$pending"
         create_gui_file
         regenerate_caddyfile
-        update_etc_hosts
+        update_etc_hosts || return $?
         [ -f "$pending" ] || break
     done
 
