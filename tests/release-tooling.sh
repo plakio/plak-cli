@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 
+# shellcheck disable=SC2016  # grep patterns intentionally match literal $ and `
+
 # Release tooling contract: publishing is tag-driven.
 #
 # These checks guard the documented flow: a version bump on main, a pushed
 # v<version> tag, and the Homebrew tap update. The release tooling must not
-# create GitHub Release pages, must not delete tags, and must not make the
-# universal installer or plak upgrade depend on tags or releases.
+# create GitHub Release pages, must not delete tags, and the universal
+# installer and plak upgrade must install only from stable tags (never main
+# or releases/latest).
 
 set -euo pipefail
 
@@ -13,7 +16,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
 WORKFLOW=".github/workflows/notify-homebrew-tap.yml"
-MAIN_SCRIPT_URL="raw.githubusercontent.com/plakio/plak-cli/main/plak.sh"
+STABLE_API="api.github.com/repos/plakio/plak-cli/tags"
 
 fail() {
     echo "release tooling test failed: $1" >&2
@@ -46,11 +49,44 @@ if grep -Eq '^[[:space:]]+(release|releases):' "$WORKFLOW"; then
     fail "$WORKFLOW triggers on release events"
 fi
 
-# The universal installer and plak upgrade track main, not tags or releases.
-grep -Fq "$MAIN_SCRIPT_URL" install.sh \
-    || fail "install.sh does not download main/plak.sh"
-grep -Fq "$MAIN_SCRIPT_URL" commands/site/upgrade \
-    || fail "plak upgrade does not download main/plak.sh"
+# The universal installer and plak upgrade use the stable tag channel, never
+# main or releases/latest. Both must resolve tags and stage atomically.
+for file in install.sh shared/release; do
+    grep -Fq "$STABLE_API" "$file" || fail "$file does not call the tags API"
+done
+for file in install.sh commands/site/upgrade; do
+    grep -Fq 'plak_release_resolve_latest_tag' "$file" || fail "$file does not resolve a stable tag"
+    grep -Fq 'plak_release_validate_script' "$file" || fail "$file does not validate the downloaded script"
+    grep -Fq 'mktemp' "$file" || fail "$file does not use mktemp"
+    if grep -Eq 'raw\.githubusercontent\.com/plakio/plak-cli/(main|master)/plak\.sh' "$file"; then
+        fail "$file still downloads main/plak.sh"
+    fi
+    if grep -Eq 'github\.com/plakio/plak-cli/releases/latest|raw\.githubusercontent\.com/plakio/plak-cli/main/plak\.sh' "$file"; then
+        fail "$file still downloads from main or releases/latest"
+    fi
+    if grep -Fq '/tmp/plak.sh.latest' "$file"; then
+        fail "$file still uses the fixed /tmp/plak.sh.latest path"
+    fi
+done
+grep -Fq 'plak_release_script_url' commands/site/upgrade \
+    || fail "plak upgrade does not download from the selected tag"
+
+# The upgrade helper runs under `if !`, which suppresses `set -e` inside it:
+# every staging step (including chmod) must be checked explicitly, or a failed
+# chmod would swap in a non-executable file while reporting success.
+if grep -Eq '^[[:space:]]*chmod [^|&]*"\$temp_script"' commands/site/upgrade; then
+    fail "plak upgrade has an unchecked chmod on the staged script"
+fi
+grep -Fq 'if ! chmod 755 "$temp_script"' commands/site/upgrade \
+    || fail "plak upgrade does not check the staging chmod explicitly"
+
+# The tag artifact is compiled before the tag exists, so Homebrew (tag archive)
+# and the universal channel (tag plak.sh) receive the same release source.
+compile_line=$(grep -n '^\./compile\.sh$' scripts/release.sh | head -n1 | cut -d: -f1)
+tag_line=$(grep -n '^git tag "\$TAG"$' scripts/release.sh | head -n1 | cut -d: -f1)
+[ -n "$compile_line" ] || fail "scripts/release.sh does not run ./compile.sh"
+[ -n "$tag_line" ] || fail "scripts/release.sh does not create the release tag"
+[ "$compile_line" -lt "$tag_line" ] || fail "scripts/release.sh tags before compiling plak.sh"
 
 # The documentation keeps the same contract.
 grep -Fq 'Publishing is **tag-driven**' CONTRIBUTING.md \
@@ -59,9 +95,15 @@ grep -Fq 'does **not** create a GitHub Release page' CONTRIBUTING.md \
     || fail "CONTRIBUTING.md does not rule out GitHub Release pages"
 grep -Fq '"publish a version" does not authorize creating one' CONTRIBUTING.md \
     || fail "CONTRIBUTING.md does not separate publishing from GitHub Releases"
+grep -Fq 'never fall back to `main`' CONTRIBUTING.md \
+    || fail "CONTRIBUTING.md does not rule out a main fallback"
 grep -Fq 'There is no GitHub Release page in the flow.' docs/homebrew.md \
     || fail "docs/homebrew.md does not rule out GitHub Release pages"
-grep -Fq 'Creating a GitHub Release page is not part of publishing a version' docs/homebrew.md \
-    || fail "docs/homebrew.md does not separate publishing from GitHub Releases"
+grep -Fq 'Stable channel selection rules' docs/homebrew.md \
+    || fail "docs/homebrew.md does not document stable tag selection"
+grep -Fq 'no fallback to `main`' docs/homebrew.md \
+    || fail "docs/homebrew.md does not rule out a main fallback"
+grep -Fq 'PLAK_INSTALL_URL' docs/homebrew.md \
+    || fail "docs/homebrew.md does not document the explicit installer override"
 
 echo "Release tooling checks passed."

@@ -507,6 +507,206 @@ main() {
 
 
 # --- Shared Helpers ---
+# Source: shared/release
+# BEGIN plak-release-channel
+# Stable release channel shared by install.sh and `plak upgrade`.
+#
+# Publication is tag-driven: the newest vMAJOR.MINOR.PATCH tag is the stable
+# release. Prereleases (v1.2.3-rc1), build metadata, foreign tags and tags with
+# leading zeroes are ignored. The resolver reads the tag list from the GitHub
+# API and never falls back to main or releases/latest.
+#
+# Keep this block byte-for-byte identical in shared/release and install.sh;
+# tests/release-channel.sh extracts both markers and compares them.
+
+plak_release_is_version() {
+    [[ "${1:-}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+}
+
+plak_release_is_stable_tag() {
+    [[ "${1:-}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+}
+
+plak_release_numeric_gt() {
+    local left="${1:-}" right="${2:-}"
+
+    if [ "${#left}" -ne "${#right}" ]; then
+        [ "${#left}" -gt "${#right}" ]
+        return
+    fi
+    [[ "$left" > "$right" ]]
+}
+
+plak_release_version_gt() {
+    local left="${1:-}" right="${2:-}"
+    local left_major left_minor left_patch right_major right_minor right_patch
+
+    plak_release_is_version "$left" || return 1
+    plak_release_is_version "$right" || return 1
+
+    IFS=. read -r left_major left_minor left_patch <<<"$left"
+    IFS=. read -r right_major right_minor right_patch <<<"$right"
+
+    if [ "$left_major" != "$right_major" ]; then
+        plak_release_numeric_gt "$left_major" "$right_major"
+        return
+    fi
+    if [ "$left_minor" != "$right_minor" ]; then
+        plak_release_numeric_gt "$left_minor" "$right_minor"
+        return
+    fi
+    plak_release_numeric_gt "$left_patch" "$right_patch"
+}
+
+plak_release_latest_stable_tag() {
+    local line tag latest=""
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%$'\r'}
+        tag=${line##refs/tags/}
+        plak_release_is_stable_tag "$tag" || continue
+        if [ -z "$latest" ] || plak_release_version_gt "${tag#v}" "${latest#v}"; then
+            latest=$tag
+        fi
+    done
+
+    [ -n "$latest" ] || return 1
+    printf '%s\n' "$latest"
+}
+
+plak_release_tag_names_from_json() {
+    printf '%s\n' "${1:-}" \
+        | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed -e 's/.*"name"[[:space:]]*:[[:space:]]*"//' -e 's/"$//' \
+        || true
+}
+
+plak_release_api_request() {
+    local url="$1"
+    local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+
+    if [ -n "$token" ]; then
+        curl -sS -L --connect-timeout 10 --max-time 60 \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            -H "Authorization: Bearer ${token}" \
+            -w '\n%{http_code}' "$url"
+    else
+        curl -sS -L --connect-timeout 10 --max-time 60 \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            -w '\n%{http_code}' "$url"
+    fi
+}
+
+plak_release_resolve_latest_tag() {
+    local api_url="https://api.github.com/repos/plakio/plak-cli/tags"
+    local page=1 per_page=100 max_pages=20
+    local url response http_code body names count all="" latest
+
+    while [ "$page" -le "$max_pages" ]; do
+        url="${api_url}?per_page=${per_page}&page=${page}"
+        if ! response=$(plak_release_api_request "$url"); then
+            echo "Could not reach the GitHub API to list Plak release tags. Check your network connection." >&2
+            return 1
+        fi
+
+        http_code=${response##*$'\n'}
+        body=${response%$'\n'*}
+
+        case "$http_code" in
+            200) ;;
+            401)
+                echo "GitHub API authentication failed (HTTP 401). Check GITHUB_TOKEN/GH_TOKEN." >&2
+                return 1
+                ;;
+            403|429)
+                echo "GitHub API rate limit or access denied (HTTP $http_code). Retry later, or set GITHUB_TOKEN/GH_TOKEN for a higher limit." >&2
+                return 1
+                ;;
+            404)
+                echo "Could not list Plak release tags: repository or tags not found (HTTP 404)." >&2
+                return 1
+                ;;
+            5??)
+                echo "GitHub API is unavailable (HTTP $http_code). Retry later." >&2
+                return 1
+                ;;
+            *)
+                echo "Unexpected response from the GitHub API (HTTP $http_code) while listing Plak tags." >&2
+                return 1
+                ;;
+        esac
+
+        names=$(plak_release_tag_names_from_json "$body")
+        count=$(printf '%s\n' "$names" | grep -c . || true)
+        all="${all}${names}"$'\n'
+
+        if [ "$count" -lt "$per_page" ]; then
+            break
+        fi
+        page=$((page + 1))
+    done
+
+    if [ "$page" -gt "$max_pages" ]; then
+        echo "Could not list all Plak release tags (more than $((max_pages * per_page)) tags)." >&2
+        return 1
+    fi
+
+    if ! latest=$(printf '%s\n' "$all" | plak_release_latest_stable_tag); then
+        echo "No stable Plak release tag (vMAJOR.MINOR.PATCH) was found." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$latest"
+}
+
+plak_release_script_url() {
+    printf 'https://raw.githubusercontent.com/plakio/plak-cli/%s/plak.sh\n' "$1"
+}
+
+plak_release_validate_script() {
+    local file="${1:-}" expected="${2:-}" embedded actual
+
+    if [ ! -f "$file" ] || [ ! -s "$file" ]; then
+        echo "Invalid Plak script: the downloaded file is missing or empty." >&2
+        return 1
+    fi
+    if [ "$(head -n 1 "$file")" != '#!/usr/bin/env bash' ]; then
+        echo "Invalid Plak script: expected the compiled Bash script." >&2
+        return 1
+    fi
+    if ! bash -n "$file" 2>/dev/null; then
+        echo "Invalid Plak script: the download is not valid Bash." >&2
+        return 1
+    fi
+
+    embedded=$(sed -n 's/^PLAK_VERSION="\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' "$file")
+    case "$embedded" in
+        ""|*$'\n'*)
+            echo "Invalid Plak script: missing or ambiguous PLAK_VERSION." >&2
+            return 1
+            ;;
+    esac
+
+    if [ -n "$expected" ] && [ "$embedded" != "$expected" ]; then
+        echo "Invalid Plak script: tag version ${expected} does not match embedded version ${embedded}." >&2
+        return 1
+    fi
+
+    if ! actual=$(PLAK_NO_PATH_PRELUDE=1 bash "$file" version 2>/dev/null); then
+        echo "Invalid Plak script: it cannot run 'version'." >&2
+        return 1
+    fi
+    if [ "$actual" != "plak v${embedded}" ]; then
+        echo "Invalid Plak script: 'version' reported '${actual}', expected 'plak v${embedded}'." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$embedded"
+}
+# END plak-release-channel
+
 # Source: shared/remote
 plak_remote_choose_ssh() {
     local hosts selected manual_label="Enter manually"
@@ -15094,6 +15294,57 @@ upgrade_frankenphp() {
     return 0
 }
 
+plak_upgrade_replace_plak_script() {
+    # Run in a subshell so the EXIT/INT/TERM traps only cover this replacement.
+    # The download is staged next to the destination and renamed atomically;
+    # any failure leaves the current installation untouched.
+    # NOTE: this helper is always called as `if ! plak_upgrade_replace_...`,
+    # which suppresses `set -e` inside the whole function/subshell. Every
+    # fallible step below must therefore be checked explicitly; an unchecked
+    # failure (e.g. chmod) would otherwise swap in a broken file and still
+    # report success.
+    (
+        set -e
+        tag="$1"
+        install_path="$2"
+        install_dir=$(dirname "$install_path")
+        url=$(plak_release_script_url "$tag")
+        temp_script=""
+
+        trap '[ -z "$temp_script" ] || rm -f "$temp_script"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
+
+        if [ -d "$install_path" ]; then
+            echo "Cannot replace $install_path: it is a directory." >&2
+            exit 1
+        fi
+        if ! temp_script=$(mktemp "$install_dir/.plak-upgrade.XXXXXX"); then
+            echo "Could not create a temporary file in $install_dir." >&2
+            exit 1
+        fi
+
+        if ! curl -fsSL --connect-timeout 10 --max-time 120 "$url" -o "$temp_script"; then
+            echo "Could not download Plak ${tag} from ${url}." >&2
+            exit 1
+        fi
+        if ! plak_release_validate_script "$temp_script" "${tag#v}" >/dev/null; then
+            exit 1
+        fi
+
+        if ! chmod 755 "$temp_script"; then
+            echo "Could not set permissions on the downloaded Plak script." >&2
+            exit 1
+        fi
+        if ! mv -f "$temp_script" "$install_path"; then
+            echo "Could not replace ${install_path}." >&2
+            exit 1
+        fi
+        temp_script=""
+    )
+}
+
 plak_site_upgrade() {
     local auto_yes=false
     for arg in "$@"; do
@@ -15107,11 +15358,9 @@ plak_site_upgrade() {
     # (only shown when the local version can't be parsed) doesn't hang.
     [ -t 0 ] || auto_yes=true
 
-    echo "🔎 Checking for the latest version of Plak..."
+    echo "🔎 Checking for the latest stable version of Plak..."
 
-    local download_url="https://raw.githubusercontent.com/plakio/plak-cli/main/plak.sh"
-    local temp_script="/tmp/plak.sh.latest"
-    local install_path
+    local install_path latest_tag latest_version current_version
 
     # Find the real path of the currently running script
     install_path=$(command -v plak)
@@ -15119,60 +15368,54 @@ plak_site_upgrade() {
         install_path="/usr/local/bin/plak" # Fallback to default
     fi
 
-    # 1. Download the latest script
-    echo "   - Downloading latest Plak script from GitHub..."
-    if ! curl -L --fail --progress-bar "$download_url" -o "$temp_script"; then
-        echo "❌ Error: Failed to download the latest version. Please check your connection."
-        rm -f "$temp_script" 2>/dev/null
+    current_version="${PLAK_VERSION:-}"
+
+    if ! plak_release_is_version "$current_version"; then
+        echo "❌ Error: The current Plak version ('$current_version') is not a stable semantic version." >&2
+        echo "   Reinstall with: curl -fsSL https://plak.sh/install | bash" >&2
         return 1
     fi
 
-    # 2. Make it executable
-    chmod +x "$temp_script"
-
-    # 3. Get the new version from the downloaded script
-    local new_version
-    new_version=$("$temp_script" version | awk '{print $2}' | sed 's/^v//')
-
-    if [ -z "$new_version" ]; then
-        echo "❌ Error: Could not determine the version from the downloaded script."
-        rm -f "$temp_script" 2>/dev/null
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "❌ Error: curl is required to check for the latest stable Plak release." >&2
         return 1
     fi
 
-    # 4. Get the current version from the running script
-    local current_version="$PLAK_VERSION"
-    echo "   - Current Plak version:         $current_version"
-    echo "   - Latest available Plak version: $new_version"
+    # Stable channel: resolve the newest published vMAJOR.MINOR.PATCH tag.
+    # There is deliberately no fallback to main or releases/latest.
+    if ! latest_tag=$(plak_release_resolve_latest_tag); then
+        echo "❌ Error: Could not determine the latest stable Plak release. Your current installation was left unchanged." >&2
+        return 1
+    fi
+    latest_version="${latest_tag#v}"
 
-    # 5. Compare versions
-    local latest
-    latest=$(printf '%s\n' "$current_version" "$new_version" | sort -V | tail -n1)
+    echo "   - Current Plak version:   $current_version"
+    echo "   - Latest stable Plak tag: $latest_tag"
 
-    if [[ "$latest" == "$current_version" ]] && [[ "$new_version" != "$current_version" ]]; then
-         echo "✅ Your current Plak version ($current_version) is newer than the latest release ($new_version). No action taken."
-         rm -f "$temp_script" 2>/dev/null
-    elif [[ "$latest" == "$current_version" ]]; then
-        echo "✅ You are already using the latest version of Plak."
-        rm -f "$temp_script" 2>/dev/null
+    if ! plak_release_version_gt "$latest_version" "$current_version"; then
+        if [ "$latest_version" = "$current_version" ]; then
+            echo "✅ You are already using the latest stable version of Plak ($current_version)."
+        else
+            echo "✅ Your current Plak version ($current_version) is newer than the latest stable release ($latest_version). No action taken."
+        fi
     else
-        # 6. Perform the Plak upgrade
-        echo "🚀 Upgrading Plak to version $new_version..."
+        echo "🚀 Upgrading Plak to version $latest_version ($latest_tag)..."
 
-        if [ ! -w "$(dirname "$install_path")" ]; then
-            echo "❌ Error: No write permissions for '$(dirname "$install_path")'."
+        local install_dir
+        install_dir=$(dirname "$install_path")
+        if [ ! -w "$install_dir" ]; then
+            echo "❌ Error: No write permissions for '$install_dir'."
             echo "   Please try running with sudo: 'sudo plak upgrade'"
-            rm -f "$temp_script" 2>/dev/null
             return 1
         fi
 
-        if ! mv "$temp_script" "$install_path"; then
-            echo "❌ Error: Failed to replace the old script at '$install_path'."
-            rm -f "$temp_script" 2>/dev/null
-        else
-            echo "✅ Plak has been successfully upgraded to version $new_version!"
-            echo "   Run 'plak version' to see the new version."
+        if ! plak_upgrade_replace_plak_script "$latest_tag" "$install_path"; then
+            echo "❌ Error: Failed to replace the Plak script. Your existing installation at '$install_path' was left unchanged." >&2
+            return 1
         fi
+
+        echo "✅ Plak has been successfully upgraded to version $latest_version!"
+        echo "   Run 'plak version' to see the new version."
     fi
 
     # --- New Section: FrankenPHP Upgrade Check ---
