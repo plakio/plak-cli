@@ -96,7 +96,7 @@ plak_site_add() (
     fi
     if [ "$site_type" = wordpress ]; then
         source_config
-        plak_wp_resolve_command || exit 1
+        plak_wp_resolve_command || exit $?
         admin_pass=$(plak_site_random_password 12) || exit 1
         [ -n "$admin_pass" ] || { echo "Error: could not generate an admin password." >&2; exit 1; }
         # Preserve the established database naming convention, including its
