@@ -1,0 +1,330 @@
+# plak panel Fase B — WordPress operations (CLI-41).
+#
+# Reads need user:read; mutations need sites:write (+ package update
+# permission server-side). Partial results (updated/failed, deleted/failed)
+# are always shown, never collapsed into a false success.
+
+plak_panel_wp_help() {
+    cat <<'HELP'
+Usage:
+  plak panel <cmd> <site> [options] [--json]
+
+  Reads (user:read):
+    wp-overview [--refresh]              Version, counts, theme (or reason)
+    wp-themes [--refresh]                Theme list
+    wp-plugins [--refresh]               Plugin list
+
+  Install (sites:write):
+    wp-complete-install --title T --user U --email E --password P
+    wp-mark-installed                    Mark externally-installed WP as done
+    wp-install-wpcli                     Install WP-CLI on the server
+    wp-xmlrpc --block | --allow          Toggle XML-RPC access
+
+  Themes / plugins (sites:write):
+    wp-theme-activate <slug>             wp-plugin-activate <slug>
+    wp-plugin-deactivate <slug>
+    wp-theme-update <slug...>            wp-plugin-update <slug...>
+    wp-theme-install <slug> [--activate] wp-plugin-install <slug> [--activate]
+    wp-theme-delete <slug...> [--yes]    wp-plugin-delete <slug...> [--yes]
+
+  Data (sites:write):
+    wp-search-replace --search S [--replace R] [--dry-run] [--yes]
+    wp-cli -- <command...>               Guarded remote WP-CLI (no prefix needed)
+
+  Settings, async (sites:write):
+    wp-set-php --version V [--wait S] [--poll S]   Polls until applied
+    wp-set-robots --disable | --enable
+
+  <site> is the panel id or exact domain. Destructive ops (deletes,
+  non-dry-run search-replace) confirm or take --yes. --json prints the
+  raw panel response (never secrets).
+HELP
+}
+
+# Resolve panel site id-or-domain to numeric id (prints id).
+plak_panel_wp_site() {
+    local sel="$1"
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then printf '%s\n' "$sel"; return 0; fi
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites?page=1&per_page=100" || return 1
+    local id
+    id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("domain", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+    [ -n "$id" ] || { plak_ui_error "No panel site '$sel' on this account."; return 1; }
+    printf '%s\n' "$id"
+}
+
+# Split "<site> + rest": sets WP_SITE_ID, shifts it away. Returns rest in WP_ARGS.
+plak_panel_wp_args() {
+    WP_SITE_SEL="${1:-}"
+    shift || true
+    [ -n "$WP_SITE_SEL" ] || { plak_ui_error "Missing panel site (id or domain)."; return 1; }
+    WP_SITE_ID=$(plak_panel_wp_site "$WP_SITE_SEL") || return 1
+    WP_ARGS=("$@")
+}
+
+plak_panel_wp_json_flag() {
+    WP_JSON=0
+    local rest=()
+    for a in "$@"; do case "$a" in --json) WP_JSON=1 ;; *) rest+=("$a") ;; esac; done
+    WP_ARGS=("${rest[@]}")
+}
+
+plak_panel_wp_read() {
+    local path="$1" json="$2"
+    plak_panel_get "$PLAK_PANEL_URL_OUT$path" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+data = doc.get("data")
+if data is None:
+    print("Unavailable (%s)." % (doc.get("reason", "unknown")))
+else:
+    print(json.dumps(data, indent=2))
+'
+}
+
+plak_panel_wp_overview() {
+    local refresh=0
+    for a in "$@"; do case "$a" in --refresh) refresh=1 ;; esac; done
+    local q=""; [ "$refresh" -eq 1 ] && q="?refresh=1"
+    plak_panel_wp_read "/api/v1/sites/$WP_SITE_ID/wordpress/overview$q" "$WP_JSON"
+}
+
+plak_panel_wp_list() {
+    local kind="$1"; shift
+    local refresh=0
+    for a in "$@"; do case "$a" in --refresh) refresh=1 ;; esac; done
+    local q=""; [ "$refresh" -eq 1 ] && q="?refresh=1"
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$WP_SITE_ID/wordpress/$kind$q" || return 1
+    if [ "$WP_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+items = doc.get("data") or []
+if doc.get("pending"):
+    print("(list pending — retry with --refresh)")
+for it in items:
+    print("%-28s %-12s %s" % (it.get("name", "?"), it.get("version", "?"), it.get("status", "")))
+if doc.get("reason"):
+    print("Note: %s" % doc["reason"])
+'
+}
+
+plak_panel_wp_mutate() {
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    if [ -n "$prompt" ]; then
+        plak_panel_write_confirm "$prompt" "$yes" || return 1
+    fi
+    plak_panel_write_call "$method" "$path" "$body" || return 1
+    if [ "$WP_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent=2))
+'
+}
+
+plak_panel_wp_complete_install() {
+    local title="" user="" email="" password=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --title) title="$2"; shift 2 ;; --user) user="$2"; shift 2 ;;
+            --email) email="$2"; shift 2 ;; --password) password="$2"; shift 2 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$title" ] && [ -n "$user" ] && [ -n "$email" ] && [ -n "$password" ] || {
+        plak_ui_error "Missing: --title --user --email --password."
+        return 1
+    }
+    local body
+    body=$(PLAK_T="$title" PLAK_U="$user" PLAK_E="$email" PLAK_PW="$password" python3 -c '
+import json, os
+print(json.dumps({"site_title": os.environ["PLAK_T"], "admin_username": os.environ["PLAK_U"],
+                  "admin_email": os.environ["PLAK_E"], "admin_password": os.environ["PLAK_PW"]}))
+')
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/complete-install" "$body"
+}
+
+plak_panel_wp_slugs_op() {
+    local family="$1" op="$2"; shift 2
+    local key plural activate=0 yes=0 slugs=()
+    if [ "$family" = "theme" ]; then plural="themes"; else plural="plugins"; fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --activate) activate=1; shift 1 ;;
+            --yes|-y) yes=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) slugs+=("$1"); shift 1 ;;
+        esac
+    done
+    [ "${#slugs[@]}" -gt 0 ] || { plak_ui_error "Missing slug."; return 1; }
+    local body noun
+    case "$op" in
+        activate|deactivate)
+            [ "${#slugs[@]}" -eq 1 ] || { plak_ui_error "One slug per $op."; return 1; }
+            noun="$family"
+            body=$(PLAK_S="${slugs[0]}" PLAK_F="$family" python3 -c '
+import json, os
+print(json.dumps({os.environ["PLAK_F"]: os.environ["PLAK_S"]}))')
+            ;;
+        install)
+            [ "${#slugs[@]}" -eq 1 ] || { plak_ui_error "One slug per install."; return 1; }
+            noun="$family"
+            body=$(PLAK_S="${slugs[0]}" PLAK_F="$family" PLAK_A="$activate" python3 -c '
+import json, os
+p = {os.environ["PLAK_F"]: os.environ["PLAK_S"]}
+if os.environ["PLAK_A"] == "1":
+    p["activate"] = True
+print(json.dumps(p))')
+            ;;
+        update|delete)
+            noun="$plural"
+            body=$(PLAK_N="$plural" python3 - "${slugs[@]}" <<'PY'
+import json, os, sys
+print(json.dumps({os.environ["PLAK_N"]: sys.argv[1:]}))
+PY
+)
+            ;;
+    esac
+    local prompt="" method="POST"
+    [ "$op" = "delete" ] && prompt="Delete ${plural} ${slugs[*]} on panel site $WP_SITE_SEL? This cannot be undone."
+    [ "$op" = "delete" ] && method="DELETE"
+    plak_panel_wp_mutate "$method" "/api/v1/sites/$WP_SITE_ID/wordpress/$plural/$op" "$body" "$yes" "$prompt"
+}
+
+plak_panel_wp_search_replace() {
+    local search="" replace="" dry=0 yes=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --search) search="$2"; shift 2 ;; --replace) replace="$2"; shift 2 ;;
+            --dry-run) dry=1; shift 1 ;; --yes|-y) yes=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$search" ] || { plak_ui_error "Missing --search."; return 1; }
+    local body
+    body=$(PLAK_S="$search" PLAK_R="$replace" PLAK_D="$dry" python3 -c '
+import json, os
+p = {"search": os.environ["PLAK_S"], "dry_run": os.environ["PLAK_D"] == "1"}
+if os.environ.get("PLAK_R"):
+    p["replace"] = os.environ["PLAK_R"]
+print(json.dumps(p))')
+    local prompt=""
+    [ "$dry" -eq 0 ] && prompt="Run search-replace on panel site $WP_SITE_SEL? This rewrites the database."
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/search-replace" "$body" "$yes" "$prompt"
+}
+
+plak_panel_wp_cli() {
+    local cmd=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --command) cmd="$2"; shift 2 ;;
+            --) shift; cmd="$*"; break ;;
+            -*) break ;;
+            *) cmd="$cmd $1"; shift 1 ;;
+        esac
+    done
+    cmd="$(printf '%s' "$cmd" | sed 's/^ *//')"
+    [ -n "$cmd" ] || { plak_ui_error "Usage: plak panel wp-cli <site> -- <command...>"; return 1; }
+    local body
+    body=$(PLAK_C="$cmd" python3 -c 'import json, os; print(json.dumps({"command": os.environ["PLAK_C"]}))')
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/wp-cli" "$body" || return 1
+    if [ "$WP_JSON" -eq 0 ]; then
+        echo "(destructive wp-cli subcommands are denied server-side; use dedicated endpoints)"
+    fi
+}
+
+plak_panel_wp_set_php() {
+    local version="" wait_secs=300 poll_secs=10
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --wait) wait_secs="$2"; shift 2 ;; --poll) poll_secs="$2"; shift 2 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$version" ] || { plak_ui_error "Missing --version."; return 1; }
+    local body
+    body=$(PLAK_V="$version" python3 -c 'import json, os; print(json.dumps({"version": os.environ["PLAK_V"]}))')
+    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/php-version" "$body" || return 1
+    [ "$WP_JSON" -eq 0 ] && echo "PHP change accepted; polling until applied (up to ${wait_secs}s)..."
+    local elapsed=0 cur=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$WP_SITE_ID" || return 1
+        cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.php_version")
+        [ "$cur" = "$version" ] && {
+            [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || plak_ui_success "PHP version is now $cur."
+            return 0
+        }
+    done
+    [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || echo "Still changing (current: ${cur:-unknown}). Check again later."
+    return 3
+}
+
+plak_panel_wp_set_robots() {
+    local mode=""
+    while [ $# -gt 0 ]; do
+        case "$1" in --disable) mode="disable"; shift 1 ;; --enable) mode="enable"; shift 1 ;; *) plak_ui_error "Use --disable or --enable."; return 1 ;; esac
+    done
+    [ -n "$mode" ] || { plak_ui_error "Use --disable or --enable."; return 1; }
+    local val=0; [ "$mode" = "disable" ] && val=1
+    local body
+    body=$(PLAK_V="$val" python3 -c 'import json, os; print(json.dumps({"disable_robots": bool(int(os.environ["PLAK_V"]))}))')
+    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/robot-access" "$body"
+}
+
+plak_panel_wp_xmlrpc() {
+    local block=""
+    while [ $# -gt 0 ]; do
+        case "$1" in --block) block=1; shift 1 ;; --allow) block=0; shift 1 ;; *) plak_ui_error "Use --block or --allow."; return 1 ;; esac
+    done
+    [ -n "$block" ] || { plak_ui_error "Use --block or --allow."; return 1; }
+    local body
+    body=$(PLAK_V="$block" python3 -c 'import json, os; print(json.dumps({"block": bool(int(os.environ["PLAK_V"]))}))')
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/xml-rpc/toggle" "$body"
+}
+
+plak_panel_wp() {
+    local sub="$1" sel="$2"
+    if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
+        plak_panel_wp_help
+        return 0
+    fi
+    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"; return 1; }
+    shift 2
+    plak_panel_wp_args "$sel" "$@" || return 1
+    set -- "${WP_ARGS[@]}"
+    plak_panel_wp_json_flag "$@" || return 1
+    set -- "${WP_ARGS[@]}"
+    case "$sub" in
+        wp-overview) plak_panel_wp_overview "$@" ;;
+        wp-themes) plak_panel_wp_list themes "$@" ;;
+        wp-plugins) plak_panel_wp_list plugins "$@" ;;
+        wp-complete-install) plak_panel_wp_complete_install "$@" ;;
+        wp-mark-installed) plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/wordpress/mark-installed" ;;
+        wp-install-wpcli) plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/install-wp-cli" ;;
+        wp-xmlrpc) plak_panel_wp_xmlrpc "$@" ;;
+        wp-theme-activate) plak_panel_wp_slugs_op theme activate "$@" ;;
+        wp-theme-update) plak_panel_wp_slugs_op theme update "$@" ;;
+        wp-theme-install) plak_panel_wp_slugs_op theme install "$@" ;;
+        wp-theme-delete) plak_panel_wp_slugs_op theme delete "$@" ;;
+        wp-plugin-activate) plak_panel_wp_slugs_op plugin activate "$@" ;;
+        wp-plugin-deactivate) plak_panel_wp_slugs_op plugin deactivate "$@" ;;
+        wp-plugin-update) plak_panel_wp_slugs_op plugin update "$@" ;;
+        wp-plugin-install) plak_panel_wp_slugs_op plugin install "$@" ;;
+        wp-plugin-delete) plak_panel_wp_slugs_op plugin delete "$@" ;;
+        wp-search-replace) plak_panel_wp_search_replace "$@" ;;
+        wp-cli) plak_panel_wp_cli "$@" ;;
+        wp-set-php) plak_panel_wp_set_php "$@" ;;
+        wp-set-robots) plak_panel_wp_set_robots "$@" ;;
+        *) plak_ui_error "Unknown wp command '$sub'."; return 1 ;;
+    esac
+}

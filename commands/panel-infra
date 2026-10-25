@@ -1,0 +1,327 @@
+# plak panel Fase D — site infra operations (CLI-43).
+#
+# Databases, cronjobs, certificates, redirects, aliases, DNS (Cloudflare),
+# HTTP auth, cache (FastCGI/OPcache) and apps on your own sites. Reads need
+# user:read; mutations need sites:write (+ package update policy). Local
+# resources are addressed by panel id; remote-only ones (DNS, HTTP auth)
+# by their remote id.
+
+plak_panel_infra_help() {
+    cat <<'HELP'
+Usage:
+  plak panel <cmd> <site> [options] [--json]
+
+  Databases:
+    db-list                          db-add --name N --user U --password P
+    db-del <id> [--yes]
+
+  Cronjobs:
+    cron-list                        cron-add --command CMD [--frequency F]
+    cron-del <id> [--yes]
+
+  Certificates:
+    cert-list                        cert-add --type letsencrypt|custom [--domain D] [--cert C] [--private P]
+    cert-del <id> [--yes]
+
+  Redirects:
+    redirect-list                    redirect-add --from /old --to /new [--type redirect|permanent]
+    redirect-del <id> [--yes]
+
+  Aliases:
+    alias-list                       alias-add --domain D [--cert]
+    alias-del <alias> [--yes]
+
+  DNS (Cloudflare):
+    dns-list                         dns-add --type T --name N --content C [--ttl N]
+    dns-update <record> --type T --name N --content C [--ttl N]
+    dns-del <record> [--yes]
+
+  HTTP auth users (remote):
+    authuser-list                    authuser-add --name N --password P [--path /]
+    authuser-del <id> [--yes]
+
+  Cache:
+    cache-info                       cache-enable [--yes]   cache-disable [--yes]
+    cache-flush [--yes]              cache-opcache-refresh [--yes]
+
+  Apps:
+    app-info                         app-install --type wordpress|nextcloud [--options JSON] [--wait S]
+    app-uninstall [--yes]
+
+  <site> is the panel id or exact domain. --json prints the raw panel
+  response (never secrets).
+HELP
+}
+
+plak_panel_infra_args() {
+    INF_SITE_SEL="${1:-}"
+    shift || true
+    [ -n "$INF_SITE_SEL" ] || { plak_ui_error "Missing panel site (id or domain)."; return 1; }
+    INF_SITE_ID=$(plak_panel_wp_site "$INF_SITE_SEL") || return 1
+    INF_ARGS=("$@")
+}
+
+plak_panel_infra_json_flag() {
+    INF_JSON=0
+    local rest=()
+    for a in "$@"; do case "$a" in --json) INF_JSON=1 ;; *) rest+=("$a") ;; esac; done
+    INF_ARGS=("${rest[@]}")
+}
+
+plak_panel_infra_yes() {
+    INF_YES=0
+    local rest=()
+    for a in "$@"; do case "$a" in --yes|-y) INF_YES=1 ;; *) rest+=("$a") ;; esac; done
+    INF_ARGS=("${rest[@]}")
+}
+
+plak_panel_infra_read() {
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$INF_SITE_ID/$1" || return 1
+    if [ "$INF_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+if doc.get("warning"):
+    print("Warning: %s" % doc["warning"])
+payload = doc.get("data", doc)
+print(json.dumps(payload, indent=2))
+'
+}
+
+plak_panel_infra_mutate() {
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    if [ -n "$prompt" ]; then
+        plak_panel_write_confirm "$prompt" "$yes" || return 1
+    fi
+    plak_panel_write_call "$method" "/api/v1/sites/$INF_SITE_ID/$path" "$body" || return 1
+    if [ "$INF_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent=2))
+'
+}
+
+plak_panel_infra_crud() {
+    # <resource> <list|add|del> — generic read-only + one-flag add/delete.
+    local resource="$1" sub="$2"; shift 2
+    case "$sub" in
+        list) plak_panel_infra_read "$resource" ;;
+        add) plak_panel_infra_add "$resource" "$@" ;;
+        del)
+            local id="${INF_ARGS[0]:-}"
+            [ -n "$id" ] || { plak_ui_error "Usage: $resource-del <id> [--yes]"; return 1; }
+            plak_panel_infra_mutate DELETE "$resource/$id" "" "$INF_YES" \
+                "Delete $resource $id on $INF_SITE_SEL?"
+            ;;
+        *) plak_ui_error "Unknown $resource op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_infra_add() {
+    local resource="$1"; shift
+    local body=""
+    case "$resource" in
+        databases)
+            local name="" user="" password=""
+            while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2 ;; --user) user="$2"; shift 2 ;; --password) password="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$name" ] && [ -n "$user" ] && [ -n "$password" ] || { plak_ui_error "Missing --name --user --password."; return 1; }
+            body=$(PLAK_N="$name" PLAK_U="$user" PLAK_PW="$password" python3 -c 'import json, os; print(json.dumps({"name": os.environ["PLAK_N"], "user_name": os.environ["PLAK_U"], "password": os.environ["PLAK_PW"]}))')
+            ;;
+        cronjobs)
+            local cmd="" freq=""
+            while [ $# -gt 0 ]; do case "$1" in --command) cmd="$2"; shift 2 ;; --frequency) freq="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$cmd" ] || { plak_ui_error "Missing --command."; return 1; }
+            body=$(PLAK_C="$cmd" PLAK_F="$freq" python3 -c '
+import json, os
+p = {"command": os.environ["PLAK_C"]}
+if os.environ.get("PLAK_F"):
+    p["frequency"] = os.environ["PLAK_F"]
+print(json.dumps(p))')
+            ;;
+        certificates)
+            local type="" domain="" cert="" priv=""
+            while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --domain) domain="$2"; shift 2 ;; --cert) cert="$2"; shift 2 ;; --private) priv="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$type" ] || { plak_ui_error "Missing --type letsencrypt|custom."; return 1; }
+            body=$(PLAK_T="$type" PLAK_D="$domain" PLAK_C="$cert" PLAK_P="$priv" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"]}
+if os.environ.get("PLAK_D"): p["domain"] = os.environ["PLAK_D"]
+if os.environ.get("PLAK_C"): p["certificate"] = os.environ["PLAK_C"]
+if os.environ.get("PLAK_P"): p["private"] = os.environ["PLAK_P"]
+print(json.dumps(p))')
+            ;;
+        redirects)
+            local from="" to="" type="redirect"
+            while [ $# -gt 0 ]; do case "$1" in --from) from="$2"; shift 2 ;; --to) to="$2"; shift 2 ;; --type) type="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$from" ] && [ -n "$to" ] || { plak_ui_error "Missing --from --to."; return 1; }
+            body=$(PLAK_F="$from" PLAK_T="$to" PLAK_TY="$type" python3 -c 'import json, os; print(json.dumps({"redirect_from": os.environ["PLAK_F"], "redirect_to": os.environ["PLAK_T"], "type": os.environ["PLAK_TY"]}))')
+            ;;
+        aliases)
+            local domain="" cert=0
+            while [ $# -gt 0 ]; do case "$1" in --domain) domain="$2"; shift 2 ;; --cert) cert=1; shift 1 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$domain" ] || { plak_ui_error "Missing --domain."; return 1; }
+            body=$(PLAK_D="$domain" PLAK_C="$cert" python3 -c '
+import json, os
+p = {"domain": os.environ["PLAK_D"]}
+if os.environ["PLAK_C"] == "1": p["request_new_certificate"] = True
+print(json.dumps(p))')
+            ;;
+        dns)
+            local type="" name="" content="" ttl=""
+            while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --name) name="$2"; shift 2 ;; --content) content="$2"; shift 2 ;; --ttl) ttl="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$type" ] && [ -n "$name" ] && [ -n "$content" ] || { plak_ui_error "Missing --type --name --content."; return 1; }
+            body=$(PLAK_T="$type" PLAK_N="$name" PLAK_C="$content" PLAK_TT="$ttl" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"], "name": os.environ["PLAK_N"], "content": os.environ["PLAK_C"]}
+if os.environ.get("PLAK_TT"):
+    p["ttl"] = int(os.environ["PLAK_TT"])
+print(json.dumps(p))')
+            ;;
+        auth-users)
+            local name="" password="" path="/"
+            while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2 ;; --password) password="$2"; shift 2 ;; --path) path="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$name" ] && [ -n "$password" ] || { plak_ui_error "Missing --name --password."; return 1; }
+            body=$(PLAK_N="$name" PLAK_PW="$password" PLAK_P="$path" python3 -c 'import json, os; print(json.dumps({"name": os.environ["PLAK_N"], "password": os.environ["PLAK_PW"], "path": os.environ["PLAK_P"]}))')
+            ;;
+        *) plak_ui_error "Unknown add for '$resource'."; return 1 ;;
+    esac
+    plak_panel_infra_mutate POST "$resource" "$body"
+}
+
+plak_panel_infra_cache() {
+    local sub="$1"
+    local method="POST" path="cache/$sub"
+    case "$sub" in
+        disable) method="DELETE" ;;
+        opcache-refresh) path="cache/opcache/refresh" ;;
+        enable|flush|info) [ "$sub" = "info" ] && { plak_panel_infra_read "cache"; return 0; } ;;
+        *) plak_ui_error "Unknown cache op '$sub'."; return 1 ;;
+    esac
+    plak_panel_infra_mutate "$method" "$path" "" "$INF_YES" \
+        "$(printf 'Cache %s on %s?' "$sub" "$INF_SITE_SEL")"
+}
+
+plak_panel_infra_app() {
+    local sub="$1"; shift
+    case "$sub" in
+        info) plak_panel_infra_read "apps" ;;
+        install)
+            local type="" options="" wait_secs=300 poll_secs=10
+            while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --options) options="$2"; shift 2 ;; --wait) wait_secs="$2"; shift 2 ;; --poll) poll_secs="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$type" ] || { plak_ui_error "Missing --type wordpress|nextcloud."; return 1; }
+            local body
+            body=$(PLAK_T="$type" PLAK_O="$options" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"]}
+if os.environ.get("PLAK_O"):
+    p["options"] = json.loads(os.environ["PLAK_O"])
+print(json.dumps(p))') || { plak_ui_error "Invalid --options JSON."; return 1; }
+            plak_panel_infra_mutate POST "apps" "$body" || return 1
+            local elapsed=0 cur=""
+            while [ "$elapsed" -lt "$wait_secs" ]; do
+                sleep "$poll_secs"
+                elapsed=$((elapsed + poll_secs))
+                plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$INF_SITE_ID/apps" || return 1
+                cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "project")
+                [ "$cur" = "$type" ] && {
+                    [ "$INF_JSON" -eq 1 ] && printf '{"project":%s,"status":"installed"}\n' "$(plak_json_string "$cur")" || plak_ui_success "App $type installed."
+                    return 0
+                }
+            done
+            [ "$INF_JSON" -eq 1 ] && printf '{"project":%s,"status":"unknown"}\n' "$(plak_json_string "$cur")" || echo "Still installing after ${wait_secs}s. Check 'plak panel app-info $INF_SITE_SEL' later."
+            return 3
+            ;;
+        uninstall)
+            plak_panel_infra_mutate DELETE "apps" "" "$INF_YES" \
+                "Uninstall the app on $INF_SITE_SEL?" || return 1
+            local elapsed=0 cur="present"
+            while [ "$elapsed" -lt 300 ]; do
+                sleep 10
+                elapsed=$((elapsed + 10))
+                plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$INF_SITE_ID/apps" || return 1
+                cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "project")
+                [ -z "$cur" ] || [ "$cur" = "null" ] && {
+                    [ "$INF_JSON" -eq 1 ] && printf '{"project":null,"status":"uninstalled"}\n' || plak_ui_success "App uninstalled."
+                    return 0
+                }
+            done
+            [ "$INF_JSON" -eq 1 ] && printf '{"project":%s,"status":"unknown"}\n' "$(plak_json_string "$cur")" || echo "Still uninstalling. Check 'plak panel app-info $INF_SITE_SEL' later."
+            return 3
+            ;;
+        *) plak_ui_error "Unknown app op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_infra() {
+    local sub="$1" sel="$2"
+    if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
+        plak_panel_infra_help
+        return 0
+    fi
+    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <infra-cmd> <site> [...]"; return 1; }
+    shift 2
+    INF_YES=0
+    plak_panel_infra_args "$sel" "$@" || return 1
+    set -- "${INF_ARGS[@]}"
+    plak_panel_infra_json_flag "$@"
+    set -- "${INF_ARGS[@]}"
+    case "$sub" in
+        db-list) plak_panel_infra_read "databases" ;;
+        cron-list) plak_panel_infra_read "cronjobs" ;;
+        cert-list) plak_panel_infra_read "certificates" ;;
+        redirect-list) plak_panel_infra_read "redirects" ;;
+        alias-list) plak_panel_infra_read "aliases" ;;
+        dns-list) plak_panel_infra_read "dns/records" ;;
+        authuser-list) plak_panel_infra_read "auth-users" ;;
+        db-add) plak_panel_infra_add databases "$@" ;;
+        db-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud databases del "${INF_ARGS[@]}" ;;
+        cron-add) plak_panel_infra_add cronjobs "$@" ;;
+        cron-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud cronjobs del "${INF_ARGS[@]}" ;;
+        cert-add) plak_panel_infra_add certificates "$@" ;;
+        cert-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud certificates del "${INF_ARGS[@]}" ;;
+        redirect-add) plak_panel_infra_add redirects "$@" ;;
+        redirect-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud redirects del "${INF_ARGS[@]}" ;;
+        alias-add) plak_panel_infra_add aliases "$@" ;;
+        alias-del)
+            plak_panel_infra_yes "$@"
+            local id="${INF_ARGS[0]:-}"
+            [ -n "$id" ] || { plak_ui_error "Usage: alias-del <alias> [--yes]"; return 1; }
+            shift
+            plak_panel_infra_mutate DELETE "aliases/$id" "" "$INF_YES" \
+                "Delete alias $id on $INF_SITE_SEL?"
+            ;;
+        dns-add) plak_panel_infra_add dns "$@" ;;
+        dns-update)
+            local rid="${1:-}"
+            [ -n "$rid" ] || { plak_ui_error "Usage: dns-update <record> [flags]"; return 1; }
+            shift
+            local body
+            body=$(plak_panel_infra_dns_body "$@") || return 1
+            plak_panel_infra_mutate PUT "dns/$rid" "$body"
+            ;;
+        dns-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud dns del "${INF_ARGS[@]}" ;;
+        authuser-add) plak_panel_infra_add auth-users "$@" ;;
+        authuser-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud auth-users del "${INF_ARGS[@]}" ;;
+        cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh)
+            plak_panel_infra_yes "$@"
+            plak_panel_infra_cache "${sub#cache-}"
+            ;;
+        app-info|app-install|app-uninstall)
+            plak_panel_infra_yes "$@"
+            plak_panel_infra_app "${sub#app-}" "${INF_ARGS[@]}"
+            ;;
+        *) plak_ui_error "Unknown infra command '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_infra_dns_body() {
+    local type="" name="" content="" ttl=""
+    while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --name) name="$2"; shift 2 ;; --content) content="$2"; shift 2 ;; --ttl) ttl="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+    [ -n "$type" ] && [ -n "$name" ] && [ -n "$content" ] || { plak_ui_error "Missing --type --name --content."; return 1; }
+    PLAK_T="$type" PLAK_N="$name" PLAK_C="$content" PLAK_TT="$ttl" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"], "name": os.environ["PLAK_N"], "content": os.environ["PLAK_C"]}
+if os.environ.get("PLAK_TT"):
+    p["ttl"] = int(os.environ["PLAK_TT"])
+print(json.dumps(p))'
+}

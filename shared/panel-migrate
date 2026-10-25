@@ -1,0 +1,85 @@
+# Panel revalidation for push/pull (CLI-27).
+#
+# When a local site carries a .panel-link (see `plak panel link`), push and
+# pull must resolve the destination from that link and revalidate it against
+# the live panel API before anything destructive runs: account or panel
+# changes, withdrawn associations, deleted sites, invalid tokens and remote
+# data changes never select another destination silently — they stop with
+# an explanation. Manual SSH remotes (no link) are untouched, as is the
+# SSH transfer engine itself (CLI-7/CLI-6).
+#
+# Returns 0 to proceed (silent when there is no link), 1 with the reason
+# already printed when the linked flow must not continue.
+
+plak_panel_revalidate_link() {
+    local local_site="$1"
+    local link_file
+    link_file=$(plak_panel_link_file "$local_site")
+    [ -f "$link_file" ] || return 0
+
+    if ! plak_connect_load >/dev/null 2>&1; then
+        plak_ui_error "Site '$local_site' is panel-linked, but this machine is not connected. Run 'plak connect' (link kept, nothing ran)."
+        return 1
+    fi
+
+    local link panel account site_id site_domain link_remote
+    link=$(cat "$link_file")
+    panel=$(plak_connect_json_get "$link" "panel_url")
+    account=$(plak_connect_json_get "$link" "account")
+    site_id=$(plak_connect_json_get "$link" "site.id")
+    site_domain=$(plak_connect_json_get "$link" "site.domain")
+    link_remote=$(plak_connect_json_get "$link" "remote")
+
+    if [ "$panel" != "$PLAK_SAVED_PANEL" ]; then
+        plak_ui_error "Site '$local_site' is linked to $panel, but you are connected to $PLAK_SAVED_PANEL. Run 'plak connect --panel <url>' for that panel (nothing ran; the other origin was never sent this credential)."
+        return 1
+    fi
+    local saved_email
+    saved_email=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "email")
+    if [ -n "$account" ] && [ -n "$saved_email" ] && [ "$account" != "$saved_email" ]; then
+        plak_ui_error "Site '$local_site' was linked as $account, but you are connected as $saved_email. Reconnect as $account or re-link (nothing ran)."
+        return 1
+    fi
+
+    local current_remote
+    current_remote=$(cat "$SITES_DIR/$local_site.localhost/.remote" 2>/dev/null || true)
+    if [ -n "$link_remote" ] && [ -n "$current_remote" ] && [ "$current_remote" != "$link_remote" ]; then
+        plak_ui_error "Site '$local_site' is panel-linked via remote '$link_remote', but attached to '$current_remote'. Re-link ('plak panel link') instead of pushing blindly (nothing ran)."
+        return 1
+    fi
+
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    if ! plak_connect_http GET "$panel/api/v1/sites/$site_id" "" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable while revalidating '$site_domain'. Nothing ran."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200) : ;;
+        401)
+            plak_ui_error "Token invalid, revoked or expired. Run 'plak connect' to reconnect — the linked SSH authorization itself is independent and unchanged."
+            return 1
+            ;;
+        404)
+            plak_ui_error "Panel site '$site_domain' is no longer reachable (association withdrawn or site deleted). Re-link if it moved (nothing ran)."
+            return 1
+            ;;
+        *)
+            plak_ui_error "Panel revalidation failed (HTTP $PLAK_HTTP_STATUS). Nothing ran."
+            return 1
+            ;;
+    esac
+
+    local live_domain
+    live_domain=$(plak_connect_json_get "$PLAK_HTTP_BODY" "data.domain")
+    if [ -n "$site_domain" ] && [ -n "$live_domain" ] && [ "$live_domain" != "$site_domain" ]; then
+        plak_ui_error "Panel site #$site_id is now '$live_domain', not '$site_domain'. Re-link to confirm the new destination (nothing ran)."
+        return 1
+    fi
+
+    echo "Panel: ${live_domain:-$site_domain} (${saved_email:-$account}) — destination revalidated."
+    return 0
+}

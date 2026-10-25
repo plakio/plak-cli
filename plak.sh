@@ -79,6 +79,9 @@ Commands:
   remote      Manage SSH remotes and site bindings
   hosts       Manage entries in /etc/hosts
   sshkey      Manage SSH keys
+  connect     Connect this machine to your Plak panel account
+  disconnect  Forget the local panel credential
+  panel       List your own panel sites and servers (read-only)
   add         Create a WordPress or plain local site
   import      Create a local site from a backup ZIP or TAR
   clone       Duplicate a local site into an independent copy
@@ -117,6 +120,8 @@ Commands:
 Examples:
   plak remote list
   plak remote connect
+  plak connect
+  plak panel sites
   plak status
 HELP
 }
@@ -173,6 +178,20 @@ HELP
                 plak_skill_help
             else
                 echo "Usage: plak skill install [codex|claude-code|opencode|hermes|pi|global|all]"
+            fi
+            ;;
+        connect|disconnect)
+            if declare -F plak_connect_help >/dev/null 2>&1; then
+                plak_connect_help
+            else
+                echo "Usage: plak connect [--panel URL] [--dev] [--manual] | plak connect status | plak disconnect [--yes]"
+            fi
+            ;;
+        panel)
+            if declare -F plak_panel_help >/dev/null 2>&1; then
+                plak_panel_help
+            else
+                echo "Usage: plak panel <sites|site|servers|server> [--json]"
             fi
             ;;
         install)
@@ -302,7 +321,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health)
+        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
             set +e
             ;;
     esac
@@ -332,6 +351,15 @@ main() {
             ;;
         skill)
             plak_skill "$@"
+            ;;
+        connect)
+            plak_connect "$@"
+            ;;
+        disconnect)
+            plak_disconnect "$@"
+            ;;
+        panel)
+            plak_panel "$@"
             ;;
         add)
             check_dependencies
@@ -507,6 +535,388 @@ main() {
 
 
 # --- Shared Helpers ---
+# Source: shared/connect
+# Plak Connect: panel pairing (CLI-24) — device flow estilo Botmail.
+#
+# Flujo base: POST /api/v1/cli/pair -> approve_url -> poll status ->
+# el mismo token pendiente se convierte en API key personal.
+# Fallback manual: pegar una API key de Perfil > API Keys (headless/WSL/auto).
+#
+# Seguridad:
+# - El secreto solo viaja en memoria y en el body de la respuesta de pairing.
+# - Almacén: ${PLAK_HOME:-$HOME/.plak}/connection.json, dir 700, archivo 600,
+#   escritura atómica. Nunca se carga como shell (no `source`), nunca en logs,
+#   argv, historial ni salida JSON.
+# - Sin -L en curl para la API: no reenviar el Bearer a otro origen.
+# - Dependencias declaradas: curl + python3 (parser JSON real).
+
+PLAK_CONNECT_PROD_URL="${PLAK_CONNECT_PROD_URL:-https://panel.plak.work}"
+PLAK_CONNECT_DEV_URL="${PLAK_PANEL_DEV_URL:-http://127.0.0.1:8000}"
+PLAK_CONNECT_DEFAULT_WAIT="${PLAK_CONNECT_DEFAULT_WAIT:-900}"
+PLAK_CONNECT_DEFAULT_POLL="${PLAK_CONNECT_DEFAULT_POLL:-10}"
+
+plak_connect_require_deps() {
+    if ! plak_command_exists curl; then
+        plak_ui_error "curl is required for 'plak connect'."
+        return 1
+    fi
+    if ! plak_command_exists python3; then
+        plak_ui_error "python3 is required for 'plak connect' (JSON parsing)."
+        return 1
+    fi
+}
+
+plak_connect_storage_file() {
+    printf '%s\n' "${PLAK_HOME:-$HOME/.plak}/connection.json"
+}
+
+plak_connect_ensure_storage() {
+    local dir file
+    file=$(plak_connect_storage_file)
+    dir=$(dirname "$file")
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        chmod 700 "$dir"
+    else
+        chmod 700 "$dir" 2>/dev/null || true
+    fi
+    if [ ! -f "$file" ]; then
+        : > "$file"
+        chmod 600 "$file"
+    else
+        chmod 600 "$file" 2>/dev/null || true
+    fi
+}
+
+# Normaliza la URL del panel: sin barra final, solo http(s)://.
+plak_connect_normalize_url() {
+    local url="${1:-}"
+    url="${url%/}"
+    case "$url" in
+        http://*|https://*) printf '%s\n' "$url" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Resuelve el panel: --panel URL | --dev | env PLAK_PANEL_URL | prod.
+plak_connect_resolve_panel() {
+    local explicit="" dev=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --panel) explicit="${2:-}"; shift 2 ;;
+            --dev) dev=1; shift 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    if [ -n "$explicit" ]; then
+        plak_connect_normalize_url "$explicit" || return 1
+        return 0
+    fi
+    if [ "$dev" -eq 1 ]; then
+        plak_connect_normalize_url "$PLAK_CONNECT_DEV_URL" || return 1
+        return 0
+    fi
+    if [ -n "${PLAK_PANEL_URL:-}" ]; then
+        plak_connect_normalize_url "$PLAK_PANEL_URL" || return 1
+        return 0
+    fi
+    printf '%s\n' "$PLAK_CONNECT_PROD_URL"
+}
+
+plak_connect_is_wsl() {
+    grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null
+}
+
+plak_connect_can_open_browser() {
+    [ -t 1 ] || return 1
+    plak_connect_is_wsl && return 1
+    [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || [ "$(uname -s)" = "Darwin" ] || return 1
+    return 0
+}
+
+plak_connect_open_url() {
+    local url="$1"
+    if plak_connect_is_wsl; then
+        return 1
+    fi
+    case "$(uname -s)" in
+        Darwin)
+            open "$url" >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+        Linux)
+            if plak_command_exists xdg-open; then
+                xdg-open "$url" >/dev/null 2>&1 && return 0
+            fi
+            return 1
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Extrae un campo JSON por ruta con puntos (p.ej. data.email). Vacío si falta.
+plak_connect_json_get() {
+    local json="$1" path="$2"
+    PLAK_JSON_DOC="$json" PLAK_JSON_PATH="$path" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ.get("PLAK_JSON_DOC", ""))
+except Exception:
+    print("")
+    raise SystemExit(0)
+cur = doc
+for part in os.environ.get("PLAK_JSON_PATH", "").split("."):
+    if isinstance(cur, dict) and part in cur:
+        cur = cur[part]
+    else:
+        print("")
+        raise SystemExit(0)
+if cur is None:
+    print("")
+elif isinstance(cur, (dict, list)):
+    print(json.dumps(cur))
+else:
+    print(str(cur))
+' 2>/dev/null
+}
+
+# GET/POST JSON contra la API sin seguir redirecciones.
+# Uso: plak_connect_http METHOD URL [BODY] [BEARER] [CF_TOKEN]
+# Exporta: PLAK_HTTP_STATUS, PLAK_HTTP_BODY, PLAK_HTTP_RETRY_AFTER.
+plak_connect_http() {
+    local method="$1" url="$2" body="${3:-}" bearer="${4:-}" cf_token="${5:-}"
+    local headers_file body_file code
+    headers_file=$(mktemp) || return 1
+    body_file=$(mktemp) || { rm -f "$headers_file"; return 1; }
+    local args=(-sS --max-time 20 --connect-timeout 10 -X "$method" -D "$headers_file" -o "$body_file" -w '%{http_code}')
+    args+=(-H 'Accept: application/json' -H 'User-Agent: PlakCLI/connect')
+    [ -n "$body" ] && args+=(-H 'Content-Type: application/json' --data "$body")
+    [ -n "$bearer" ] && args+=(-H "Authorization: Bearer $bearer")
+    [ -n "$cf_token" ] && args+=(-H "CF-Access-Token: $cf_token")
+    code=$(curl "${args[@]}" "$url" 2>/dev/null) || code="000"
+    PLAK_HTTP_STATUS="$code"
+    PLAK_HTTP_BODY=$(cat "$body_file" 2>/dev/null || true)
+    PLAK_HTTP_RETRY_AFTER=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d ' \r\n' || true)
+    rm -f "$headers_file" "$body_file"
+    [ "$code" != "000" ]
+}
+
+plak_connect_is_html() {
+    case "$1" in
+        '<'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Detecta bloqueo de Cloudflare Access / WAF en respuestas no-JSON.
+plak_connect_is_access_block() {
+    local status="$1" body="$2"
+    if plak_connect_is_html "$body"; then
+        case "$body" in
+            *Cloudflare*|*cf-*|*Just\ a\ moment*|*Attention\ Required*) return 0 ;;
+        esac
+        case "$status" in
+            301|302|303|307|308|403) return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+plak_connect_access_hint() {
+    cat <<'HINT' >&2
+This panel answer looks like Cloudflare Access (login page / redirect / challenge),
+not the Plak API. The browser session does not carry over to this HTTP client.
+
+Provide an Access service token explicitly (never the Plak API key):
+  export PLAK_CF_ACCESS_TOKEN='<CF-Access-Token value>'
+  plak connect --panel <url>   # reintenta con el header CF-Access-Token
+
+Ask the panel owner for the Access token out-of-band; it is different from
+Perfil > API Keys and must not be pasted into chats or logs.
+HINT
+}
+
+# Guarda conexión: panel_url + token + identidad mínima. Atómico, 600.
+plak_connect_save() {
+    local panel_url="$1" token="$2" user_json="$3"
+    local file tmp name email uid
+    file=$(plak_connect_storage_file)
+    plak_connect_ensure_storage
+    uid=$(plak_connect_json_get "$user_json" "data.id")
+    name=$(plak_connect_json_get "$user_json" "data.name")
+    email=$(plak_connect_json_get "$user_json" "data.email")
+    tmp=$(mktemp "$(dirname "$file")/.connection.XXXXXX") || return 1
+    chmod 600 "$tmp"
+    PLAK_SAVE_PANEL="$panel_url" PLAK_SAVE_TOKEN="$token" PLAK_SAVE_USER="$user_json" PLAK_SAVE_TMP="$tmp" python3 -c '
+import json, os, datetime
+doc = {
+  "panel_url": os.environ["PLAK_SAVE_PANEL"],
+  "token": os.environ["PLAK_SAVE_TOKEN"],
+  "user": {
+    "id": None,
+    "name": "",
+    "email": "",
+  },
+  "saved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+try:
+    u = json.loads(os.environ.get("PLAK_SAVE_USER", "") or "{}")
+    d = u.get("data", u) if isinstance(u, dict) else {}
+    if isinstance(d, dict):
+        doc["user"]["id"] = d.get("id")
+        doc["user"]["name"] = d.get("name", "")
+        doc["user"]["email"] = d.get("email", "")
+except Exception:
+    pass
+open(os.environ["PLAK_SAVE_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
+' 2>/dev/null || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$file"
+    chmod 600 "$file"
+}
+
+# Carga conexión sin imprimir el secreto. Exporta PLAK_SAVED_PANEL/USER_JSON.
+plak_connect_load() {
+    local file content panel token
+    file=$(plak_connect_storage_file)
+    [ -f "$file" ] || return 1
+    content=$(cat "$file" 2>/dev/null) || return 1
+    [ -n "$content" ] || return 1
+    panel=$(plak_connect_json_get "$content" "panel_url")
+    token=$(plak_connect_json_get "$content" "token")
+    [ -n "$panel" ] && [ -n "$token" ] || return 1
+    PLAK_SAVED_PANEL="$panel"
+    PLAK_SAVED_TOKEN="$token"
+    PLAK_SAVED_USER_JSON=$(PLAK_JSON_DOC="$content" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("user", {})))
+' 2>/dev/null)
+    export PLAK_SAVED_PANEL PLAK_SAVED_TOKEN PLAK_SAVED_USER_JSON
+    return 0
+}
+
+plak_connect_saved_token() {
+    plak_connect_load >/dev/null 2>&1 || return 1
+    printf '%s' "$PLAK_SAVED_TOKEN"
+}
+
+# Valida un token contra GET /api/v1/user. Imprime el JSON en stdout.
+# Códigos: 0 válido, 10 inválido/revocado/caducado, 11 bloqueada, 12 red/acceso.
+plak_connect_validate() {
+    local panel="$1" token="$2" cf_token="${3:-}"
+    if ! plak_connect_http GET "$panel/api/v1/user" "" "$token" "$cf_token"; then
+        return 12
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 12
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200)
+            printf '%s' "$PLAK_HTTP_BODY"
+            return 0
+            ;;
+        401)
+            return 10
+            ;;
+        403)
+            return 11
+            ;;
+        429)
+            return 12
+            ;;
+        *)
+            return 12
+            ;;
+    esac
+}
+
+# Source: shared/panel-migrate
+# Panel revalidation for push/pull (CLI-27).
+#
+# When a local site carries a .panel-link (see `plak panel link`), push and
+# pull must resolve the destination from that link and revalidate it against
+# the live panel API before anything destructive runs: account or panel
+# changes, withdrawn associations, deleted sites, invalid tokens and remote
+# data changes never select another destination silently — they stop with
+# an explanation. Manual SSH remotes (no link) are untouched, as is the
+# SSH transfer engine itself (CLI-7/CLI-6).
+#
+# Returns 0 to proceed (silent when there is no link), 1 with the reason
+# already printed when the linked flow must not continue.
+
+plak_panel_revalidate_link() {
+    local local_site="$1"
+    local link_file
+    link_file=$(plak_panel_link_file "$local_site")
+    [ -f "$link_file" ] || return 0
+
+    if ! plak_connect_load >/dev/null 2>&1; then
+        plak_ui_error "Site '$local_site' is panel-linked, but this machine is not connected. Run 'plak connect' (link kept, nothing ran)."
+        return 1
+    fi
+
+    local link panel account site_id site_domain link_remote
+    link=$(cat "$link_file")
+    panel=$(plak_connect_json_get "$link" "panel_url")
+    account=$(plak_connect_json_get "$link" "account")
+    site_id=$(plak_connect_json_get "$link" "site.id")
+    site_domain=$(plak_connect_json_get "$link" "site.domain")
+    link_remote=$(plak_connect_json_get "$link" "remote")
+
+    if [ "$panel" != "$PLAK_SAVED_PANEL" ]; then
+        plak_ui_error "Site '$local_site' is linked to $panel, but you are connected to $PLAK_SAVED_PANEL. Run 'plak connect --panel <url>' for that panel (nothing ran; the other origin was never sent this credential)."
+        return 1
+    fi
+    local saved_email
+    saved_email=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "email")
+    if [ -n "$account" ] && [ -n "$saved_email" ] && [ "$account" != "$saved_email" ]; then
+        plak_ui_error "Site '$local_site' was linked as $account, but you are connected as $saved_email. Reconnect as $account or re-link (nothing ran)."
+        return 1
+    fi
+
+    local current_remote
+    current_remote=$(cat "$SITES_DIR/$local_site.localhost/.remote" 2>/dev/null || true)
+    if [ -n "$link_remote" ] && [ -n "$current_remote" ] && [ "$current_remote" != "$link_remote" ]; then
+        plak_ui_error "Site '$local_site' is panel-linked via remote '$link_remote', but attached to '$current_remote'. Re-link ('plak panel link') instead of pushing blindly (nothing ran)."
+        return 1
+    fi
+
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    if ! plak_connect_http GET "$panel/api/v1/sites/$site_id" "" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable while revalidating '$site_domain'. Nothing ran."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200) : ;;
+        401)
+            plak_ui_error "Token invalid, revoked or expired. Run 'plak connect' to reconnect — the linked SSH authorization itself is independent and unchanged."
+            return 1
+            ;;
+        404)
+            plak_ui_error "Panel site '$site_domain' is no longer reachable (association withdrawn or site deleted). Re-link if it moved (nothing ran)."
+            return 1
+            ;;
+        *)
+            plak_ui_error "Panel revalidation failed (HTTP $PLAK_HTTP_STATUS). Nothing ran."
+            return 1
+            ;;
+    esac
+
+    local live_domain
+    live_domain=$(plak_connect_json_get "$PLAK_HTTP_BODY" "data.domain")
+    if [ -n "$site_domain" ] && [ -n "$live_domain" ] && [ "$live_domain" != "$site_domain" ]; then
+        plak_ui_error "Panel site #$site_id is now '$live_domain', not '$site_domain'. Re-link to confirm the new destination (nothing ran)."
+        return 1
+    fi
+
+    echo "Panel: ${live_domain:-$site_domain} (${saved_email:-$account}) — destination revalidated."
+    return 0
+}
+
 # Source: shared/release
 # BEGIN plak-release-channel
 # Stable release channel shared by install.sh and `plak upgrade`.
@@ -7383,6 +7793,352 @@ plak_validate_port() {
 }
 
 # --- Command Functions ---
+# Source: commands/connect
+# plak connect — pairing con el panel estilo Botmail (CLI-24).
+#
+#   plak connect [--panel URL] [--dev] [--no-open] [--wait S] [--poll S]
+#   plak connect --manual [--panel URL] [--dev] [--token-stdin]
+#   plak connect status [--json]
+#   plak disconnect [--yes]
+#
+# Decisión /connect: este CLI no tiene intérprete conversacional; no existe
+# comando `/connect`. Cualquier adaptador externo debe invocar `plak connect`
+# y nunca capturar ni reenviar el secreto a una conversación.
+
+plak_connect_help() {
+    cat <<'HELP'
+Usage:
+  plak connect [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
+  plak connect --manual [--panel URL] [--dev] [--token-stdin] [--json]
+  plak connect status [--json]
+  plak disconnect [--yes]
+
+Connect this machine to your Plak panel account (device flow, Botmail-style):
+requests a pairing, shows/opens the approval link, polls until you approve
+it in the panel with 1 click. No secrets to copy by hand.
+
+  --panel URL   Panel origin (default https://panel.plak.work).
+                Use an explicit URL for staging/dev, e.g. http://127.0.0.1:8000.
+  --dev         Shorthand for $PLAK_PANEL_DEV_URL (default http://127.0.0.1:8000).
+  --no-open     Print the approval link without opening a browser.
+  --wait SECS   Max seconds to wait for approval (default 900 = pairing TTL).
+  --poll SECS   Poll interval in seconds (default 10).
+  --manual      Fallback: paste a personal API key from Perfil > API Keys.
+                For headless/WSL/automation. Never pass the key as an argument:
+                use --token-stdin (echo "$KEY" | plak connect --manual --token-stdin).
+  --json        Machine-readable output (never includes the secret).
+
+Other actions:
+  plak connect status     Show panel, account and token validity.
+  plak disconnect [--yes] Forget the local credential. Revoke the key itself
+                          in the panel: Perfil > API Keys. Revoking there does
+                          not delete other connections.
+
+Dev behind Cloudflare Access: export PLAK_CF_ACCESS_TOKEN (service token).
+It is sent as CF-Access-Token and is different from the Plak API key.
+HELP
+}
+
+plak_connect_status_cmd() {
+    local json=0
+    for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
+    if ! plak_connect_load >/dev/null 2>&1; then
+        [ "$json" -eq 1 ] && printf '{"connected":false}\n' || echo "Not connected. Run: plak connect"
+        return 1
+    fi
+    local user_json rc=0 tmp
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    tmp=$(mktemp) || return 1
+    if plak_connect_validate "$PLAK_SAVED_PANEL" "$PLAK_SAVED_TOKEN" "$cf_token" >"$tmp"; then
+        user_json=$(cat "$tmp"); rm -f "$tmp"
+        local name email uid
+        name=$(plak_connect_json_get "$user_json" "data.name")
+        email=$(plak_connect_json_get "$user_json" "data.email")
+        uid=$(plak_connect_json_get "$user_json" "data.id")
+        if [ "$json" -eq 1 ]; then
+            printf '{"connected":true,"panel_url":%s,"user":{"id":%s,"name":%s,"email":%s}}\n' \
+                "$(plak_json_string "$PLAK_SAVED_PANEL")" "${uid:-null}" \
+                "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+        else
+            echo "Connected to $PLAK_SAVED_PANEL as ${name:-?} <${email:-?}>"
+        fi
+        return 0
+    else
+        rc=$?
+        rm -f "$tmp"
+        case "$rc" in
+            10) msg="Token invalid, revoked or expired." ;;
+            11) msg="Account blocked." ;;
+            *) msg="Panel unreachable (HTTP $PLAK_HTTP_STATUS)." ;;
+        esac
+        if [ "$json" -eq 1 ]; then
+            printf '{"connected":false,"panel_url":%s,"error":%s}\n' \
+                "$(plak_json_string "$PLAK_SAVED_PANEL")" "$(plak_json_string "$msg")"
+        else
+            plak_ui_error "$msg Run 'plak connect' to reconnect or revoke in Perfil > API Keys."
+        fi
+        return 1
+    fi
+}
+
+plak_connect_disconnect() {
+    local yes=0
+    for a in "$@"; do case "$a" in --yes|-y) yes=1 ;; esac; done
+    local file panel=""
+    file=$(plak_connect_storage_file)
+    if plak_connect_load >/dev/null 2>&1; then
+        panel="$PLAK_SAVED_PANEL"
+    elif [ ! -f "$file" ]; then
+        echo "Not connected."
+        return 0
+    fi
+    if [ "$yes" -eq 0 ] && [ -t 0 ] && plak_command_exists gum; then
+        gum confirm "Forget the local credential${panel:+ for $panel}?" || { echo "Cancelled."; return 0; }
+    elif [ "$yes" -eq 0 ] && [ -t 0 ]; then
+        printf 'Forget the local credential%s? [y/N] ' "${panel:+ for $panel}"
+        read -r ans || ans=""
+        case "$ans" in y|Y|yes|YES) : ;; *) echo "Cancelled."; return 0 ;; esac
+    elif [ "$yes" -eq 0 ]; then
+        plak_ui_error "Refusing to disconnect without --yes in non-interactive mode."
+        return 1
+    fi
+    rm -f "$file"
+    echo "Disconnected locally${panel:+ from $panel}."
+    echo "To revoke the key on the server: panel Perfil > API Keys > Revoke."
+    echo "Local forget is not a remote revoke; SSH keys installed separately are unaffected."
+}
+
+plak_connect_manual() {
+    local panel="" token="" use_stdin=0 json=0
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --panel) panel="$2"; shift 2 ;;
+            --dev) panel="$PLAK_CONNECT_DEV_URL"; shift 1 ;;
+            --token-stdin) use_stdin=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --cf-access-token) cf_token="$2"; shift 2 ;;
+            --token|--key) plak_ui_error "Refusing --token: the secret would leak via argv/history. Use --token-stdin."; return 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    if [ -z "$panel" ]; then
+        panel=$(plak_connect_resolve_panel) || { plak_ui_error "Invalid panel URL."; return 1; }
+    else
+        plak_connect_normalize_url "$panel" >/dev/null || { plak_ui_error "Invalid panel URL '$panel'."; return 1; }
+        panel=$(plak_connect_normalize_url "$panel")
+    fi
+    if [ "$use_stdin" -eq 1 ]; then
+        token=""
+        IFS= read -r token || true
+    elif [ -t 0 ]; then
+        printf 'Panel: %s\n' "$panel"
+        printf 'Paste a personal API key (Perfil > API Keys). Input is hidden.\n'
+        stty -echo 2>/dev/null || true
+        IFS= read -r token || token=""
+        stty echo 2>/dev/null || true
+        echo ""
+    else
+        plak_ui_error "No TTY. Pipe the key: echo \"\$KEY\" | plak connect --manual --token-stdin"
+        return 1
+    fi
+    token="$(printf '%s' "$token" | tr -d ' \t\r\n')"
+    if [ -z "$token" ]; then
+        echo "Cancelled."
+        return 2
+    fi
+    local user_json tmp rc
+    tmp=$(mktemp) || return 1
+    plak_connect_validate "$panel" "$token" "$cf_token" >"$tmp"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$tmp"
+        case "$rc" in
+            10) plak_ui_error "Key rejected (invalid/revoked/expired). Existing connection untouched." ;;
+            11) plak_ui_error "Account blocked. Existing connection untouched." ;;
+            *) plak_ui_error "Panel unreachable (HTTP ${PLAK_HTTP_STATUS:-?}). Existing connection untouched." ;;
+        esac
+        return 1
+    fi
+    user_json=$(cat "$tmp"); rm -f "$tmp"
+    if ! plak_connect_save "$panel" "$token" "$user_json"; then
+        plak_ui_error "Validated, but the credential could not be stored."
+        return 1
+    fi
+    token=""
+    local name email
+    name=$(plak_connect_json_get "$user_json" "data.name")
+    email=$(plak_connect_json_get "$user_json" "data.email")
+    if [ "$json" -eq 1 ]; then
+        printf '{"connected":true,"panel_url":%s,"user":{"name":%s,"email":%s}}\n' \
+            "$(plak_json_string "$panel")" "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+    else
+        plak_ui_success "Connected to $panel as ${name:-?} <${email:-?}>"
+    fi
+}
+
+plak_connect_device() {
+    local panel="" no_open=0 wait_secs="$PLAK_CONNECT_DEFAULT_WAIT" poll_secs="$PLAK_CONNECT_DEFAULT_POLL" json=0
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --panel) panel="$2"; shift 2 ;;
+            --dev) panel="$PLAK_CONNECT_DEV_URL"; shift 1 ;;
+            --no-open) no_open=1; shift 1 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            --cf-access-token) cf_token="$2"; shift 2 ;;
+            --token|--key) plak_ui_error "Refusing --token: use the device flow or --manual --token-stdin."; return 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    case "$wait_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --wait '$wait_secs'."; return 1 ;; esac
+    case "$poll_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --poll '$poll_secs'."; return 1 ;; esac
+    [ "$poll_secs" -ge 2 ] || poll_secs=2
+    if [ -z "$panel" ]; then
+        panel=$(plak_connect_resolve_panel) || { plak_ui_error "Invalid panel URL."; return 1; }
+    else
+        plak_connect_normalize_url "$panel" >/dev/null || { plak_ui_error "Invalid panel URL '$panel'."; return 1; }
+        panel=$(plak_connect_normalize_url "$panel")
+    fi
+    local device_name="${HOSTNAME:-$(hostname 2>/dev/null || echo cli)}"
+    local body pending approve_url code expires
+    body=$(PLAK_DEVICE="$device_name" python3 -c 'import json, os; print(json.dumps({"device_name": os.environ["PLAK_DEVICE"][:100]}))')
+    if ! plak_connect_http POST "$panel/api/v1/cli/pair" "$body" "" "$cf_token"; then
+        plak_ui_error "Panel unreachable. Check the URL and network."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    if [ "$PLAK_HTTP_STATUS" = "429" ]; then
+        plak_ui_error "Rate limited${PLAK_HTTP_RETRY_AFTER:+ (retry after ${PLAK_HTTP_RETRY_AFTER}s)}. Try again later."
+        return 1
+    fi
+    if [ "$PLAK_HTTP_STATUS" != "201" ]; then
+        plak_ui_error "Pairing request failed (HTTP $PLAK_HTTP_STATUS)."
+        return 1
+    fi
+    pending=$(plak_connect_json_get "$PLAK_HTTP_BODY" "pending_token")
+    approve_url=$(plak_connect_json_get "$PLAK_HTTP_BODY" "approve_url")
+    code=$(plak_connect_json_get "$PLAK_HTTP_BODY" "pairing_code")
+    expires=$(plak_connect_json_get "$PLAK_HTTP_BODY" "expires_at")
+    if [ -z "$pending" ] || [ -z "$approve_url" ]; then
+        plak_ui_error "Invalid pairing response from panel."
+        return 1
+    fi
+    if [ "$json" -eq 0 ]; then
+        echo "Approve this device in the panel:"
+        echo "  $approve_url"
+        [ -n "$code" ] && echo "Code: $code${expires:+ (expires $expires)}"
+    fi
+    if [ "$no_open" -eq 0 ] && plak_connect_can_open_browser; then
+        plak_connect_open_url "$approve_url" || echo "Could not open a browser; approve manually at the link above."
+    elif [ "$json" -eq 0 ] && { plak_connect_is_wsl || [ ! -t 1 ]; }; then
+        echo "(No browser here — approve manually at the link above.)"
+    fi
+    local elapsed=0 status=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        if ! plak_connect_http GET "$panel/api/v1/cli/pair/status" "" "$pending" "$cf_token"; then
+            [ "$json" -eq 0 ] && echo "Network hiccup; retrying..." >&2
+            continue
+        fi
+        if [ "$PLAK_HTTP_STATUS" = "429" ]; then
+            sleep "${PLAK_HTTP_RETRY_AFTER:-30}"
+            continue
+        fi
+        if [ "$PLAK_HTTP_STATUS" = "401" ]; then
+            if [ "$json" -eq 1 ]; then
+                printf '{"connected":false,"error":"pairing expired or purged"}\n'
+            else
+                plak_ui_error "Pairing expired or purged. Run 'plak connect' again."
+            fi
+            return 3
+        fi
+        status=$(plak_connect_json_get "$PLAK_HTTP_BODY" "status")
+        case "$status" in
+            approved) break ;;
+            rejected)
+                if [ "$json" -eq 1 ]; then printf '{"connected":false,"error":"rejected"}\n'; else echo "Pairing rejected in the panel. No connection saved."; fi
+                return 3
+                ;;
+            expired)
+                if [ "$json" -eq 1 ]; then printf '{"connected":false,"error":"expired"}\n'; else echo "Pairing expired. Run 'plak connect' again."; fi
+                return 3
+                ;;
+            pending|"") : ;;
+            *) : ;;
+        esac
+        if [ "$json" -eq 0 ] && [ -t 1 ]; then
+            printf '\rWaiting for approval... %ss / %ss' "$elapsed" "$wait_secs"
+        fi
+    done
+    [ "$json" -eq 0 ] && [ -t 1 ] && echo ""
+    if [ "$status" != "approved" ]; then
+        if [ "$json" -eq 1 ]; then printf '{"connected":false,"error":"timed out waiting for approval"}\n'; else echo "Timed out waiting for approval. No connection saved."; fi
+        return 3
+    fi
+    local user_json tmp rc
+    tmp=$(mktemp) || return 1
+    plak_connect_validate "$panel" "$pending" "$cf_token" >"$tmp"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$tmp"
+        plak_ui_error "Approved, but the key does not authenticate yet. Retry 'plak connect status'."
+        return 1
+    fi
+    user_json=$(cat "$tmp"); rm -f "$tmp"
+    if ! plak_connect_save "$panel" "$pending" "$user_json"; then
+        plak_ui_error "Approved, but the credential could not be stored."
+        return 1
+    fi
+    pending=""; user_json=""
+    if ! plak_connect_load >/dev/null 2>&1; then
+        plak_ui_error "Could not persist the connection."
+        return 1
+    fi
+    local name
+    name=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "name")
+    if [ "$json" -eq 1 ]; then
+        printf '{"connected":true,"panel_url":%s}\n' "$(plak_json_string "$panel")"
+    else
+        plak_ui_success "Connected to $panel${name:+ as $name}."
+    fi
+}
+
+plak_connect() {
+    plak_connect_require_deps || return 1
+    local action="device"
+    if [ $# -gt 0 ]; then
+        case "$1" in
+            status) action="status"; shift ;;
+            disconnect|logout|forget) action="disconnect"; shift ;;
+            --manual|manual) action="manual"; shift ;;
+            --help|-h|help) plak_connect_help; return 0 ;;
+            --*) action="device" ;;
+            *) plak_ui_error "Unknown connect action '$1'"; plak_connect_help; return 1 ;;
+        esac
+    fi
+    case "$action" in
+        status) plak_connect_status_cmd "$@" ;;
+        disconnect) plak_connect_disconnect "$@" ;;
+        manual) plak_connect_manual "$@" ;;
+        device)
+            for a in "$@"; do case "$a" in --manual) plak_connect_manual "$@"; return $? ;; --help|-h) plak_connect_help; return 0 ;; esac; done
+            plak_connect_device "$@"
+            ;;
+    esac
+}
+
+plak_disconnect() {
+    plak_connect_require_deps || return 1
+    plak_connect_disconnect "$@"
+}
+
 # Source: commands/health
 # Read-only probes; mutations always require an explicit subcommand/flag.
 plak_health() {
@@ -7981,6 +8737,2007 @@ plak_hosts() {
 # Source: commands/install
 plak_install() {
     plak_site_install "$@"
+}
+
+# Source: commands/panel
+# plak panel — own panel resources (CLI-25).
+#
+# Reads (never writes) the connected account's sites and servers from the
+# panel personal API. Local sites (`plak list`) and panel resources are
+# never mixed: everything here is explicitly labeled as panel data and
+# resolved through the saved connection (panel URL + token + identity).
+
+plak_panel_help() {
+    cat <<'HELP'
+Usage:
+  plak panel sites [--page N] [--per-page N] [--all] [--json] [--panel URL] [--dev]
+  plak panel site <id|domain> [--json] [--panel URL] [--dev]
+  plak panel servers [--page N] [--per-page N] [--all] [--json] [--panel URL] [--dev]
+  plak panel server <id|name> [--json] [--panel URL] [--dev]
+  plak panel providers [--json]
+  plak panel create-server --name N --provider ID --region ID --plan ID [--json]
+  plak panel delete-server <id|name> [--yes] [--json]
+  plak panel restart-server <id|name> [--yes] [--json]
+  plak panel create-site --domain D --server <id|name> [--json]
+  plak panel delete-site <id|domain> [--yes] [--json]
+  WordPress reads/writes (sites:write for mutations):
+  plak panel wp-overview|wp-themes|wp-plugins <site> [--refresh] [--json]
+  plak panel wp-theme-activate|wp-theme-update|wp-theme-install|wp-theme-delete <site> <slug...> [--json]
+  plak panel wp-plugin-activate|wp-plugin-deactivate|wp-plugin-update|wp-plugin-install|wp-plugin-delete <site> <slug...> [--json]
+  plak panel wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc <site> [...] [--json]
+  plak panel wp-search-replace|wp-cli|wp-set-php|wp-set-robots <site> [...] [--json]
+  Server operations:
+  plak panel service-list|service-restart|service-reload|wpcli-install|wpcli-uninstall <server> [...]
+  plak panel php-info|php-install|php-cli-set|opcache-enable|opcache-disable|opcache-refresh <server> [...]
+  plak panel firewall-list|firewall-add|firewall-del|users-list|users-add|users-del <server> [...]
+  Site infra (databases, cronjobs, certificates, redirects, aliases, DNS, HTTP auth, cache, apps):
+  plak panel db-list|db-add|db-del|cron-list|cron-add|cron-del|cert-list|cert-add|cert-del <site> [...]
+  plak panel redirect-list|redirect-add|redirect-del|alias-list|alias-add|alias-del|dns-list|dns-add|dns-update|dns-del <site> [...]
+  plak panel authuser-list|authuser-add|authuser-del|cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh <site> [...]
+  plak panel app-info|app-install|app-uninstall <site> [...]
+  Details per area: plak panel <any-cmd> help   (e.g. plak panel db-add help)
+  plak panel link <panel-site> <local-site> [--system-user USER] [--path PATH]
+
+List and inspect your own panel sites and servers (read-only).
+
+  --page N / --per-page N   Pagination (per-page 1-100, default 25).
+  --all                     Walk every page (for inventories and selection).
+  --json                    Machine-readable output.
+  --panel URL / --dev       Use a different panel origin. The saved token is
+                            never sent to another origin: switching panels
+                            requires 'plak connect --panel <url>' first.
+
+Selection accepts a numeric id (direct lookup) or the exact domain/name.
+HELP
+}
+
+# Guard: connected account, and never send the saved token elsewhere.
+# Sets PLAK_PANEL_URL_OUT. Fails when --panel/--dev points elsewhere.
+plak_panel_require_connection() {
+    local panel_override=""
+    for a in "$@"; do
+        case "$a" in
+            --panel) panel_override="1" ;;
+            --dev) panel_override="1" ;;
+        esac
+    done
+    if ! plak_connect_load >/dev/null 2>&1; then
+        plak_ui_error "Not connected. Run: plak connect"
+        return 1
+    fi
+    if [ -n "$panel_override" ]; then
+        plak_ui_error "Refusing to use this credential on another origin. Run 'plak connect --panel <url>' first."
+        return 1
+    fi
+    PLAK_PANEL_URL_OUT="$PLAK_SAVED_PANEL"
+}
+
+# GET one personal API page. Sets PLAK_PANEL_JSON. Maps auth/network errors.
+plak_panel_get() {
+    local url="$1"
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    if ! plak_connect_http GET "$url" "" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable. Check the network and 'plak connect status'."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200)
+            PLAK_PANEL_JSON="$PLAK_HTTP_BODY"
+            return 0
+            ;;
+        401)
+            plak_ui_error "Token invalid, revoked or expired. Run 'plak connect' to reconnect."
+            return 1
+            ;;
+        403)
+            if [ "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" = "account.blocked" ]; then
+                plak_ui_error "Account blocked. Contact support."
+            else
+                plak_ui_error "Forbidden for this token. Check 'plak connect status'."
+            fi
+            return 1
+            ;;
+        404)
+            plak_ui_error "Not found on this account."
+            return 1
+            ;;
+        422)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            return 1
+            ;;
+        429)
+            plak_ui_error "Rate limited${PLAK_HTTP_RETRY_AFTER:+ (retry after ${PLAK_HTTP_RETRY_AFTER}s)}."
+            return 1
+            ;;
+        *)
+            plak_ui_error "Panel request failed (HTTP $PLAK_HTTP_STATUS)."
+            return 1
+            ;;
+    esac
+}
+
+plak_panel_render_table() {
+    local kind="$1" json="$2"
+    PLAK_TABLE_KIND="$kind" PLAK_TABLE_DOC="$json" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_TABLE_DOC"])
+items = doc.get("data", doc) if isinstance(doc, dict) else doc
+kind = os.environ["PLAK_TABLE_KIND"]
+if not items:
+    print("(none)")
+    raise SystemExit(0)
+if kind == "sites":
+    print("%-6s %-32s %-10s %s" % ("ID", "DOMAIN", "STATUS", "SERVER"))
+    for s in items:
+        srv = (s.get("server") or {}).get("name", "-") if isinstance(s.get("server"), dict) else "-"
+        print("%-6s %-32s %-10s %s" % (s.get("id", "?"), (s.get("domain") or "")[:32], s.get("status", "?"), srv))
+else:
+    print("%-6s %-24s %-10s %-15s %s" % ("ID", "NAME", "STATUS", "IP", "SITES"))
+    for v in items:
+        sites = ",".join(str(x.get("domain", x.get("id"))) for x in (v.get("sites") or []))
+        print("%-6s %-24s %-10s %-15s %s" % (v.get("id", "?"), (v.get("name") or "")[:24], v.get("status", "?"), v.get("ip") or "-", sites[:40]))
+' 2>/dev/null
+}
+
+# List with optional --all walk. Args: kind page per_page all json
+plak_panel_list() {
+    local kind="$1" page=1 per_page=25 all=0 json=0
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --page) page="$2"; shift 2 ;;
+            --per-page) per_page="$2"; shift 2 ;;
+            --all) all=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --panel) shift 2 ;; # validated by require_connection
+            --dev) shift 1 ;;   # validated by require_connection
+            *) shift 1 ;;
+        esac
+    done
+    case "$page" in ''|*[!0-9]*|0) plak_ui_error "Invalid --page."; return 1 ;; esac
+    case "$per_page" in ''|*[!0-9]*|0) plak_ui_error "Invalid --per-page."; return 1 ;; esac
+    [ "$per_page" -gt 100 ] && per_page=100
+
+    local url="$PLAK_PANEL_URL_OUT/api/v1/$kind?page=$page&per_page=$per_page"
+    plak_panel_get "$url" || return 1
+    local first="$PLAK_PANEL_JSON"
+
+    if [ "$all" -eq 0 ]; then
+        if [ "$json" -eq 1 ]; then
+            printf '%s\n' "$first"
+        else
+            plak_panel_render_table "$kind" "$first"
+            local total last
+            total=$(plak_connect_json_get "$first" "total")
+            last=$(plak_connect_json_get "$first" "last_page")
+            if [ -n "$total" ] && [ "${total:-0}" -gt "$per_page" ] 2>/dev/null; then
+                echo "(showing page $page of $last, $total total — use --all for the full inventory)"
+            fi
+            [ "$total" = "0" ] || [ -z "$total" ] || true
+            if [ "$total" = "0" ]; then
+                [ "$kind" = "sites" ] && echo "No sites yet on this panel account." || echo "No servers yet on this panel account."
+            fi
+        fi
+        return 0
+    fi
+
+    local walk_file
+    walk_file=$(mktemp) || return 1
+    PLAK_WALK_FIRST="$first" PLAK_WALK_KIND="$kind" PLAK_WALK_BASE="$PLAK_PANEL_URL_OUT/api/v1/$kind" PLAK_WALK_PER="$per_page" PLAK_WALK_TOKEN="$PLAK_SAVED_TOKEN" PLAK_WALK_CF="${PLAK_CF_ACCESS_TOKEN:-}" python3 -c '
+import json, os, urllib.request
+first = json.loads(os.environ["PLAK_WALK_FIRST"])
+if isinstance(first.get("data"), list) and "last_page" in first:
+    items, last, per = list(first["data"]), int(first.get("last_page") or 1), os.environ["PLAK_WALK_PER"]
+    base = os.environ["PLAK_WALK_BASE"]
+    token = os.environ.get("PLAK_WALK_TOKEN", "")
+    headers = {"Accept": "application/json", "User-Agent": "PlakCLI/panel"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    cf = os.environ.get("PLAK_WALK_CF", "")
+    if cf:
+        headers["CF-Access-Token"] = cf
+    for p in range(2, last + 1):
+        req = urllib.request.Request("%s?page=%d&per_page=%s" % (base, p, per), headers=headers)
+        page = json.load(urllib.request.urlopen(req, timeout=20))
+        items.extend(page.get("data", []))
+    print(json.dumps(items))
+else:
+    print(json.dumps(first.get("data", first) if isinstance(first, dict) else first))
+' 2>/dev/null > "$walk_file" || {
+        rm -f "$walk_file"
+        plak_ui_error "Failed while walking pages."
+        return 1
+    }
+    if [ "$json" -eq 1 ]; then
+        cat "$walk_file"; echo ""; rm -f "$walk_file"
+    else
+        plak_panel_render_table "$kind" "$(cat "$walk_file")"; rm -f "$walk_file"
+    fi
+}
+
+# Detail by id or exact domain/name. Walks pages (cap 10) for name matches.
+plak_panel_show() {
+    local kind="$1" sel="$2" json=0
+    shift 2
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift 1 ;;
+            --panel) shift 2 ;;
+            --dev) shift 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Missing identifier."; return 1; }
+    local field="domain"
+    [ "$kind" = "servers" ] && field="name"
+
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/$kind/$sel" || return 1
+        if [ "$json" -eq 1 ]; then
+            printf '%s\n' "$PLAK_PANEL_JSON"
+        else
+            local item
+            item=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c 'import json,os; print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {})))')
+            plak_panel_render_table "$kind" "[$item]"
+        fi
+        return 0
+    fi
+
+    local page=1 found=""
+    while [ "$page" -le 10 ]; do
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/$kind?page=$page&per_page=100" || return 1
+        found=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" PLAK_FIELD="$field" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+for item in doc.get("data", []):
+    if str(item.get(os.environ["PLAK_FIELD"], "")) == os.environ["PLAK_SEL"]:
+        print(json.dumps(item))
+        break
+')
+        [ -n "$found" ] && break
+        local last
+        last=$(plak_connect_json_get "$PLAK_PANEL_JSON" "last_page")
+        [ -n "$last" ] && [ "$page" -ge "$last" ] && break
+        page=$((page + 1))
+    done
+    if [ -z "$found" ]; then
+        plak_ui_error "No $kind named '$sel' on this account."
+        return 1
+    fi
+    if [ "$json" -eq 1 ]; then
+        printf '{"data":%s}\n' "$found"
+    else
+        plak_panel_render_table "$kind" "[$found]"
+    fi
+}
+
+plak_panel() {
+    plak_connect_require_deps || return 1
+    local action="${1:-help}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        sites)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_list sites "$@"
+            ;;
+        servers)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_list servers "$@"
+            ;;
+        site)
+            [ $# -ge 1 ] || { plak_ui_error "Usage: plak panel site <id|domain> [--json]"; return 1; }
+            local sel="$1"; shift
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_show sites "$sel" "$@"
+            ;;
+        server)
+            [ $# -ge 1 ] || { plak_ui_error "Usage: plak panel server <id|name> [--json]"; return 1; }
+            local sel="$1"; shift
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_show servers "$sel" "$@"
+            ;;
+        link)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_link "$@"
+            ;;
+        unlink)
+            plak_panel_unlink "$@"
+            ;;
+        links|list-links)
+            plak_panel_links "$@"
+            ;;
+        providers)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_providers "$@"
+            ;;
+        create-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_create_server "$@"
+            ;;
+        delete-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_delete_server "$@"
+            ;;
+        restart-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_restart_server "$@"
+            ;;
+        create-site)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_create_site "$@"
+            ;;
+        delete-site)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_delete_site "$@"
+            ;;
+        wp-overview|wp-themes|wp-plugins|wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc|wp-theme-activate|wp-theme-update|wp-theme-install|wp-theme-delete|wp-plugin-activate|wp-plugin-deactivate|wp-plugin-update|wp-plugin-install|wp-plugin-delete|wp-search-replace|wp-cli|wp-set-php|wp-set-robots)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_wp "$action" "$@"
+            ;;
+        service-list|service-restart|service-reload|wpcli-install|wpcli-uninstall|php-info|php-install|php-cli-set|opcache-enable|opcache-disable|opcache-refresh|firewall-list|firewall-add|firewall-del|users-list|users-add|users-del)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_server "$action" "$@"
+            ;;
+        db-list|db-add|db-del|cron-list|cron-add|cron-del|cert-list|cert-add|cert-del|redirect-list|redirect-add|redirect-del|alias-list|alias-add|alias-del|dns-list|dns-add|dns-update|dns-del|authuser-list|authuser-add|authuser-del|cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh|app-info|app-install|app-uninstall)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_infra "$action" "$@"
+            ;;
+        help|--help|-h)
+            plak_panel_help
+            ;;
+        *)
+            plak_ui_error "Unknown panel action '$action'"
+            plak_panel_help
+            return 1
+            ;;
+    esac
+}
+
+# Source: commands/panel-infra
+# plak panel Fase D — site infra operations (CLI-43).
+#
+# Databases, cronjobs, certificates, redirects, aliases, DNS (Cloudflare),
+# HTTP auth, cache (FastCGI/OPcache) and apps on your own sites. Reads need
+# user:read; mutations need sites:write (+ package update policy). Local
+# resources are addressed by panel id; remote-only ones (DNS, HTTP auth)
+# by their remote id.
+
+plak_panel_infra_help() {
+    cat <<'HELP'
+Usage:
+  plak panel <cmd> <site> [options] [--json]
+
+  Databases:
+    db-list                          db-add --name N --user U --password P
+    db-del <id> [--yes]
+
+  Cronjobs:
+    cron-list                        cron-add --command CMD [--frequency F]
+    cron-del <id> [--yes]
+
+  Certificates:
+    cert-list                        cert-add --type letsencrypt|custom [--domain D] [--cert C] [--private P]
+    cert-del <id> [--yes]
+
+  Redirects:
+    redirect-list                    redirect-add --from /old --to /new [--type redirect|permanent]
+    redirect-del <id> [--yes]
+
+  Aliases:
+    alias-list                       alias-add --domain D [--cert]
+    alias-del <alias> [--yes]
+
+  DNS (Cloudflare):
+    dns-list                         dns-add --type T --name N --content C [--ttl N]
+    dns-update <record> --type T --name N --content C [--ttl N]
+    dns-del <record> [--yes]
+
+  HTTP auth users (remote):
+    authuser-list                    authuser-add --name N --password P [--path /]
+    authuser-del <id> [--yes]
+
+  Cache:
+    cache-info                       cache-enable [--yes]   cache-disable [--yes]
+    cache-flush [--yes]              cache-opcache-refresh [--yes]
+
+  Apps:
+    app-info                         app-install --type wordpress|nextcloud [--options JSON] [--wait S]
+    app-uninstall [--yes]
+
+  <site> is the panel id or exact domain. --json prints the raw panel
+  response (never secrets).
+HELP
+}
+
+plak_panel_infra_args() {
+    INF_SITE_SEL="${1:-}"
+    shift || true
+    [ -n "$INF_SITE_SEL" ] || { plak_ui_error "Missing panel site (id or domain)."; return 1; }
+    INF_SITE_ID=$(plak_panel_wp_site "$INF_SITE_SEL") || return 1
+    INF_ARGS=("$@")
+}
+
+plak_panel_infra_json_flag() {
+    INF_JSON=0
+    local rest=()
+    for a in "$@"; do case "$a" in --json) INF_JSON=1 ;; *) rest+=("$a") ;; esac; done
+    INF_ARGS=("${rest[@]}")
+}
+
+plak_panel_infra_yes() {
+    INF_YES=0
+    local rest=()
+    for a in "$@"; do case "$a" in --yes|-y) INF_YES=1 ;; *) rest+=("$a") ;; esac; done
+    INF_ARGS=("${rest[@]}")
+}
+
+plak_panel_infra_read() {
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$INF_SITE_ID/$1" || return 1
+    if [ "$INF_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+if doc.get("warning"):
+    print("Warning: %s" % doc["warning"])
+payload = doc.get("data", doc)
+print(json.dumps(payload, indent=2))
+'
+}
+
+plak_panel_infra_mutate() {
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    if [ -n "$prompt" ]; then
+        plak_panel_write_confirm "$prompt" "$yes" || return 1
+    fi
+    plak_panel_write_call "$method" "/api/v1/sites/$INF_SITE_ID/$path" "$body" || return 1
+    if [ "$INF_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent=2))
+'
+}
+
+plak_panel_infra_crud() {
+    # <resource> <list|add|del> — generic read-only + one-flag add/delete.
+    local resource="$1" sub="$2"; shift 2
+    case "$sub" in
+        list) plak_panel_infra_read "$resource" ;;
+        add) plak_panel_infra_add "$resource" "$@" ;;
+        del)
+            local id="${INF_ARGS[0]:-}"
+            [ -n "$id" ] || { plak_ui_error "Usage: $resource-del <id> [--yes]"; return 1; }
+            plak_panel_infra_mutate DELETE "$resource/$id" "" "$INF_YES" \
+                "Delete $resource $id on $INF_SITE_SEL?"
+            ;;
+        *) plak_ui_error "Unknown $resource op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_infra_add() {
+    local resource="$1"; shift
+    local body=""
+    case "$resource" in
+        databases)
+            local name="" user="" password=""
+            while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2 ;; --user) user="$2"; shift 2 ;; --password) password="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$name" ] && [ -n "$user" ] && [ -n "$password" ] || { plak_ui_error "Missing --name --user --password."; return 1; }
+            body=$(PLAK_N="$name" PLAK_U="$user" PLAK_PW="$password" python3 -c 'import json, os; print(json.dumps({"name": os.environ["PLAK_N"], "user_name": os.environ["PLAK_U"], "password": os.environ["PLAK_PW"]}))')
+            ;;
+        cronjobs)
+            local cmd="" freq=""
+            while [ $# -gt 0 ]; do case "$1" in --command) cmd="$2"; shift 2 ;; --frequency) freq="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$cmd" ] || { plak_ui_error "Missing --command."; return 1; }
+            body=$(PLAK_C="$cmd" PLAK_F="$freq" python3 -c '
+import json, os
+p = {"command": os.environ["PLAK_C"]}
+if os.environ.get("PLAK_F"):
+    p["frequency"] = os.environ["PLAK_F"]
+print(json.dumps(p))')
+            ;;
+        certificates)
+            local type="" domain="" cert="" priv=""
+            while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --domain) domain="$2"; shift 2 ;; --cert) cert="$2"; shift 2 ;; --private) priv="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$type" ] || { plak_ui_error "Missing --type letsencrypt|custom."; return 1; }
+            body=$(PLAK_T="$type" PLAK_D="$domain" PLAK_C="$cert" PLAK_P="$priv" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"]}
+if os.environ.get("PLAK_D"): p["domain"] = os.environ["PLAK_D"]
+if os.environ.get("PLAK_C"): p["certificate"] = os.environ["PLAK_C"]
+if os.environ.get("PLAK_P"): p["private"] = os.environ["PLAK_P"]
+print(json.dumps(p))')
+            ;;
+        redirects)
+            local from="" to="" type="redirect"
+            while [ $# -gt 0 ]; do case "$1" in --from) from="$2"; shift 2 ;; --to) to="$2"; shift 2 ;; --type) type="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$from" ] && [ -n "$to" ] || { plak_ui_error "Missing --from --to."; return 1; }
+            body=$(PLAK_F="$from" PLAK_T="$to" PLAK_TY="$type" python3 -c 'import json, os; print(json.dumps({"redirect_from": os.environ["PLAK_F"], "redirect_to": os.environ["PLAK_T"], "type": os.environ["PLAK_TY"]}))')
+            ;;
+        aliases)
+            local domain="" cert=0
+            while [ $# -gt 0 ]; do case "$1" in --domain) domain="$2"; shift 2 ;; --cert) cert=1; shift 1 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$domain" ] || { plak_ui_error "Missing --domain."; return 1; }
+            body=$(PLAK_D="$domain" PLAK_C="$cert" python3 -c '
+import json, os
+p = {"domain": os.environ["PLAK_D"]}
+if os.environ["PLAK_C"] == "1": p["request_new_certificate"] = True
+print(json.dumps(p))')
+            ;;
+        dns)
+            local type="" name="" content="" ttl=""
+            while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --name) name="$2"; shift 2 ;; --content) content="$2"; shift 2 ;; --ttl) ttl="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$type" ] && [ -n "$name" ] && [ -n "$content" ] || { plak_ui_error "Missing --type --name --content."; return 1; }
+            body=$(PLAK_T="$type" PLAK_N="$name" PLAK_C="$content" PLAK_TT="$ttl" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"], "name": os.environ["PLAK_N"], "content": os.environ["PLAK_C"]}
+if os.environ.get("PLAK_TT"):
+    p["ttl"] = int(os.environ["PLAK_TT"])
+print(json.dumps(p))')
+            ;;
+        auth-users)
+            local name="" password="" path="/"
+            while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2 ;; --password) password="$2"; shift 2 ;; --path) path="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$name" ] && [ -n "$password" ] || { plak_ui_error "Missing --name --password."; return 1; }
+            body=$(PLAK_N="$name" PLAK_PW="$password" PLAK_P="$path" python3 -c 'import json, os; print(json.dumps({"name": os.environ["PLAK_N"], "password": os.environ["PLAK_PW"], "path": os.environ["PLAK_P"]}))')
+            ;;
+        *) plak_ui_error "Unknown add for '$resource'."; return 1 ;;
+    esac
+    plak_panel_infra_mutate POST "$resource" "$body"
+}
+
+plak_panel_infra_cache() {
+    local sub="$1"
+    local method="POST" path="cache/$sub"
+    case "$sub" in
+        disable) method="DELETE" ;;
+        opcache-refresh) path="cache/opcache/refresh" ;;
+        enable|flush|info) [ "$sub" = "info" ] && { plak_panel_infra_read "cache"; return 0; } ;;
+        *) plak_ui_error "Unknown cache op '$sub'."; return 1 ;;
+    esac
+    plak_panel_infra_mutate "$method" "$path" "" "$INF_YES" \
+        "$(printf 'Cache %s on %s?' "$sub" "$INF_SITE_SEL")"
+}
+
+plak_panel_infra_app() {
+    local sub="$1"; shift
+    case "$sub" in
+        info) plak_panel_infra_read "apps" ;;
+        install)
+            local type="" options="" wait_secs=300 poll_secs=10
+            while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --options) options="$2"; shift 2 ;; --wait) wait_secs="$2"; shift 2 ;; --poll) poll_secs="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$type" ] || { plak_ui_error "Missing --type wordpress|nextcloud."; return 1; }
+            local body
+            body=$(PLAK_T="$type" PLAK_O="$options" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"]}
+if os.environ.get("PLAK_O"):
+    p["options"] = json.loads(os.environ["PLAK_O"])
+print(json.dumps(p))') || { plak_ui_error "Invalid --options JSON."; return 1; }
+            plak_panel_infra_mutate POST "apps" "$body" || return 1
+            local elapsed=0 cur=""
+            while [ "$elapsed" -lt "$wait_secs" ]; do
+                sleep "$poll_secs"
+                elapsed=$((elapsed + poll_secs))
+                plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$INF_SITE_ID/apps" || return 1
+                cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "project")
+                [ "$cur" = "$type" ] && {
+                    [ "$INF_JSON" -eq 1 ] && printf '{"project":%s,"status":"installed"}\n' "$(plak_json_string "$cur")" || plak_ui_success "App $type installed."
+                    return 0
+                }
+            done
+            [ "$INF_JSON" -eq 1 ] && printf '{"project":%s,"status":"unknown"}\n' "$(plak_json_string "$cur")" || echo "Still installing after ${wait_secs}s. Check 'plak panel app-info $INF_SITE_SEL' later."
+            return 3
+            ;;
+        uninstall)
+            plak_panel_infra_mutate DELETE "apps" "" "$INF_YES" \
+                "Uninstall the app on $INF_SITE_SEL?" || return 1
+            local elapsed=0 cur="present"
+            while [ "$elapsed" -lt 300 ]; do
+                sleep 10
+                elapsed=$((elapsed + 10))
+                plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$INF_SITE_ID/apps" || return 1
+                cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "project")
+                [ -z "$cur" ] || [ "$cur" = "null" ] && {
+                    [ "$INF_JSON" -eq 1 ] && printf '{"project":null,"status":"uninstalled"}\n' || plak_ui_success "App uninstalled."
+                    return 0
+                }
+            done
+            [ "$INF_JSON" -eq 1 ] && printf '{"project":%s,"status":"unknown"}\n' "$(plak_json_string "$cur")" || echo "Still uninstalling. Check 'plak panel app-info $INF_SITE_SEL' later."
+            return 3
+            ;;
+        *) plak_ui_error "Unknown app op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_infra() {
+    local sub="$1" sel="$2"
+    if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
+        plak_panel_infra_help
+        return 0
+    fi
+    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <infra-cmd> <site> [...]"; return 1; }
+    shift 2
+    INF_YES=0
+    plak_panel_infra_args "$sel" "$@" || return 1
+    set -- "${INF_ARGS[@]}"
+    plak_panel_infra_json_flag "$@"
+    set -- "${INF_ARGS[@]}"
+    case "$sub" in
+        db-list) plak_panel_infra_read "databases" ;;
+        cron-list) plak_panel_infra_read "cronjobs" ;;
+        cert-list) plak_panel_infra_read "certificates" ;;
+        redirect-list) plak_panel_infra_read "redirects" ;;
+        alias-list) plak_panel_infra_read "aliases" ;;
+        dns-list) plak_panel_infra_read "dns/records" ;;
+        authuser-list) plak_panel_infra_read "auth-users" ;;
+        db-add) plak_panel_infra_add databases "$@" ;;
+        db-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud databases del "${INF_ARGS[@]}" ;;
+        cron-add) plak_panel_infra_add cronjobs "$@" ;;
+        cron-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud cronjobs del "${INF_ARGS[@]}" ;;
+        cert-add) plak_panel_infra_add certificates "$@" ;;
+        cert-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud certificates del "${INF_ARGS[@]}" ;;
+        redirect-add) plak_panel_infra_add redirects "$@" ;;
+        redirect-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud redirects del "${INF_ARGS[@]}" ;;
+        alias-add) plak_panel_infra_add aliases "$@" ;;
+        alias-del)
+            plak_panel_infra_yes "$@"
+            local id="${INF_ARGS[0]:-}"
+            [ -n "$id" ] || { plak_ui_error "Usage: alias-del <alias> [--yes]"; return 1; }
+            shift
+            plak_panel_infra_mutate DELETE "aliases/$id" "" "$INF_YES" \
+                "Delete alias $id on $INF_SITE_SEL?"
+            ;;
+        dns-add) plak_panel_infra_add dns "$@" ;;
+        dns-update)
+            local rid="${1:-}"
+            [ -n "$rid" ] || { plak_ui_error "Usage: dns-update <record> [flags]"; return 1; }
+            shift
+            local body
+            body=$(plak_panel_infra_dns_body "$@") || return 1
+            plak_panel_infra_mutate PUT "dns/$rid" "$body"
+            ;;
+        dns-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud dns del "${INF_ARGS[@]}" ;;
+        authuser-add) plak_panel_infra_add auth-users "$@" ;;
+        authuser-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud auth-users del "${INF_ARGS[@]}" ;;
+        cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh)
+            plak_panel_infra_yes "$@"
+            plak_panel_infra_cache "${sub#cache-}"
+            ;;
+        app-info|app-install|app-uninstall)
+            plak_panel_infra_yes "$@"
+            plak_panel_infra_app "${sub#app-}" "${INF_ARGS[@]}"
+            ;;
+        *) plak_ui_error "Unknown infra command '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_infra_dns_body() {
+    local type="" name="" content="" ttl=""
+    while [ $# -gt 0 ]; do case "$1" in --type) type="$2"; shift 2 ;; --name) name="$2"; shift 2 ;; --content) content="$2"; shift 2 ;; --ttl) ttl="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+    [ -n "$type" ] && [ -n "$name" ] && [ -n "$content" ] || { plak_ui_error "Missing --type --name --content."; return 1; }
+    PLAK_T="$type" PLAK_N="$name" PLAK_C="$content" PLAK_TT="$ttl" python3 -c '
+import json, os
+p = {"type": os.environ["PLAK_T"], "name": os.environ["PLAK_N"], "content": os.environ["PLAK_C"]}
+if os.environ.get("PLAK_TT"):
+    p["ttl"] = int(os.environ["PLAK_TT"])
+print(json.dumps(p))'
+}
+
+# Source: commands/panel-link
+# plak panel link — bind a panel site to a local site over SSH (CLI-26).
+#
+# Flow: pick own panel site -> read its connection contract -> pick or
+# generate a local SSH key -> authorize only its public part in the panel
+# -> verify SSH + WordPress path -> create/reuse an SSH remote -> bind it
+# to the local site and record an unambiguous .panel-link (no secrets).
+#
+# Revoking the API key never removes an installed SSH key; remove it in
+# the panel (Servers > SSH keys). SSH credentials live their own lifecycle.
+
+plak_panel_link_help() {
+    cat <<'HELP'
+Usage:
+  plak panel link <panel-site> <local-site> [--system-user USER] [--path PATH]
+                 [--key PRIVATE_KEY | --generate] [--alias NAME] [--yes] [--json]
+  plak panel unlink <local-site> [--yes]
+  plak panel links [--json]
+
+Link one of your panel sites to a local Plak site for push/pull.
+
+  <panel-site>   Panel site id or exact domain (see 'plak panel sites').
+  <local-site>   Local site name (must exist; create with 'plak add' first).
+  --system-user  Remote system user for SSH. Interactive pick from the
+                 panel contract when omitted; required without a TTY unless
+                 the contract lists none (server-wide key).
+  --path         Remote WordPress root. Defaults to the panel hint
+                 (/home/<user>/<domain>/public) and is always verified
+                 over SSH before binding — a wrong path never links.
+  --key FILE     Existing local private key (its .pub is authorized).
+  --generate     Create ~/.ssh/plak-panel-<site> (ed25519) for this link.
+  --alias NAME   SSH remote alias (default panel-<domain>).
+  --yes          Skip confirmations (automation). Implies no prompts:
+                 pass --system-user/--key|--generate/--path as needed.
+  --json         Machine-readable result (never includes secrets).
+
+Host keys use StrictHostKeyChecking=accept-new: the first key is recorded,
+a changed key refuses. The link record lives in
+~/Plak/Sites/<local>.localhost/.panel-link (panel, account, remote ids —
+no tokens). 'unlink' removes the record only; manage remotes with
+'plak remote', SSH keys with 'plak sshkey'.
+HELP
+}
+
+plak_panel_link_file() {
+    printf '%s\n' "$SITES_DIR/$1.localhost/.panel-link"
+}
+
+# Deterministic CLI key name from a .pub file (matches SshKey::cliKeyName).
+plak_panel_key_suffix() {
+    PLAK_PUB="$1" python3 -c '
+import base64, hashlib, os
+parts = open(os.environ["PLAK_PUB"]).read().split()
+body = parts[1] if len(parts) >= 2 else ""
+print(hashlib.sha256(base64.b64decode(body)).hexdigest()[:12])
+' 2>/dev/null
+}
+
+plak_panel_valid_pub() {
+    local pub="$1" first rest
+    [ -f "$pub" ] || return 1
+    first=$(awk '{print $1}' "$pub")
+    case "$first" in
+        ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ecdsa-sha2-nistp256@openssh.com|sk-ssh-ed25519@openssh.com) : ;;
+        *) return 1 ;;
+    esac
+    rest=$(awk '{print $2}' "$pub")
+    [ -n "$rest" ] || return 1
+    if plak_command_exists ssh-keygen; then
+        ssh-keygen -l -f "$pub" >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+
+plak_panel_pick_local_key() {
+    local candidates selected
+    candidates=$(find "$HOME/.ssh" -maxdepth 1 -type f \
+        ! -name '.*' ! -name '*.pub' ! -name 'authorized_keys' \
+        ! -name 'known_hosts*' ! -name 'config' \
+        -exec sh -c 'head -n 1 "$1" 2>/dev/null | grep -q "PRIVATE KEY"' sh {} \; \
+        -print 2>/dev/null | sort || true)
+    if [ -n "$candidates" ] && plak_command_exists gum && [ -t 0 ]; then
+        selected=$(printf "%s\n%s" "$candidates" "Generate a new key" | gum filter --placeholder "Choose local SSH key") || return 1
+        [ -n "$selected" ] || return 1
+        [ "$selected" = "Generate a new key" ] || { printf '%s\n' "$selected"; return 0; }
+    fi
+    return 2
+}
+
+plak_panel_link() {
+    local site_sel="" local_site="" system_user="" remote_path="" key_file="" generate=0 alias="" yes=0 json=0
+    local positional=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --system-user) system_user="$2"; shift 2 ;;
+            --path) remote_path="$2"; shift 2 ;;
+            --key) key_file="$2"; shift 2 ;;
+            --generate) generate=1; shift 1 ;;
+            --alias) alias="$2"; shift 2 ;;
+            --yes|-y) yes=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --panel|--dev) plak_ui_error "Connect to that panel first: plak connect --panel <url>"; return 1 ;;
+            --help|-h) plak_panel_link_help; return 0 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) positional+=("$1"); shift 1 ;;
+        esac
+    done
+    [ "${#positional[@]}" -ge 2 ] || { plak_ui_error "Usage: plak panel link <panel-site> <local-site> [options]"; return 1; }
+    site_sel="${positional[0]}"
+    local_site="${positional[1]}"
+
+    plak_connect_require_deps || return 1
+    plak_panel_require_connection || return 1
+    local panel="$PLAK_PANEL_URL_OUT" cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+
+    local site_dir="$SITES_DIR/$local_site.localhost"
+    if [ ! -d "$site_dir" ]; then
+        plak_ui_error "Local site '$local_site' does not exist. Create it first: plak add $local_site"
+        return 1
+    fi
+
+    # 1. Resolve the panel site (id or exact domain) to its numeric id.
+    local site_id="$site_sel" site_domain=""
+    if [[ ! "$site_sel" =~ ^[0-9]+$ ]]; then
+        plak_panel_get "$panel/api/v1/sites?page=1&per_page=100" || return 1
+        site_id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$site_sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("domain", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+        [ -n "$site_id" ] || { plak_ui_error "No panel site '$site_sel' on this account."; return 1; }
+    fi
+
+    # 2. Connection contract.
+    plak_panel_get "$panel/api/v1/sites/$site_id/connection" || return 1
+    local contract="$PLAK_PANEL_JSON"
+    site_domain=$(plak_connect_json_get "$contract" "data.site.domain")
+    local site_status server_id server_name server_ip ssh_port
+    site_status=$(plak_connect_json_get "$contract" "data.site.status")
+    server_id=$(plak_connect_json_get "$contract" "data.server.id")
+    server_name=$(plak_connect_json_get "$contract" "data.server.name")
+    server_ip=$(plak_connect_json_get "$contract" "data.server.ip")
+    ssh_port=$(plak_connect_json_get "$contract" "data.server.ssh_port")
+    [ -n "$ssh_port" ] || ssh_port=22
+    [ -n "$site_domain" ] && [ -n "$server_ip" ] || { plak_ui_error "Incomplete connection data from panel."; return 1; }
+    [ "$json" -eq 0 ] && [ "$site_status" != "active" ] && plak_ui_warn "Panel site status is '$site_status' (not active)."
+
+    # 3. System user.
+    local users_json n_users
+    users_json=$(PLAK_JSON_DOC="$contract" python3 -c 'import json,os; print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}).get("system_users", [])))')
+    n_users=$(PLAK_JSON_DOC="$users_json" python3 -c 'import json,os; print(len(json.loads(os.environ["PLAK_JSON_DOC"])))')
+    if [ -z "$system_user" ]; then
+        if [ "$n_users" -eq 0 ]; then
+            system_user=""
+            [ "$json" -eq 0 ] && echo "No system users listed: authorizing a server-wide key."
+        elif [ -t 0 ] && plak_command_exists gum && [ "$yes" -eq 0 ]; then
+            system_user=$(PLAK_JSON_DOC="$users_json" python3 -c 'import json,os; [print(u["name"]) for u in json.loads(os.environ["PLAK_JSON_DOC"])]' | gum filter --placeholder "Choose remote system user") || return 1
+            [ -n "$system_user" ] || { echo "Cancelled."; return 2; }
+        else
+            plak_ui_error "Multiple system users available. Pass --system-user explicitly (non-interactive)."
+            return 1
+        fi
+    fi
+    if [ -z "$remote_path" ]; then
+        if [ -n "$system_user" ]; then
+            remote_path="/home/$system_user/$site_domain/public"
+        else
+            plak_ui_error "Pass --path explicitly for a server-wide key."
+            return 1
+        fi
+        [ "$json" -eq 0 ] && echo "Remote path default: $remote_path (will verify over SSH)"
+    fi
+
+    # 4. Local SSH key.
+    if [ -z "$key_file" ] && [ "$generate" -eq 0 ]; then
+        local picked
+        if picked=$(plak_panel_pick_local_key); then
+            key_file="$picked"
+        elif [ "$?" -eq 2 ]; then
+            if [ -t 0 ] && [ "$yes" -eq 0 ]; then
+                generate=1
+            else
+                plak_ui_error "Pass --key <private-key> or --generate (non-interactive)."
+                return 1
+            fi
+        else
+            echo "Cancelled."
+            return 2
+        fi
+    fi
+    if [ "$generate" -eq 1 ]; then
+        local slug
+        slug=$(printf '%s' "$site_domain" | tr -c 'A-Za-z0-9_-' '-')
+        key_file="$HOME/.ssh/plak-panel-$slug"
+        if [ ! -f "$key_file" ]; then
+            mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+            ssh-keygen -t ed25519 -f "$key_file" -N '' -C "plak-panel-$site_domain" >/dev/null 2>&1 || {
+                plak_ui_error "Could not generate an SSH key."
+                return 1
+            }
+            chmod 600 "$key_file"
+        fi
+    fi
+    [ -f "$key_file" ] || { plak_ui_error "Key not found: $key_file"; return 1; }
+    local pub_file="$key_file.pub"
+    if [ ! -f "$pub_file" ]; then
+        if plak_command_exists ssh-keygen; then
+            ssh-keygen -y -f "$key_file" > "$pub_file" 2>/dev/null || { plak_ui_error "Could not derive $pub_file."; return 1; }
+        else
+            plak_ui_error "Missing $pub_file and ssh-keygen is unavailable."
+            return 1
+        fi
+    fi
+    plak_panel_valid_pub "$pub_file" || { plak_ui_error "Invalid SSH public key: $pub_file"; return 1; }
+    local suffix key_name pub_body
+    suffix=$(plak_panel_key_suffix "$pub_file") || { plak_ui_error "Could not fingerprint key."; return 1; }
+    key_name="plak-cli-$suffix"
+    pub_body=$(cat "$pub_file")
+
+    # 5. Authorize the public key (server decides idempotent vs conflict).
+    local auth_body auth_out auth_status
+    auth_body=$(PLAK_NAME="$key_name" PLAK_KEY="$pub_body" PLAK_SU="$system_user" python3 -c '
+import json, os
+payload = {"name": os.environ["PLAK_NAME"], "key": os.environ["PLAK_KEY"]}
+if os.environ.get("PLAK_SU"):
+    payload["system_user"] = os.environ["PLAK_SU"]
+print(json.dumps(payload))
+')
+    if ! plak_connect_http POST "$panel/api/v1/servers/$server_id/ssh-keys" "$auth_body" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable during key authorization."
+        return 1
+    fi
+    auth_out="$PLAK_HTTP_BODY"
+    auth_status="$PLAK_HTTP_STATUS"
+    case "$auth_status" in
+        200|201) : ;;
+        401) plak_ui_error "Token invalid. Run 'plak connect' to reconnect."; return 1 ;;
+        403) plak_ui_error "Token lacks ssh:authorize. Reconnect with a key that includes it (plak connect again or Perfil > API Keys)."; return 1 ;;
+        404) plak_ui_error "Server not found on this account (association changed?)."; return 1 ;;
+        409) plak_ui_error "A different key already uses a conflicting name. Retry — names are derived from the key."; return 1 ;;
+        422) plak_ui_error "Panel refused the key: $(plak_connect_json_get "$auth_out" "message"). Nothing was installed."; return 1 ;;
+        503) plak_ui_error "Provider unreachable. Retry later; nothing was installed."; return 1 ;;
+        *) plak_ui_error "Authorization failed (HTTP $auth_status). Nothing was installed."; return 1 ;;
+    esac
+    local duplicate fingerprint
+    duplicate=$(plak_connect_json_get "$auth_out" "data.duplicate")
+    fingerprint=$(plak_connect_json_get "$auth_out" "data.fingerprint")
+    if [ "$json" -eq 0 ]; then
+        if [ "$duplicate" = "True" ]; then
+            echo "HTTP: key already authorized on panel (idempotent, no duplicate)."
+        else
+            echo "HTTP: public key authorized on panel (${fingerprint:- fingerprint withheld})."
+        fi
+    fi
+
+    # 6. Verify SSH access and the real WordPress path. Never bind blind.
+    local ssh_target="$system_user@$server_ip"
+    [ -n "$system_user" ] || ssh_target="$server_ip"
+    local ssh_opts=(-i "$key_file" -p "$ssh_port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+    local quoted_path
+    quoted_path=$(shell_quote "$remote_path")
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" "test -f $quoted_path/wp-config.php" 2>/dev/null; then
+        plak_ui_error "SSH ok but '$remote_path' is not a WordPress root there (no wp-config.php). Not linked."
+        echo "Hint: check --system-user/--path, then retry. The panel key authorization above stands and is reusable."
+        return 1
+    fi
+    [ "$json" -eq 0 ] && echo "SSH: $ssh_target:$remote_path verified (wp-config.php present)."
+
+    # 7. Create or reuse the SSH remote (existing manual remotes untouched).
+    [ -n "$alias" ] || alias="panel-$site_domain"
+    if ! plak_validate_hostname_alias "$alias"; then
+        plak_ui_error "Invalid alias '$alias'."
+        return 1
+    fi
+    if plak_remote_host_exists "$alias"; then
+        local current
+        current=$(plak_remote_get_host "$alias")
+        local chost cuser cport
+        chost=$(printf '%s' "$current" | awk -F'|' '{print $2}')
+        cuser=$(printf '%s' "$current" | awk -F'|' '{print $3}')
+        cport=$(printf '%s' "$current" | awk -F'|' '{print $4}')
+        if [ "$chost" != "$server_ip" ] || [ "$cuser" != "$system_user" ] || [ "${cport:-22}" != "$ssh_port" ]; then
+            plak_ui_error "Alias '$alias' exists for a different remote. Pass --alias or edit it (plak remote edit). Nothing was overwritten."
+            return 1
+        fi
+    else
+        plak_remote_append_config "$alias" "$server_ip" "$system_user" "$ssh_port" "$key_file" "$remote_path"
+    fi
+
+    # 8. Bind to the local site + record the panel link (no secrets).
+    local link_file
+    link_file=$(plak_panel_link_file "$local_site")
+    if [ -f "$link_file" ]; then
+        local old
+        old=$(cat "$link_file")
+        if [ "$(plak_connect_json_get "$old" "panel_url")" = "$panel" ] && [ "$(plak_connect_json_get "$old" "site.id")" = "$site_id" ]; then
+            [ "$json" -eq 0 ] && echo "Already linked to this panel site."
+        elif [ "$yes" -eq 0 ]; then
+            plak_ui_error "Local site already linked elsewhere. Pass --yes to replace (never silent)."
+            return 1
+        fi
+    fi
+    plak_remote_attach_to "$alias" "$local_site" "$yes" || return 1
+    local account
+    account=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "email")
+    local tmp_link
+    tmp_link=$(mktemp) || return 1
+    PLAK_LINK_PANEL="$panel" PLAK_LINK_ACCOUNT="$account" PLAK_LINK_SITE_ID="$site_id" PLAK_LINK_DOMAIN="$site_domain" PLAK_LINK_SERVER_ID="$server_id" PLAK_LINK_SERVER="$server_name" PLAK_LINK_ALIAS="$alias" PLAK_LINK_LOCAL="$local_site" PLAK_LINK_TMP="$tmp_link" python3 -c '
+import json, os, datetime
+doc = {
+  "panel_url": os.environ["PLAK_LINK_PANEL"],
+  "account": os.environ.get("PLAK_LINK_ACCOUNT", ""),
+  "site": {"id": int(os.environ["PLAK_LINK_SITE_ID"]), "domain": os.environ["PLAK_LINK_DOMAIN"]},
+  "server": {"id": int(os.environ["PLAK_LINK_SERVER_ID"]), "name": os.environ["PLAK_LINK_SERVER"]},
+  "remote": os.environ["PLAK_LINK_ALIAS"],
+  "local_site": os.environ["PLAK_LINK_LOCAL"],
+  "linked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+open(os.environ["PLAK_LINK_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
+' || { rm -f "$tmp_link"; return 1; }
+    mv "$tmp_link" "$link_file"
+
+    if [ "$json" -eq 1 ]; then
+        printf '{"linked":true,"local_site":%s,"remote":%s,"panel_site":{"id":%s,"domain":%s}}\n' \
+            "$(plak_json_string "$local_site")" "$(plak_json_string "$alias")" \
+            "$site_id" "$(plak_json_string "$site_domain")"
+    else
+        plak_ui_success "Linked panel site $site_domain to local '$local_site' via remote '$alias'."
+    fi
+}
+
+plak_panel_unlink() {
+    local site_name="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
+    done
+    [ -n "$site_name" ] || { plak_ui_error "Usage: plak panel unlink <local-site> [--yes]"; return 1; }
+    local link_file
+    link_file=$(plak_panel_link_file "$site_name")
+    if [ ! -f "$link_file" ]; then
+        [ "$json" -eq 1 ] && printf '{"linked":false}\n' || echo "No panel link on '$site_name'."
+        return 0
+    fi
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            gum confirm "Remove the panel link on '$site_name'? (remote and SSH key stay)" || { echo "Cancelled."; return 0; }
+        elif [ -t 0 ]; then
+            printf 'Remove the panel link on %s? [y/N] ' "$site_name"
+            read -r ans || ans=""
+            case "$ans" in y|Y|yes|YES) : ;; *) echo "Cancelled."; return 0 ;; esac
+        else
+            plak_ui_error "Use --yes in non-interactive mode."
+            return 1
+        fi
+    fi
+    rm -f "$link_file"
+    if [ "$json" -eq 1 ]; then
+        printf '{"linked":false}\n'
+    else
+        echo "Panel link removed from '$site_name'. Remote kept (plak remote detach to unbind); panel SSH authorization must be removed in Servers > SSH keys."
+    fi
+}
+
+plak_panel_links() {
+    local json=0
+    for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
+    local found=0 out="["
+    local d link
+    for d in "$SITES_DIR"/*.localhost; do
+        [ -d "$d" ] || continue
+        link="$d/.panel-link"
+        [ -f "$link" ] || continue
+        found=1
+        if [ "$json" -eq 1 ]; then
+            out="$out$(cat "$link"),"
+        else
+            local local_name panel_domain remote
+            local_name=$(basename "$d" .localhost)
+            panel_domain=$(plak_connect_json_get "$(cat "$link")" "site.domain")
+            remote=$(plak_connect_json_get "$(cat "$link")" "remote")
+            printf '%-20s %-32s %s\n' "$local_name" "$panel_domain" "$remote"
+        fi
+    done
+    if [ "$json" -eq 1 ]; then
+        out="${out%,}]"
+        [ "$found" -eq 1 ] || out="[]"
+        printf '%s\n' "$out"
+    elif [ "$found" -eq 0 ]; then
+        echo "No panel links."
+    fi
+}
+
+# Source: commands/panel-server
+# plak panel Fase C — server operations (CLI-42).
+#
+# Services, WP-CLI, PHP, OPcache, firewall and system users on your own
+# servers. Reads need user:read; mutations need servers:write (+ package
+# update permission where the panel requires it). Everything Ploi-driven
+# is synchronous server-side: a 200 only comes back when Ploi answered.
+
+plak_panel_server_help() {
+    cat <<'HELP'
+Usage:
+  plak panel <cmd> <server> [options] [--json]
+
+  Services (read / servers:write):
+    service-list                          List services and their status
+    service-restart <name> [--yes]        mysql, nginx, supervisor
+    service-reload <name> [--yes]         mariadb, mysql, nginx, postgresql, supervisor
+
+  WP-CLI on the server (servers:write):
+    wpcli-install [--wait S] [--poll S]   Install (idempotent, then poll)
+    wpcli-uninstall [--yes]               Remove
+
+  PHP & OPcache:
+    php-info                              Installed/CLI versions + OPcache
+    php-install --version V [--yes]       Install a version from the catalog
+    php-cli-set --version V               Switch the CLI version
+    opcache-enable|disable|refresh [--yes]
+
+  Firewall (servers:write):
+    firewall-list                         Current rules (remote)
+    firewall-add --name N --port P --type tcp|udp --rule allow|deny [--ip IP] [--yes]
+    firewall-del <rule-id> [--yes]
+
+  System users (servers:write; list is user:read):
+    users-list                            Synced users (no passwords listed)
+    users-add --name N [--sudo]           Create; shows password ONCE
+    users-del <id|ploi_id> [--yes]        Delete (never 'ploi')
+
+  <server> is the panel id or exact server name. --json prints the raw
+  panel response (never secrets).
+HELP
+}
+
+# Resolve server id-or-name to numeric id (prints id).
+plak_panel_srv() {
+    local sel="$1"
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then printf '%s\n' "$sel"; return 0; fi
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/servers?page=1&per_page=100" || return 1
+    local id
+    id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("name", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+    [ -n "$id" ] || { plak_ui_error "No server '$sel' on this account."; return 1; }
+    printf '%s\n' "$id"
+}
+
+plak_panel_srv_args() {
+    SRV_SEL="${1:-}"
+    shift || true
+    [ -n "$SRV_SEL" ] || { plak_ui_error "Missing panel server (id or name)."; return 1; }
+    SRV_ID=$(plak_panel_srv "$SRV_SEL") || return 1
+    SRV_ARGS=("$@")
+}
+
+plak_panel_srv_json_flag() {
+    SRV_JSON=0
+    local rest=()
+    for a in "$@"; do case "$a" in --json) SRV_JSON=1 ;; *) rest+=("$a") ;; esac; done
+    SRV_ARGS=("${rest[@]}")
+}
+
+plak_panel_srv_read() {
+    local path="$1"
+    plak_panel_get "$PLAK_PANEL_URL_OUT$path" || return 1
+    if [ "$SRV_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+if doc.get("warning"):
+    print("Warning: %s" % doc["warning"])
+print(json.dumps(doc.get("data"), indent=2))
+'
+}
+
+plak_panel_srv_mutate() {
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    if [ -n "$prompt" ]; then
+        plak_panel_write_confirm "$prompt" "$yes" || return 1
+    fi
+    plak_panel_write_call "$method" "$path" "$body" || return 1
+    if [ "$SRV_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent=2))
+'
+}
+
+plak_panel_srv_yes() {
+    SRV_YES=0
+    local rest=()
+    for a in "$@"; do case "$a" in --yes|-y) SRV_YES=1 ;; *) rest+=("$a") ;; esac; done
+    SRV_ARGS=("${rest[@]}")
+}
+
+plak_panel_srv_service_op() {
+    local op="$1"; shift
+    plak_panel_srv_yes "$@"
+    local name="${SRV_ARGS[0]:-}"
+    [ -n "$name" ] || { plak_ui_error "Usage: $op <service>"; return 1; }
+    plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/services/$name/$op" "" "$SRV_YES" \
+        "$(printf '%s' "$op" | sed 's/.*/Service &/') '$name' on server $SRV_SEL?"
+}
+
+plak_panel_srv_wpcli_install() {
+    local wait_secs=120 poll_secs=10
+    plak_panel_srv_yes "$@"
+    while [ "${#SRV_ARGS[@]}" -gt 0 ]; do
+        case "${SRV_ARGS[0]}" in
+            --wait) wait_secs="${SRV_ARGS[1]}"; SRV_ARGS=("${SRV_ARGS[@]:2}") ;;
+            --poll) poll_secs="${SRV_ARGS[1]}"; SRV_ARGS=("${SRV_ARGS[@]:2}") ;;
+            *) plak_ui_error "Unknown flag: ${SRV_ARGS[0]}"; return 1 ;;
+        esac
+    done
+    plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/wp-cli/install" || return 1
+    [ "$SRV_JSON" -eq 0 ] && echo "WP-CLI install accepted; polling (up to ${wait_secs}s)..."
+    local elapsed=0 cur=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/servers/$SRV_ID" || return 1
+        cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.wp_cli_installed")
+        case "$cur" in True|true|1|"true")
+            [ "$SRV_JSON" -eq 1 ] && printf '{"wp_cli_installed":true}\n' || plak_ui_success "WP-CLI installed."
+            return 0 ;;
+        esac
+    done
+    [ "$SRV_JSON" -eq 1 ] && printf '{"wp_cli_installed":"unknown"}\n' || echo "Still installing. Check 'plak panel server $SRV_SEL' later."
+    return 3
+}
+
+plak_panel_srv_php() {
+    local sub="$1"; shift
+    case "$sub" in
+        info) plak_panel_srv_read "/api/v1/servers/$SRV_ID/php" ;;
+        install|cli-set)
+            local version=""
+            while [ $# -gt 0 ]; do case "$1" in --version) version="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$version" ] || { plak_ui_error "Missing --version."; return 1; }
+            local path="cli-version"
+            [ "$sub" = "install" ] && path="install"
+            local body
+            body=$(PLAK_V="$version" python3 -c 'import json, os; print(json.dumps({"version": os.environ["PLAK_V"]}))')
+            plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/php/$path" "$body" "$SRV_YES" \
+                "$([ "$sub" = "install" ] && printf 'Install PHP %s on server %s?' "$version" "$SRV_SEL" || true)"
+            ;;
+        *) plak_ui_error "Unknown php op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_srv_opcache() {
+    local op="$1"
+    local method="POST" path="opcache/$op"
+    [ "$op" = "disable" ] && method="DELETE"
+    plak_panel_srv_mutate "$method" "/api/v1/servers/$SRV_ID/php/$path" "" "$SRV_YES" \
+        "$(printf 'OPcache %s on server %s?' "$op" "$SRV_SEL")"
+}
+
+plak_panel_srv_firewall() {
+    local sub="$1"; shift
+    case "$sub" in
+        list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/firewall" ;;
+        add)
+            local name="" port="" type="tcp" rule_type="allow" ip=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --name) name="$2"; shift 2 ;; --port) port="$2"; shift 2 ;;
+                    --type) type="$2"; shift 2 ;; --rule) rule_type="$2"; shift 2 ;;
+                    --ip) ip="$2"; shift 2 ;;
+                    *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+                esac
+            done
+            [ -n "$name" ] && [ -n "$port" ] || { plak_ui_error "Missing --name --port."; return 1; }
+            local body
+            body=$(PLAK_N="$name" PLAK_P="$port" PLAK_T="$type" PLAK_R="$rule_type" PLAK_I="$ip" python3 -c '
+import json, os
+p = {"name": os.environ["PLAK_N"], "port": int(os.environ["PLAK_P"]),
+     "type": os.environ["PLAK_T"], "rule_type": os.environ["PLAK_R"]}
+if os.environ.get("PLAK_I"):
+    p["from_ip_address"] = os.environ["PLAK_I"]
+print(json.dumps(p))') || { plak_ui_error "Invalid port."; return 1; }
+            plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/firewall" "$body" "$SRV_YES" \
+                "$(printf 'Add firewall rule %s (%s/%s %s) on %s?' "$name" "$port" "$type" "$rule_type" "$SRV_SEL")"
+            ;;
+        del)
+            local rid="${SRV_ARGS[0]:-}"
+            [ -n "$rid" ] || { plak_ui_error "Usage: firewall-del <rule-id> [--yes]"; return 1; }
+            plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/firewall/$rid" "" "$SRV_YES" \
+                "Delete firewall rule $rid on $SRV_SEL?"
+            ;;
+        *) plak_ui_error "Unknown firewall op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_srv_users() {
+    local sub="$1"; shift
+    case "$sub" in
+        list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/system-users" ;;
+        add)
+            local name="" sudo=0
+            while [ $# -gt 0 ]; do
+                case "$1" in --name) name="$2"; shift 2 ;; --sudo) sudo=1; shift 1 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac
+            done
+            [ -n "$name" ] || { plak_ui_error "Missing --name."; return 1; }
+            local body
+            body=$(PLAK_N="$name" PLAK_S="$sudo" python3 -c '
+import json, os
+p = {"name": os.environ["PLAK_N"]}
+if os.environ["PLAK_S"] == "1":
+    p["sudo"] = True
+print(json.dumps(p))')
+            plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/system-users" "$body" || return 1
+            if [ "$SRV_JSON" -eq 0 ]; then echo "(the password above is shown only once)"; fi
+            return 0
+            ;;
+        del)
+            local rid="${SRV_ARGS[0]:-}"
+            [ -n "$rid" ] || { plak_ui_error "Usage: users-del <id|ploi_id> [--yes]"; return 1; }
+            plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/system-users/$rid" "" "$SRV_YES" \
+                "Delete system user $rid on $SRV_SEL?"
+            ;;
+        *) plak_ui_error "Unknown users op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_server() {
+    local sub="$1" sel="$2"
+    if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
+        plak_panel_server_help
+        return 0
+    fi
+    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <server-cmd> <server> [...]"; return 1; }
+    shift 2
+    SRV_YES=0
+    plak_panel_srv_args "$sel" "$@" || return 1
+    set -- "${SRV_ARGS[@]}"
+    plak_panel_srv_json_flag "$@"
+    set -- "${SRV_ARGS[@]}"
+    case "$sub" in
+        service-list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/services" ;;
+        service-restart) plak_panel_srv_service_op restart "$@" ;;
+        service-reload) plak_panel_srv_service_op reload "$@" ;;
+        wpcli-install) plak_panel_srv_wpcli_install "$@" ;;
+        wpcli-uninstall) plak_panel_srv_yes "$@"; plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/wp-cli/uninstall" "" "$SRV_YES" "Uninstall WP-CLI on $SRV_SEL?" ;;
+        php-info) plak_panel_srv_php info ;;
+        php-install) plak_panel_srv_yes "$@"; plak_panel_srv_php install "${SRV_ARGS[@]}" ;;
+        php-cli-set) plak_panel_srv_php cli-set "$@" ;;
+        opcache-enable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache enable ;;
+        opcache-disable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache disable ;;
+        opcache-refresh) plak_panel_srv_yes "$@"; plak_panel_srv_opcache refresh ;;
+        firewall-list) plak_panel_srv_firewall list ;;
+        firewall-add) plak_panel_srv_yes "$@"; plak_panel_srv_firewall add "${SRV_ARGS[@]}" ;;
+        firewall-del) plak_panel_srv_yes "$@"; plak_panel_srv_firewall del ;;
+        users-list) plak_panel_srv_users list ;;
+        users-add) plak_panel_srv_users add "$@" ;;
+        users-del) plak_panel_srv_yes "$@"; plak_panel_srv_users del ;;
+        *) plak_ui_error "Unknown server command '$sub'."; return 1 ;;
+    esac
+}
+
+# Source: commands/panel-wp
+# plak panel Fase B — WordPress operations (CLI-41).
+#
+# Reads need user:read; mutations need sites:write (+ package update
+# permission server-side). Partial results (updated/failed, deleted/failed)
+# are always shown, never collapsed into a false success.
+
+plak_panel_wp_help() {
+    cat <<'HELP'
+Usage:
+  plak panel <cmd> <site> [options] [--json]
+
+  Reads (user:read):
+    wp-overview [--refresh]              Version, counts, theme (or reason)
+    wp-themes [--refresh]                Theme list
+    wp-plugins [--refresh]               Plugin list
+
+  Install (sites:write):
+    wp-complete-install --title T --user U --email E --password P
+    wp-mark-installed                    Mark externally-installed WP as done
+    wp-install-wpcli                     Install WP-CLI on the server
+    wp-xmlrpc --block | --allow          Toggle XML-RPC access
+
+  Themes / plugins (sites:write):
+    wp-theme-activate <slug>             wp-plugin-activate <slug>
+    wp-plugin-deactivate <slug>
+    wp-theme-update <slug...>            wp-plugin-update <slug...>
+    wp-theme-install <slug> [--activate] wp-plugin-install <slug> [--activate]
+    wp-theme-delete <slug...> [--yes]    wp-plugin-delete <slug...> [--yes]
+
+  Data (sites:write):
+    wp-search-replace --search S [--replace R] [--dry-run] [--yes]
+    wp-cli -- <command...>               Guarded remote WP-CLI (no prefix needed)
+
+  Settings, async (sites:write):
+    wp-set-php --version V [--wait S] [--poll S]   Polls until applied
+    wp-set-robots --disable | --enable
+
+  <site> is the panel id or exact domain. Destructive ops (deletes,
+  non-dry-run search-replace) confirm or take --yes. --json prints the
+  raw panel response (never secrets).
+HELP
+}
+
+# Resolve panel site id-or-domain to numeric id (prints id).
+plak_panel_wp_site() {
+    local sel="$1"
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then printf '%s\n' "$sel"; return 0; fi
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites?page=1&per_page=100" || return 1
+    local id
+    id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("domain", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+    [ -n "$id" ] || { plak_ui_error "No panel site '$sel' on this account."; return 1; }
+    printf '%s\n' "$id"
+}
+
+# Split "<site> + rest": sets WP_SITE_ID, shifts it away. Returns rest in WP_ARGS.
+plak_panel_wp_args() {
+    WP_SITE_SEL="${1:-}"
+    shift || true
+    [ -n "$WP_SITE_SEL" ] || { plak_ui_error "Missing panel site (id or domain)."; return 1; }
+    WP_SITE_ID=$(plak_panel_wp_site "$WP_SITE_SEL") || return 1
+    WP_ARGS=("$@")
+}
+
+plak_panel_wp_json_flag() {
+    WP_JSON=0
+    local rest=()
+    for a in "$@"; do case "$a" in --json) WP_JSON=1 ;; *) rest+=("$a") ;; esac; done
+    WP_ARGS=("${rest[@]}")
+}
+
+plak_panel_wp_read() {
+    local path="$1" json="$2"
+    plak_panel_get "$PLAK_PANEL_URL_OUT$path" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+data = doc.get("data")
+if data is None:
+    print("Unavailable (%s)." % (doc.get("reason", "unknown")))
+else:
+    print(json.dumps(data, indent=2))
+'
+}
+
+plak_panel_wp_overview() {
+    local refresh=0
+    for a in "$@"; do case "$a" in --refresh) refresh=1 ;; esac; done
+    local q=""; [ "$refresh" -eq 1 ] && q="?refresh=1"
+    plak_panel_wp_read "/api/v1/sites/$WP_SITE_ID/wordpress/overview$q" "$WP_JSON"
+}
+
+plak_panel_wp_list() {
+    local kind="$1"; shift
+    local refresh=0
+    for a in "$@"; do case "$a" in --refresh) refresh=1 ;; esac; done
+    local q=""; [ "$refresh" -eq 1 ] && q="?refresh=1"
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$WP_SITE_ID/wordpress/$kind$q" || return 1
+    if [ "$WP_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+items = doc.get("data") or []
+if doc.get("pending"):
+    print("(list pending — retry with --refresh)")
+for it in items:
+    print("%-28s %-12s %s" % (it.get("name", "?"), it.get("version", "?"), it.get("status", "")))
+if doc.get("reason"):
+    print("Note: %s" % doc["reason"])
+'
+}
+
+plak_panel_wp_mutate() {
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    if [ -n "$prompt" ]; then
+        plak_panel_write_confirm "$prompt" "$yes" || return 1
+    fi
+    plak_panel_write_call "$method" "$path" "$body" || return 1
+    if [ "$WP_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent=2))
+'
+}
+
+plak_panel_wp_complete_install() {
+    local title="" user="" email="" password=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --title) title="$2"; shift 2 ;; --user) user="$2"; shift 2 ;;
+            --email) email="$2"; shift 2 ;; --password) password="$2"; shift 2 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$title" ] && [ -n "$user" ] && [ -n "$email" ] && [ -n "$password" ] || {
+        plak_ui_error "Missing: --title --user --email --password."
+        return 1
+    }
+    local body
+    body=$(PLAK_T="$title" PLAK_U="$user" PLAK_E="$email" PLAK_PW="$password" python3 -c '
+import json, os
+print(json.dumps({"site_title": os.environ["PLAK_T"], "admin_username": os.environ["PLAK_U"],
+                  "admin_email": os.environ["PLAK_E"], "admin_password": os.environ["PLAK_PW"]}))
+')
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/complete-install" "$body"
+}
+
+plak_panel_wp_slugs_op() {
+    local family="$1" op="$2"; shift 2
+    local key plural activate=0 yes=0 slugs=()
+    if [ "$family" = "theme" ]; then plural="themes"; else plural="plugins"; fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --activate) activate=1; shift 1 ;;
+            --yes|-y) yes=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) slugs+=("$1"); shift 1 ;;
+        esac
+    done
+    [ "${#slugs[@]}" -gt 0 ] || { plak_ui_error "Missing slug."; return 1; }
+    local body noun
+    case "$op" in
+        activate|deactivate)
+            [ "${#slugs[@]}" -eq 1 ] || { plak_ui_error "One slug per $op."; return 1; }
+            noun="$family"
+            body=$(PLAK_S="${slugs[0]}" PLAK_F="$family" python3 -c '
+import json, os
+print(json.dumps({os.environ["PLAK_F"]: os.environ["PLAK_S"]}))')
+            ;;
+        install)
+            [ "${#slugs[@]}" -eq 1 ] || { plak_ui_error "One slug per install."; return 1; }
+            noun="$family"
+            body=$(PLAK_S="${slugs[0]}" PLAK_F="$family" PLAK_A="$activate" python3 -c '
+import json, os
+p = {os.environ["PLAK_F"]: os.environ["PLAK_S"]}
+if os.environ["PLAK_A"] == "1":
+    p["activate"] = True
+print(json.dumps(p))')
+            ;;
+        update|delete)
+            noun="$plural"
+            body=$(PLAK_N="$plural" python3 - "${slugs[@]}" <<'PY'
+import json, os, sys
+print(json.dumps({os.environ["PLAK_N"]: sys.argv[1:]}))
+PY
+)
+            ;;
+    esac
+    local prompt="" method="POST"
+    [ "$op" = "delete" ] && prompt="Delete ${plural} ${slugs[*]} on panel site $WP_SITE_SEL? This cannot be undone."
+    [ "$op" = "delete" ] && method="DELETE"
+    plak_panel_wp_mutate "$method" "/api/v1/sites/$WP_SITE_ID/wordpress/$plural/$op" "$body" "$yes" "$prompt"
+}
+
+plak_panel_wp_search_replace() {
+    local search="" replace="" dry=0 yes=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --search) search="$2"; shift 2 ;; --replace) replace="$2"; shift 2 ;;
+            --dry-run) dry=1; shift 1 ;; --yes|-y) yes=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$search" ] || { plak_ui_error "Missing --search."; return 1; }
+    local body
+    body=$(PLAK_S="$search" PLAK_R="$replace" PLAK_D="$dry" python3 -c '
+import json, os
+p = {"search": os.environ["PLAK_S"], "dry_run": os.environ["PLAK_D"] == "1"}
+if os.environ.get("PLAK_R"):
+    p["replace"] = os.environ["PLAK_R"]
+print(json.dumps(p))')
+    local prompt=""
+    [ "$dry" -eq 0 ] && prompt="Run search-replace on panel site $WP_SITE_SEL? This rewrites the database."
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/search-replace" "$body" "$yes" "$prompt"
+}
+
+plak_panel_wp_cli() {
+    local cmd=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --command) cmd="$2"; shift 2 ;;
+            --) shift; cmd="$*"; break ;;
+            -*) break ;;
+            *) cmd="$cmd $1"; shift 1 ;;
+        esac
+    done
+    cmd="$(printf '%s' "$cmd" | sed 's/^ *//')"
+    [ -n "$cmd" ] || { plak_ui_error "Usage: plak panel wp-cli <site> -- <command...>"; return 1; }
+    local body
+    body=$(PLAK_C="$cmd" python3 -c 'import json, os; print(json.dumps({"command": os.environ["PLAK_C"]}))')
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/wp-cli" "$body" || return 1
+    if [ "$WP_JSON" -eq 0 ]; then
+        echo "(destructive wp-cli subcommands are denied server-side; use dedicated endpoints)"
+    fi
+}
+
+plak_panel_wp_set_php() {
+    local version="" wait_secs=300 poll_secs=10
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --wait) wait_secs="$2"; shift 2 ;; --poll) poll_secs="$2"; shift 2 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$version" ] || { plak_ui_error "Missing --version."; return 1; }
+    local body
+    body=$(PLAK_V="$version" python3 -c 'import json, os; print(json.dumps({"version": os.environ["PLAK_V"]}))')
+    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/php-version" "$body" || return 1
+    [ "$WP_JSON" -eq 0 ] && echo "PHP change accepted; polling until applied (up to ${wait_secs}s)..."
+    local elapsed=0 cur=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$WP_SITE_ID" || return 1
+        cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.php_version")
+        [ "$cur" = "$version" ] && {
+            [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || plak_ui_success "PHP version is now $cur."
+            return 0
+        }
+    done
+    [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || echo "Still changing (current: ${cur:-unknown}). Check again later."
+    return 3
+}
+
+plak_panel_wp_set_robots() {
+    local mode=""
+    while [ $# -gt 0 ]; do
+        case "$1" in --disable) mode="disable"; shift 1 ;; --enable) mode="enable"; shift 1 ;; *) plak_ui_error "Use --disable or --enable."; return 1 ;; esac
+    done
+    [ -n "$mode" ] || { plak_ui_error "Use --disable or --enable."; return 1; }
+    local val=0; [ "$mode" = "disable" ] && val=1
+    local body
+    body=$(PLAK_V="$val" python3 -c 'import json, os; print(json.dumps({"disable_robots": bool(int(os.environ["PLAK_V"]))}))')
+    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/robot-access" "$body"
+}
+
+plak_panel_wp_xmlrpc() {
+    local block=""
+    while [ $# -gt 0 ]; do
+        case "$1" in --block) block=1; shift 1 ;; --allow) block=0; shift 1 ;; *) plak_ui_error "Use --block or --allow."; return 1 ;; esac
+    done
+    [ -n "$block" ] || { plak_ui_error "Use --block or --allow."; return 1; }
+    local body
+    body=$(PLAK_V="$block" python3 -c 'import json, os; print(json.dumps({"block": bool(int(os.environ["PLAK_V"]))}))')
+    plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/xml-rpc/toggle" "$body"
+}
+
+plak_panel_wp() {
+    local sub="$1" sel="$2"
+    if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
+        plak_panel_wp_help
+        return 0
+    fi
+    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"; return 1; }
+    shift 2
+    plak_panel_wp_args "$sel" "$@" || return 1
+    set -- "${WP_ARGS[@]}"
+    plak_panel_wp_json_flag "$@" || return 1
+    set -- "${WP_ARGS[@]}"
+    case "$sub" in
+        wp-overview) plak_panel_wp_overview "$@" ;;
+        wp-themes) plak_panel_wp_list themes "$@" ;;
+        wp-plugins) plak_panel_wp_list plugins "$@" ;;
+        wp-complete-install) plak_panel_wp_complete_install "$@" ;;
+        wp-mark-installed) plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/wordpress/mark-installed" ;;
+        wp-install-wpcli) plak_panel_wp_mutate POST "/api/v1/sites/$WP_SITE_ID/wordpress/install-wp-cli" ;;
+        wp-xmlrpc) plak_panel_wp_xmlrpc "$@" ;;
+        wp-theme-activate) plak_panel_wp_slugs_op theme activate "$@" ;;
+        wp-theme-update) plak_panel_wp_slugs_op theme update "$@" ;;
+        wp-theme-install) plak_panel_wp_slugs_op theme install "$@" ;;
+        wp-theme-delete) plak_panel_wp_slugs_op theme delete "$@" ;;
+        wp-plugin-activate) plak_panel_wp_slugs_op plugin activate "$@" ;;
+        wp-plugin-deactivate) plak_panel_wp_slugs_op plugin deactivate "$@" ;;
+        wp-plugin-update) plak_panel_wp_slugs_op plugin update "$@" ;;
+        wp-plugin-install) plak_panel_wp_slugs_op plugin install "$@" ;;
+        wp-plugin-delete) plak_panel_wp_slugs_op plugin delete "$@" ;;
+        wp-search-replace) plak_panel_wp_search_replace "$@" ;;
+        wp-cli) plak_panel_wp_cli "$@" ;;
+        wp-set-php) plak_panel_wp_set_php "$@" ;;
+        wp-set-robots) plak_panel_wp_set_robots "$@" ;;
+        *) plak_ui_error "Unknown wp command '$sub'."; return 1 ;;
+    esac
+}
+
+# Source: commands/panel-write
+# plak panel Fase A — providers, servers/sites create/delete/restart (CLI-40).
+#
+# Writes require opt-in scopes (servers:write / sites:write, see PLA-186):
+# a 403 always explains how to grant them instead of failing cryptically.
+# Async provisioning (202 busy) is polled until active/failed/timeout and a
+# remote failure is never reported as success.
+
+plak_panel_write_help() {
+    cat <<'HELP'
+Usage:
+  plak panel providers [--json]
+  plak panel create-server --name N --provider ID --region ID --plan ID
+                         [--database T] [--php V] [--os O] [--wait SECS] [--poll SECS] [--json]
+  plak panel delete-server <id|name> [--yes] [--json]
+  plak panel restart-server <id|name> [--yes] [--json]
+  plak panel create-site --domain D --server <id|name> [--wait SECS] [--poll SECS] [--json]
+  plak panel delete-site <id|domain> [--yes] [--json]
+
+Create and operate your own panel servers and sites (write API).
+
+  providers      Show your package providers with regions and plans.
+  --wait SECS    Max seconds to wait for provisioning (default 600).
+  --poll SECS    Poll interval (default 15).
+  --yes          Skip destructive confirmations (delete/restart).
+  --json         Machine-readable output (never includes secrets).
+
+Write scopes (servers:write, sites:write) are opt-in: pick them in the
+panel (Perfil > API Keys) or create a key with them. Pairing-approved
+keys carry read + SSH only.
+HELP
+}
+
+# POST/DELETE with the write error envelope mapped to guidance.
+# Sets PLAK_PANEL_JSON on 2xx. Args: METHOD PATH [BODY]
+plak_panel_write_call() {
+    local method="$1" path="$2" body="${3:-}"
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    if ! plak_connect_http "$method" "$PLAK_PANEL_URL_OUT$path" "$body" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable. Check the network and 'plak connect status'."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200|201|202)
+            PLAK_PANEL_JSON="$PLAK_HTTP_BODY"
+            return 0
+            ;;
+        401)
+            plak_ui_error "Token invalid, revoked or expired. Run 'plak connect' to reconnect."
+            return 1
+            ;;
+        403)
+            case "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" in
+                personal_token.forbidden)
+                    plak_ui_error "Token lacks the write scope. Grant it in the panel (Perfil > API Keys, tick servers:write/sites:write) or create a key with them."
+                    ;;
+                account.blocked)
+                    plak_ui_error "Account blocked. Contact support."
+                    ;;
+                *)
+                    plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+                    ;;
+            esac
+            return 1
+            ;;
+        404)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            return 1
+            ;;
+        409|422)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            return 1
+            ;;
+        429)
+            plak_ui_error "Rate limited${PLAK_HTTP_RETRY_AFTER:+ (retry after ${PLAK_HTTP_RETRY_AFTER}s)}."
+            return 1
+            ;;
+        503)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message") Nothing was persisted."
+            return 1
+            ;;
+        *)
+            plak_ui_error "Panel request failed (HTTP $PLAK_HTTP_STATUS)."
+            return 1
+            ;;
+    esac
+}
+
+plak_panel_write_confirm() {
+    local prompt="$1" yes="$2"
+    if [ "$yes" -eq 1 ]; then return 0; fi
+    if [ -t 0 ] && plak_command_exists gum; then
+        gum confirm "$prompt" || { echo "Cancelled."; return 1; }
+    elif [ -t 0 ]; then
+        printf '%s [y/N] ' "$prompt"
+        read -r ans || ans=""
+        case "$ans" in y|Y|yes|YES) : ;; *) echo "Cancelled."; return 1 ;; esac
+    else
+        plak_ui_error "Use --yes in non-interactive mode."
+        return 1
+    fi
+}
+
+# Resolve a server id-or-name to its numeric id (prints id).
+plak_panel_resolve_server() {
+    local sel="$1"
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then printf '%s\n' "$sel"; return 0; fi
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/servers?page=1&per_page=100" || return 1
+    local id
+    id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("name", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+    [ -n "$id" ] || { plak_ui_error "No server named '$sel' on this account."; return 1; }
+    printf '%s\n' "$id"
+}
+
+# Poll a just-created resource until active. Args: kind id wait poll.
+# Sets PLAK_PANEL_JSON to the final item envelope.
+plak_panel_poll_active() {
+    local kind="$1" id="$2" wait_secs="${3:-600}" poll_secs="${4:-15}" json="${5:-0}"
+    local elapsed=0 status=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/$kind/$id" || return 1
+        status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+        [ "$status" = "active" ] && return 0
+        if [ "$status" = "failed" ]; then
+            [ "$json" -eq 0 ] && plak_ui_error "Provisioning failed on the panel (status: failed). Check the panel for details."
+            return 1
+        fi
+        if [ "$json" -eq 0 ] && [ -t 1 ]; then
+            printf '\rProvisioning... %ss / %ss (status: %s)' "$elapsed" "$wait_secs" "${status:-busy}"
+        fi
+    done
+    [ "$json" -eq 0 ] && [ -t 1 ] && echo ""
+    if [ "$json" -eq 0 ]; then
+        echo "Still provisioning after ${wait_secs}s (id $id). Check 'plak panel $kind $id' later."
+    fi
+    return 3
+}
+
+plak_panel_providers() {
+    local json=0
+    for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/providers" || return 1
+    if [ "$json" -eq 1 ]; then
+        printf '%s\n' "$PLAK_PANEL_JSON"
+        return 0
+    fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+provs = json.loads(os.environ["PLAK_JSON_DOC"]).get("data", [])
+if not provs:
+    print("No providers available for your package.")
+for p in provs:
+    print("provider %s: %s" % (p.get("id"), p.get("name")))
+    for r in p.get("regions", []):
+        print("  region %s: %s" % (r.get("id"), r.get("label")))
+    for pl in p.get("plans", []):
+        print("  plan   %s: %s" % (pl.get("id"), pl.get("label")))
+' 2>/dev/null || plak_ui_error "Invalid providers response."
+}
+
+plak_panel_create_server() {
+    local name="" provider="" region="" plan="" database="mysql" php="8.4" os="" wait_secs=600 poll_secs=15 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            --provider) provider="$2"; shift 2 ;;
+            --region) region="$2"; shift 2 ;;
+            --plan) plan="$2"; shift 2 ;;
+            --database) database="$2"; shift 2 ;;
+            --php) php="$2"; shift 2 ;;
+            --os) os="$2"; shift 2 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    if [ -z "$name" ] || [ -z "$provider" ] || [ -z "$region" ] || [ -z "$plan" ]; then
+        plak_ui_error "Missing required flags: --name --provider --region --plan (see 'plak panel providers')."
+        return 1
+    fi
+    local body id status
+    body=$(PLAK_N="$name" PLAK_P="$provider" PLAK_R="$region" PLAK_PL="$plan" PLAK_D="$database" PLAK_PHP="$php" PLAK_OS="$os" python3 -c '
+import json, os
+payload = {"name": os.environ["PLAK_N"], "provider_id": int(os.environ["PLAK_P"]),
+           "provider_region_id": int(os.environ["PLAK_R"]), "provider_plan_id": int(os.environ["PLAK_PL"]),
+           "database_type": os.environ.get("PLAK_D") or "mysql",
+           "php_version": os.environ.get("PLAK_PHP") or "8.4"}
+if os.environ.get("PLAK_OS"):
+    payload["os_type"] = os.environ["PLAK_OS"]
+print(json.dumps(payload))
+') || { plak_ui_error "Invalid numeric provider/region/plan."; return 1; }
+    plak_panel_write_call POST "/api/v1/servers" "$body" || return 1
+    id=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.id")
+    status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+    [ -n "$id" ] || { plak_ui_error "Invalid creation response."; return 1; }
+    if [ "$status" = "active" ]; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s}\n' "$id" || plak_ui_success "Server created (id $id)."
+        return 0
+    fi
+    [ "$json" -eq 0 ] && echo "Server $id provisioning (status: ${status:-busy}). Waiting up to ${wait_secs}s..."
+    if plak_panel_poll_active servers "$id" "$wait_secs" "$poll_secs" "$json"; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"status":"active"}\n' "$id" || plak_ui_success "Server $id is active."
+        return 0
+    else
+        local rc=$?
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"status":"unknown"}\n' "$id"
+        return "$rc"
+    fi
+}
+
+plak_panel_delete_server() {
+    local sel="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in --yes|-y) yes=1; shift 1 ;; --json) json=1; shift 1 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) sel="$1"; shift 1 ;; esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Usage: plak panel delete-server <id|name> [--yes]"; return 1; }
+    local id
+    id=$(plak_panel_resolve_server "$sel") || return 1
+    plak_panel_write_confirm "Delete panel server '$sel' (id $id) with ALL its sites? This cannot be undone." "$yes" || return 1
+    plak_panel_write_call DELETE "/api/v1/servers/$id" || return 1
+    [ "$json" -eq 1 ] && printf '{"deleted":true,"id":%s}\n' "$id" || plak_ui_success "Server $id deleted (remote removal best-effort, see panel)."
+}
+
+plak_panel_restart_server() {
+    local sel="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in --yes|-y) yes=1; shift 1 ;; --json) json=1; shift 1 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) sel="$1"; shift 1 ;; esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Usage: plak panel restart-server <id|name> [--yes]"; return 1; }
+    local id
+    id=$(plak_panel_resolve_server "$sel") || return 1
+    plak_panel_write_confirm "Restart panel server '$sel' (id $id)? Sites will be briefly unreachable." "$yes" || return 1
+    plak_panel_write_call POST "/api/v1/servers/$id/restart" || return 1
+    [ "$json" -eq 1 ] && printf '{"restarted":true,"id":%s}\n' "$id" || plak_ui_success "Server $id is restarting."
+}
+
+plak_panel_create_site() {
+    local domain="" server_sel="" wait_secs=600 poll_secs=15 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --domain) domain="$2"; shift 2 ;;
+            --server) server_sel="$2"; shift 2 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$domain" ] && [ -n "$server_sel" ] || { plak_ui_error "Missing required flags: --domain --server <id|name>."; return 1; }
+    local server_id
+    server_id=$(plak_panel_resolve_server "$server_sel") || return 1
+    local body id status
+    body=$(PLAK_D="$domain" PLAK_S="$server_id" python3 -c '
+import json, os
+print(json.dumps({"domain": os.environ["PLAK_D"], "server_id": int(os.environ["PLAK_S"])}))
+') || return 1
+    plak_panel_write_call POST "/api/v1/sites" "$body" || return 1
+    id=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.id")
+    status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+    [ -n "$id" ] || { plak_ui_error "Invalid creation response."; return 1; }
+    if [ "$status" = "active" ]; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"domain":%s}\n' "$id" "$(plak_json_string "$domain")" || plak_ui_success "Site $domain created (id $id)."
+        return 0
+    fi
+    [ "$json" -eq 0 ] && echo "Site $domain provisioning (status: ${status:-busy}). Waiting up to ${wait_secs}s..."
+    if plak_panel_poll_active sites "$id" "$wait_secs" "$poll_secs" "$json"; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"domain":%s,"status":"active"}\n' "$id" "$(plak_json_string "$domain")" || plak_ui_success "Site $domain is active."
+        return 0
+    else
+        local rc=$?
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"domain":%s,"status":"unknown"}\n' "$id" "$(plak_json_string "$domain")"
+        return "$rc"
+    fi
+}
+
+plak_panel_delete_site() {
+    local sel="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in --yes|-y) yes=1; shift 1 ;; --json) json=1; shift 1 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) sel="$1"; shift 1 ;; esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Usage: plak panel delete-site <id|domain> [--yes]"; return 1; }
+    local id="$sel"
+    if [[ ! "$sel" =~ ^[0-9]+$ ]]; then
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites?page=1&per_page=100" || return 1
+        id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("domain", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+        [ -n "$id" ] || { plak_ui_error "No site '$sel' on this account."; return 1; }
+    fi
+    plak_panel_write_confirm "Delete panel site '$sel' (id $id)? This cannot be undone." "$yes" || return 1
+    plak_panel_write_call DELETE "/api/v1/sites/$id" || return 1
+    [ "$json" -eq 1 ] && printf '{"deleted":true,"id":%s}\n' "$id" || plak_ui_success "Site $id deleted."
 }
 
 # Source: commands/remote
@@ -13305,6 +16062,7 @@ plak_site_pull() {
             remote_ssh="${binding%|*}"
             remote_path="${binding#*|}"
             log_success "Using remote '$remote_ssh' (path: $remote_path)"
+            plak_panel_revalidate_link "$site_name" || exit 1
         elif [ "$binding_rc" -eq 2 ] || [ "$binding_rc" -eq 3 ]; then
             case "$binding_rc" in
                 2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
@@ -13360,6 +16118,7 @@ plak_site_pull() {
                         remote_ssh="${binding%|*}"
                         remote_path="${binding#*|}"
                         log_success "Using remote '$remote_ssh' (path: $remote_path)"
+                        plak_panel_revalidate_link "$site_name" || exit 1
                         ;;
                     2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;
                     3) log_error "Remote attached to '$site_name' has no remote_path set. Run 'plak remote edit <name>' to set one." ;;
@@ -13697,6 +16456,7 @@ plak_site_push() {
         remote_ssh="${binding%|*}"
         remote_path="${binding#*|}"
         log_success "Using remote '$remote_ssh' (path: $remote_path)"
+        plak_panel_revalidate_link "$site_name" || exit 1
     else
         case "$binding_rc" in
             2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;

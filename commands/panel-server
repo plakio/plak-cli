@@ -1,0 +1,271 @@
+# plak panel Fase C — server operations (CLI-42).
+#
+# Services, WP-CLI, PHP, OPcache, firewall and system users on your own
+# servers. Reads need user:read; mutations need servers:write (+ package
+# update permission where the panel requires it). Everything Ploi-driven
+# is synchronous server-side: a 200 only comes back when Ploi answered.
+
+plak_panel_server_help() {
+    cat <<'HELP'
+Usage:
+  plak panel <cmd> <server> [options] [--json]
+
+  Services (read / servers:write):
+    service-list                          List services and their status
+    service-restart <name> [--yes]        mysql, nginx, supervisor
+    service-reload <name> [--yes]         mariadb, mysql, nginx, postgresql, supervisor
+
+  WP-CLI on the server (servers:write):
+    wpcli-install [--wait S] [--poll S]   Install (idempotent, then poll)
+    wpcli-uninstall [--yes]               Remove
+
+  PHP & OPcache:
+    php-info                              Installed/CLI versions + OPcache
+    php-install --version V [--yes]       Install a version from the catalog
+    php-cli-set --version V               Switch the CLI version
+    opcache-enable|disable|refresh [--yes]
+
+  Firewall (servers:write):
+    firewall-list                         Current rules (remote)
+    firewall-add --name N --port P --type tcp|udp --rule allow|deny [--ip IP] [--yes]
+    firewall-del <rule-id> [--yes]
+
+  System users (servers:write; list is user:read):
+    users-list                            Synced users (no passwords listed)
+    users-add --name N [--sudo]           Create; shows password ONCE
+    users-del <id|ploi_id> [--yes]        Delete (never 'ploi')
+
+  <server> is the panel id or exact server name. --json prints the raw
+  panel response (never secrets).
+HELP
+}
+
+# Resolve server id-or-name to numeric id (prints id).
+plak_panel_srv() {
+    local sel="$1"
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then printf '%s\n' "$sel"; return 0; fi
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/servers?page=1&per_page=100" || return 1
+    local id
+    id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("name", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+    [ -n "$id" ] || { plak_ui_error "No server '$sel' on this account."; return 1; }
+    printf '%s\n' "$id"
+}
+
+plak_panel_srv_args() {
+    SRV_SEL="${1:-}"
+    shift || true
+    [ -n "$SRV_SEL" ] || { plak_ui_error "Missing panel server (id or name)."; return 1; }
+    SRV_ID=$(plak_panel_srv "$SRV_SEL") || return 1
+    SRV_ARGS=("$@")
+}
+
+plak_panel_srv_json_flag() {
+    SRV_JSON=0
+    local rest=()
+    for a in "$@"; do case "$a" in --json) SRV_JSON=1 ;; *) rest+=("$a") ;; esac; done
+    SRV_ARGS=("${rest[@]}")
+}
+
+plak_panel_srv_read() {
+    local path="$1"
+    plak_panel_get "$PLAK_PANEL_URL_OUT$path" || return 1
+    if [ "$SRV_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+if doc.get("warning"):
+    print("Warning: %s" % doc["warning"])
+print(json.dumps(doc.get("data"), indent=2))
+'
+}
+
+plak_panel_srv_mutate() {
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    if [ -n "$prompt" ]; then
+        plak_panel_write_confirm "$prompt" "$yes" || return 1
+    fi
+    plak_panel_write_call "$method" "$path" "$body" || return 1
+    if [ "$SRV_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent=2))
+'
+}
+
+plak_panel_srv_yes() {
+    SRV_YES=0
+    local rest=()
+    for a in "$@"; do case "$a" in --yes|-y) SRV_YES=1 ;; *) rest+=("$a") ;; esac; done
+    SRV_ARGS=("${rest[@]}")
+}
+
+plak_panel_srv_service_op() {
+    local op="$1"; shift
+    plak_panel_srv_yes "$@"
+    local name="${SRV_ARGS[0]:-}"
+    [ -n "$name" ] || { plak_ui_error "Usage: $op <service>"; return 1; }
+    plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/services/$name/$op" "" "$SRV_YES" \
+        "$(printf '%s' "$op" | sed 's/.*/Service &/') '$name' on server $SRV_SEL?"
+}
+
+plak_panel_srv_wpcli_install() {
+    local wait_secs=120 poll_secs=10
+    plak_panel_srv_yes "$@"
+    while [ "${#SRV_ARGS[@]}" -gt 0 ]; do
+        case "${SRV_ARGS[0]}" in
+            --wait) wait_secs="${SRV_ARGS[1]}"; SRV_ARGS=("${SRV_ARGS[@]:2}") ;;
+            --poll) poll_secs="${SRV_ARGS[1]}"; SRV_ARGS=("${SRV_ARGS[@]:2}") ;;
+            *) plak_ui_error "Unknown flag: ${SRV_ARGS[0]}"; return 1 ;;
+        esac
+    done
+    plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/wp-cli/install" || return 1
+    [ "$SRV_JSON" -eq 0 ] && echo "WP-CLI install accepted; polling (up to ${wait_secs}s)..."
+    local elapsed=0 cur=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/servers/$SRV_ID" || return 1
+        cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.wp_cli_installed")
+        case "$cur" in True|true|1|"true")
+            [ "$SRV_JSON" -eq 1 ] && printf '{"wp_cli_installed":true}\n' || plak_ui_success "WP-CLI installed."
+            return 0 ;;
+        esac
+    done
+    [ "$SRV_JSON" -eq 1 ] && printf '{"wp_cli_installed":"unknown"}\n' || echo "Still installing. Check 'plak panel server $SRV_SEL' later."
+    return 3
+}
+
+plak_panel_srv_php() {
+    local sub="$1"; shift
+    case "$sub" in
+        info) plak_panel_srv_read "/api/v1/servers/$SRV_ID/php" ;;
+        install|cli-set)
+            local version=""
+            while [ $# -gt 0 ]; do case "$1" in --version) version="$2"; shift 2 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac; done
+            [ -n "$version" ] || { plak_ui_error "Missing --version."; return 1; }
+            local path="cli-version"
+            [ "$sub" = "install" ] && path="install"
+            local body
+            body=$(PLAK_V="$version" python3 -c 'import json, os; print(json.dumps({"version": os.environ["PLAK_V"]}))')
+            plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/php/$path" "$body" "$SRV_YES" \
+                "$([ "$sub" = "install" ] && printf 'Install PHP %s on server %s?' "$version" "$SRV_SEL" || true)"
+            ;;
+        *) plak_ui_error "Unknown php op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_srv_opcache() {
+    local op="$1"
+    local method="POST" path="opcache/$op"
+    [ "$op" = "disable" ] && method="DELETE"
+    plak_panel_srv_mutate "$method" "/api/v1/servers/$SRV_ID/php/$path" "" "$SRV_YES" \
+        "$(printf 'OPcache %s on server %s?' "$op" "$SRV_SEL")"
+}
+
+plak_panel_srv_firewall() {
+    local sub="$1"; shift
+    case "$sub" in
+        list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/firewall" ;;
+        add)
+            local name="" port="" type="tcp" rule_type="allow" ip=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --name) name="$2"; shift 2 ;; --port) port="$2"; shift 2 ;;
+                    --type) type="$2"; shift 2 ;; --rule) rule_type="$2"; shift 2 ;;
+                    --ip) ip="$2"; shift 2 ;;
+                    *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+                esac
+            done
+            [ -n "$name" ] && [ -n "$port" ] || { plak_ui_error "Missing --name --port."; return 1; }
+            local body
+            body=$(PLAK_N="$name" PLAK_P="$port" PLAK_T="$type" PLAK_R="$rule_type" PLAK_I="$ip" python3 -c '
+import json, os
+p = {"name": os.environ["PLAK_N"], "port": int(os.environ["PLAK_P"]),
+     "type": os.environ["PLAK_T"], "rule_type": os.environ["PLAK_R"]}
+if os.environ.get("PLAK_I"):
+    p["from_ip_address"] = os.environ["PLAK_I"]
+print(json.dumps(p))') || { plak_ui_error "Invalid port."; return 1; }
+            plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/firewall" "$body" "$SRV_YES" \
+                "$(printf 'Add firewall rule %s (%s/%s %s) on %s?' "$name" "$port" "$type" "$rule_type" "$SRV_SEL")"
+            ;;
+        del)
+            local rid="${SRV_ARGS[0]:-}"
+            [ -n "$rid" ] || { plak_ui_error "Usage: firewall-del <rule-id> [--yes]"; return 1; }
+            plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/firewall/$rid" "" "$SRV_YES" \
+                "Delete firewall rule $rid on $SRV_SEL?"
+            ;;
+        *) plak_ui_error "Unknown firewall op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_srv_users() {
+    local sub="$1"; shift
+    case "$sub" in
+        list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/system-users" ;;
+        add)
+            local name="" sudo=0
+            while [ $# -gt 0 ]; do
+                case "$1" in --name) name="$2"; shift 2 ;; --sudo) sudo=1; shift 1 ;; *) plak_ui_error "Unknown flag: $1"; return 1 ;; esac
+            done
+            [ -n "$name" ] || { plak_ui_error "Missing --name."; return 1; }
+            local body
+            body=$(PLAK_N="$name" PLAK_S="$sudo" python3 -c '
+import json, os
+p = {"name": os.environ["PLAK_N"]}
+if os.environ["PLAK_S"] == "1":
+    p["sudo"] = True
+print(json.dumps(p))')
+            plak_panel_srv_mutate POST "/api/v1/servers/$SRV_ID/system-users" "$body" || return 1
+            if [ "$SRV_JSON" -eq 0 ]; then echo "(the password above is shown only once)"; fi
+            return 0
+            ;;
+        del)
+            local rid="${SRV_ARGS[0]:-}"
+            [ -n "$rid" ] || { plak_ui_error "Usage: users-del <id|ploi_id> [--yes]"; return 1; }
+            plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/system-users/$rid" "" "$SRV_YES" \
+                "Delete system user $rid on $SRV_SEL?"
+            ;;
+        *) plak_ui_error "Unknown users op '$sub'."; return 1 ;;
+    esac
+}
+
+plak_panel_server() {
+    local sub="$1" sel="$2"
+    if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
+        plak_panel_server_help
+        return 0
+    fi
+    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <server-cmd> <server> [...]"; return 1; }
+    shift 2
+    SRV_YES=0
+    plak_panel_srv_args "$sel" "$@" || return 1
+    set -- "${SRV_ARGS[@]}"
+    plak_panel_srv_json_flag "$@"
+    set -- "${SRV_ARGS[@]}"
+    case "$sub" in
+        service-list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/services" ;;
+        service-restart) plak_panel_srv_service_op restart "$@" ;;
+        service-reload) plak_panel_srv_service_op reload "$@" ;;
+        wpcli-install) plak_panel_srv_wpcli_install "$@" ;;
+        wpcli-uninstall) plak_panel_srv_yes "$@"; plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/wp-cli/uninstall" "" "$SRV_YES" "Uninstall WP-CLI on $SRV_SEL?" ;;
+        php-info) plak_panel_srv_php info ;;
+        php-install) plak_panel_srv_yes "$@"; plak_panel_srv_php install "${SRV_ARGS[@]}" ;;
+        php-cli-set) plak_panel_srv_php cli-set "$@" ;;
+        opcache-enable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache enable ;;
+        opcache-disable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache disable ;;
+        opcache-refresh) plak_panel_srv_yes "$@"; plak_panel_srv_opcache refresh ;;
+        firewall-list) plak_panel_srv_firewall list ;;
+        firewall-add) plak_panel_srv_yes "$@"; plak_panel_srv_firewall add "${SRV_ARGS[@]}" ;;
+        firewall-del) plak_panel_srv_yes "$@"; plak_panel_srv_firewall del ;;
+        users-list) plak_panel_srv_users list ;;
+        users-add) plak_panel_srv_users add "$@" ;;
+        users-del) plak_panel_srv_yes "$@"; plak_panel_srv_users del ;;
+        *) plak_ui_error "Unknown server command '$sub'."; return 1 ;;
+    esac
+}

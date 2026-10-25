@@ -1,0 +1,356 @@
+# plak panel — own panel resources (CLI-25).
+#
+# Reads (never writes) the connected account's sites and servers from the
+# panel personal API. Local sites (`plak list`) and panel resources are
+# never mixed: everything here is explicitly labeled as panel data and
+# resolved through the saved connection (panel URL + token + identity).
+
+plak_panel_help() {
+    cat <<'HELP'
+Usage:
+  plak panel sites [--page N] [--per-page N] [--all] [--json] [--panel URL] [--dev]
+  plak panel site <id|domain> [--json] [--panel URL] [--dev]
+  plak panel servers [--page N] [--per-page N] [--all] [--json] [--panel URL] [--dev]
+  plak panel server <id|name> [--json] [--panel URL] [--dev]
+  plak panel providers [--json]
+  plak panel create-server --name N --provider ID --region ID --plan ID [--json]
+  plak panel delete-server <id|name> [--yes] [--json]
+  plak panel restart-server <id|name> [--yes] [--json]
+  plak panel create-site --domain D --server <id|name> [--json]
+  plak panel delete-site <id|domain> [--yes] [--json]
+  WordPress reads/writes (sites:write for mutations):
+  plak panel wp-overview|wp-themes|wp-plugins <site> [--refresh] [--json]
+  plak panel wp-theme-activate|wp-theme-update|wp-theme-install|wp-theme-delete <site> <slug...> [--json]
+  plak panel wp-plugin-activate|wp-plugin-deactivate|wp-plugin-update|wp-plugin-install|wp-plugin-delete <site> <slug...> [--json]
+  plak panel wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc <site> [...] [--json]
+  plak panel wp-search-replace|wp-cli|wp-set-php|wp-set-robots <site> [...] [--json]
+  Server operations:
+  plak panel service-list|service-restart|service-reload|wpcli-install|wpcli-uninstall <server> [...]
+  plak panel php-info|php-install|php-cli-set|opcache-enable|opcache-disable|opcache-refresh <server> [...]
+  plak panel firewall-list|firewall-add|firewall-del|users-list|users-add|users-del <server> [...]
+  Site infra (databases, cronjobs, certificates, redirects, aliases, DNS, HTTP auth, cache, apps):
+  plak panel db-list|db-add|db-del|cron-list|cron-add|cron-del|cert-list|cert-add|cert-del <site> [...]
+  plak panel redirect-list|redirect-add|redirect-del|alias-list|alias-add|alias-del|dns-list|dns-add|dns-update|dns-del <site> [...]
+  plak panel authuser-list|authuser-add|authuser-del|cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh <site> [...]
+  plak panel app-info|app-install|app-uninstall <site> [...]
+  Details per area: plak panel <any-cmd> help   (e.g. plak panel db-add help)
+  plak panel link <panel-site> <local-site> [--system-user USER] [--path PATH]
+
+List and inspect your own panel sites and servers (read-only).
+
+  --page N / --per-page N   Pagination (per-page 1-100, default 25).
+  --all                     Walk every page (for inventories and selection).
+  --json                    Machine-readable output.
+  --panel URL / --dev       Use a different panel origin. The saved token is
+                            never sent to another origin: switching panels
+                            requires 'plak connect --panel <url>' first.
+
+Selection accepts a numeric id (direct lookup) or the exact domain/name.
+HELP
+}
+
+# Guard: connected account, and never send the saved token elsewhere.
+# Sets PLAK_PANEL_URL_OUT. Fails when --panel/--dev points elsewhere.
+plak_panel_require_connection() {
+    local panel_override=""
+    for a in "$@"; do
+        case "$a" in
+            --panel) panel_override="1" ;;
+            --dev) panel_override="1" ;;
+        esac
+    done
+    if ! plak_connect_load >/dev/null 2>&1; then
+        plak_ui_error "Not connected. Run: plak connect"
+        return 1
+    fi
+    if [ -n "$panel_override" ]; then
+        plak_ui_error "Refusing to use this credential on another origin. Run 'plak connect --panel <url>' first."
+        return 1
+    fi
+    PLAK_PANEL_URL_OUT="$PLAK_SAVED_PANEL"
+}
+
+# GET one personal API page. Sets PLAK_PANEL_JSON. Maps auth/network errors.
+plak_panel_get() {
+    local url="$1"
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    if ! plak_connect_http GET "$url" "" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable. Check the network and 'plak connect status'."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200)
+            PLAK_PANEL_JSON="$PLAK_HTTP_BODY"
+            return 0
+            ;;
+        401)
+            plak_ui_error "Token invalid, revoked or expired. Run 'plak connect' to reconnect."
+            return 1
+            ;;
+        403)
+            if [ "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" = "account.blocked" ]; then
+                plak_ui_error "Account blocked. Contact support."
+            else
+                plak_ui_error "Forbidden for this token. Check 'plak connect status'."
+            fi
+            return 1
+            ;;
+        404)
+            plak_ui_error "Not found on this account."
+            return 1
+            ;;
+        422)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            return 1
+            ;;
+        429)
+            plak_ui_error "Rate limited${PLAK_HTTP_RETRY_AFTER:+ (retry after ${PLAK_HTTP_RETRY_AFTER}s)}."
+            return 1
+            ;;
+        *)
+            plak_ui_error "Panel request failed (HTTP $PLAK_HTTP_STATUS)."
+            return 1
+            ;;
+    esac
+}
+
+plak_panel_render_table() {
+    local kind="$1" json="$2"
+    PLAK_TABLE_KIND="$kind" PLAK_TABLE_DOC="$json" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_TABLE_DOC"])
+items = doc.get("data", doc) if isinstance(doc, dict) else doc
+kind = os.environ["PLAK_TABLE_KIND"]
+if not items:
+    print("(none)")
+    raise SystemExit(0)
+if kind == "sites":
+    print("%-6s %-32s %-10s %s" % ("ID", "DOMAIN", "STATUS", "SERVER"))
+    for s in items:
+        srv = (s.get("server") or {}).get("name", "-") if isinstance(s.get("server"), dict) else "-"
+        print("%-6s %-32s %-10s %s" % (s.get("id", "?"), (s.get("domain") or "")[:32], s.get("status", "?"), srv))
+else:
+    print("%-6s %-24s %-10s %-15s %s" % ("ID", "NAME", "STATUS", "IP", "SITES"))
+    for v in items:
+        sites = ",".join(str(x.get("domain", x.get("id"))) for x in (v.get("sites") or []))
+        print("%-6s %-24s %-10s %-15s %s" % (v.get("id", "?"), (v.get("name") or "")[:24], v.get("status", "?"), v.get("ip") or "-", sites[:40]))
+' 2>/dev/null
+}
+
+# List with optional --all walk. Args: kind page per_page all json
+plak_panel_list() {
+    local kind="$1" page=1 per_page=25 all=0 json=0
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --page) page="$2"; shift 2 ;;
+            --per-page) per_page="$2"; shift 2 ;;
+            --all) all=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --panel) shift 2 ;; # validated by require_connection
+            --dev) shift 1 ;;   # validated by require_connection
+            *) shift 1 ;;
+        esac
+    done
+    case "$page" in ''|*[!0-9]*|0) plak_ui_error "Invalid --page."; return 1 ;; esac
+    case "$per_page" in ''|*[!0-9]*|0) plak_ui_error "Invalid --per-page."; return 1 ;; esac
+    [ "$per_page" -gt 100 ] && per_page=100
+
+    local url="$PLAK_PANEL_URL_OUT/api/v1/$kind?page=$page&per_page=$per_page"
+    plak_panel_get "$url" || return 1
+    local first="$PLAK_PANEL_JSON"
+
+    if [ "$all" -eq 0 ]; then
+        if [ "$json" -eq 1 ]; then
+            printf '%s\n' "$first"
+        else
+            plak_panel_render_table "$kind" "$first"
+            local total last
+            total=$(plak_connect_json_get "$first" "total")
+            last=$(plak_connect_json_get "$first" "last_page")
+            if [ -n "$total" ] && [ "${total:-0}" -gt "$per_page" ] 2>/dev/null; then
+                echo "(showing page $page of $last, $total total — use --all for the full inventory)"
+            fi
+            [ "$total" = "0" ] || [ -z "$total" ] || true
+            if [ "$total" = "0" ]; then
+                [ "$kind" = "sites" ] && echo "No sites yet on this panel account." || echo "No servers yet on this panel account."
+            fi
+        fi
+        return 0
+    fi
+
+    local walk_file
+    walk_file=$(mktemp) || return 1
+    PLAK_WALK_FIRST="$first" PLAK_WALK_KIND="$kind" PLAK_WALK_BASE="$PLAK_PANEL_URL_OUT/api/v1/$kind" PLAK_WALK_PER="$per_page" PLAK_WALK_TOKEN="$PLAK_SAVED_TOKEN" PLAK_WALK_CF="${PLAK_CF_ACCESS_TOKEN:-}" python3 -c '
+import json, os, urllib.request
+first = json.loads(os.environ["PLAK_WALK_FIRST"])
+if isinstance(first.get("data"), list) and "last_page" in first:
+    items, last, per = list(first["data"]), int(first.get("last_page") or 1), os.environ["PLAK_WALK_PER"]
+    base = os.environ["PLAK_WALK_BASE"]
+    token = os.environ.get("PLAK_WALK_TOKEN", "")
+    headers = {"Accept": "application/json", "User-Agent": "PlakCLI/panel"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    cf = os.environ.get("PLAK_WALK_CF", "")
+    if cf:
+        headers["CF-Access-Token"] = cf
+    for p in range(2, last + 1):
+        req = urllib.request.Request("%s?page=%d&per_page=%s" % (base, p, per), headers=headers)
+        page = json.load(urllib.request.urlopen(req, timeout=20))
+        items.extend(page.get("data", []))
+    print(json.dumps(items))
+else:
+    print(json.dumps(first.get("data", first) if isinstance(first, dict) else first))
+' 2>/dev/null > "$walk_file" || {
+        rm -f "$walk_file"
+        plak_ui_error "Failed while walking pages."
+        return 1
+    }
+    if [ "$json" -eq 1 ]; then
+        cat "$walk_file"; echo ""; rm -f "$walk_file"
+    else
+        plak_panel_render_table "$kind" "$(cat "$walk_file")"; rm -f "$walk_file"
+    fi
+}
+
+# Detail by id or exact domain/name. Walks pages (cap 10) for name matches.
+plak_panel_show() {
+    local kind="$1" sel="$2" json=0
+    shift 2
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift 1 ;;
+            --panel) shift 2 ;;
+            --dev) shift 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Missing identifier."; return 1; }
+    local field="domain"
+    [ "$kind" = "servers" ] && field="name"
+
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/$kind/$sel" || return 1
+        if [ "$json" -eq 1 ]; then
+            printf '%s\n' "$PLAK_PANEL_JSON"
+        else
+            local item
+            item=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c 'import json,os; print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {})))')
+            plak_panel_render_table "$kind" "[$item]"
+        fi
+        return 0
+    fi
+
+    local page=1 found=""
+    while [ "$page" -le 10 ]; do
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/$kind?page=$page&per_page=100" || return 1
+        found=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" PLAK_FIELD="$field" python3 -c '
+import json, os
+doc = json.loads(os.environ["PLAK_JSON_DOC"])
+for item in doc.get("data", []):
+    if str(item.get(os.environ["PLAK_FIELD"], "")) == os.environ["PLAK_SEL"]:
+        print(json.dumps(item))
+        break
+')
+        [ -n "$found" ] && break
+        local last
+        last=$(plak_connect_json_get "$PLAK_PANEL_JSON" "last_page")
+        [ -n "$last" ] && [ "$page" -ge "$last" ] && break
+        page=$((page + 1))
+    done
+    if [ -z "$found" ]; then
+        plak_ui_error "No $kind named '$sel' on this account."
+        return 1
+    fi
+    if [ "$json" -eq 1 ]; then
+        printf '{"data":%s}\n' "$found"
+    else
+        plak_panel_render_table "$kind" "[$found]"
+    fi
+}
+
+plak_panel() {
+    plak_connect_require_deps || return 1
+    local action="${1:-help}"
+    [ "$#" -gt 0 ] && shift
+    case "$action" in
+        sites)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_list sites "$@"
+            ;;
+        servers)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_list servers "$@"
+            ;;
+        site)
+            [ $# -ge 1 ] || { plak_ui_error "Usage: plak panel site <id|domain> [--json]"; return 1; }
+            local sel="$1"; shift
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_show sites "$sel" "$@"
+            ;;
+        server)
+            [ $# -ge 1 ] || { plak_ui_error "Usage: plak panel server <id|name> [--json]"; return 1; }
+            local sel="$1"; shift
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_show servers "$sel" "$@"
+            ;;
+        link)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_link "$@"
+            ;;
+        unlink)
+            plak_panel_unlink "$@"
+            ;;
+        links|list-links)
+            plak_panel_links "$@"
+            ;;
+        providers)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_providers "$@"
+            ;;
+        create-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_create_server "$@"
+            ;;
+        delete-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_delete_server "$@"
+            ;;
+        restart-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_restart_server "$@"
+            ;;
+        create-site)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_create_site "$@"
+            ;;
+        delete-site)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_delete_site "$@"
+            ;;
+        wp-overview|wp-themes|wp-plugins|wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc|wp-theme-activate|wp-theme-update|wp-theme-install|wp-theme-delete|wp-plugin-activate|wp-plugin-deactivate|wp-plugin-update|wp-plugin-install|wp-plugin-delete|wp-search-replace|wp-cli|wp-set-php|wp-set-robots)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_wp "$action" "$@"
+            ;;
+        service-list|service-restart|service-reload|wpcli-install|wpcli-uninstall|php-info|php-install|php-cli-set|opcache-enable|opcache-disable|opcache-refresh|firewall-list|firewall-add|firewall-del|users-list|users-add|users-del)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_server "$action" "$@"
+            ;;
+        db-list|db-add|db-del|cron-list|cron-add|cron-del|cert-list|cert-add|cert-del|redirect-list|redirect-add|redirect-del|alias-list|alias-add|alias-del|dns-list|dns-add|dns-update|dns-del|authuser-list|authuser-add|authuser-del|cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh|app-info|app-install|app-uninstall)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_infra "$action" "$@"
+            ;;
+        help|--help|-h)
+            plak_panel_help
+            ;;
+        *)
+            plak_ui_error "Unknown panel action '$action'"
+            plak_panel_help
+            return 1
+            ;;
+    esac
+}

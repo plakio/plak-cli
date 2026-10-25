@@ -91,6 +91,7 @@ plak_site_push() {
         remote_ssh="${binding%|*}"
         remote_path="${binding#*|}"
         log_success "Using remote '$remote_ssh' (path: $remote_path)"
+        plak_panel_revalidate_link "$site_name" || exit 1
     else
         case "$binding_rc" in
             2) log_error "Site '$site_name' is attached to a remote that no longer exists in $PLAK_SSH_CONFIG. Run 'plak remote edit' or 'plak remote attach' to fix." ;;

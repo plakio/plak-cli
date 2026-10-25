@@ -1,0 +1,396 @@
+# plak panel link — bind a panel site to a local site over SSH (CLI-26).
+#
+# Flow: pick own panel site -> read its connection contract -> pick or
+# generate a local SSH key -> authorize only its public part in the panel
+# -> verify SSH + WordPress path -> create/reuse an SSH remote -> bind it
+# to the local site and record an unambiguous .panel-link (no secrets).
+#
+# Revoking the API key never removes an installed SSH key; remove it in
+# the panel (Servers > SSH keys). SSH credentials live their own lifecycle.
+
+plak_panel_link_help() {
+    cat <<'HELP'
+Usage:
+  plak panel link <panel-site> <local-site> [--system-user USER] [--path PATH]
+                 [--key PRIVATE_KEY | --generate] [--alias NAME] [--yes] [--json]
+  plak panel unlink <local-site> [--yes]
+  plak panel links [--json]
+
+Link one of your panel sites to a local Plak site for push/pull.
+
+  <panel-site>   Panel site id or exact domain (see 'plak panel sites').
+  <local-site>   Local site name (must exist; create with 'plak add' first).
+  --system-user  Remote system user for SSH. Interactive pick from the
+                 panel contract when omitted; required without a TTY unless
+                 the contract lists none (server-wide key).
+  --path         Remote WordPress root. Defaults to the panel hint
+                 (/home/<user>/<domain>/public) and is always verified
+                 over SSH before binding — a wrong path never links.
+  --key FILE     Existing local private key (its .pub is authorized).
+  --generate     Create ~/.ssh/plak-panel-<site> (ed25519) for this link.
+  --alias NAME   SSH remote alias (default panel-<domain>).
+  --yes          Skip confirmations (automation). Implies no prompts:
+                 pass --system-user/--key|--generate/--path as needed.
+  --json         Machine-readable result (never includes secrets).
+
+Host keys use StrictHostKeyChecking=accept-new: the first key is recorded,
+a changed key refuses. The link record lives in
+~/Plak/Sites/<local>.localhost/.panel-link (panel, account, remote ids —
+no tokens). 'unlink' removes the record only; manage remotes with
+'plak remote', SSH keys with 'plak sshkey'.
+HELP
+}
+
+plak_panel_link_file() {
+    printf '%s\n' "$SITES_DIR/$1.localhost/.panel-link"
+}
+
+# Deterministic CLI key name from a .pub file (matches SshKey::cliKeyName).
+plak_panel_key_suffix() {
+    PLAK_PUB="$1" python3 -c '
+import base64, hashlib, os
+parts = open(os.environ["PLAK_PUB"]).read().split()
+body = parts[1] if len(parts) >= 2 else ""
+print(hashlib.sha256(base64.b64decode(body)).hexdigest()[:12])
+' 2>/dev/null
+}
+
+plak_panel_valid_pub() {
+    local pub="$1" first rest
+    [ -f "$pub" ] || return 1
+    first=$(awk '{print $1}' "$pub")
+    case "$first" in
+        ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ecdsa-sha2-nistp256@openssh.com|sk-ssh-ed25519@openssh.com) : ;;
+        *) return 1 ;;
+    esac
+    rest=$(awk '{print $2}' "$pub")
+    [ -n "$rest" ] || return 1
+    if plak_command_exists ssh-keygen; then
+        ssh-keygen -l -f "$pub" >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+
+plak_panel_pick_local_key() {
+    local candidates selected
+    candidates=$(find "$HOME/.ssh" -maxdepth 1 -type f \
+        ! -name '.*' ! -name '*.pub' ! -name 'authorized_keys' \
+        ! -name 'known_hosts*' ! -name 'config' \
+        -exec sh -c 'head -n 1 "$1" 2>/dev/null | grep -q "PRIVATE KEY"' sh {} \; \
+        -print 2>/dev/null | sort || true)
+    if [ -n "$candidates" ] && plak_command_exists gum && [ -t 0 ]; then
+        selected=$(printf "%s\n%s" "$candidates" "Generate a new key" | gum filter --placeholder "Choose local SSH key") || return 1
+        [ -n "$selected" ] || return 1
+        [ "$selected" = "Generate a new key" ] || { printf '%s\n' "$selected"; return 0; }
+    fi
+    return 2
+}
+
+plak_panel_link() {
+    local site_sel="" local_site="" system_user="" remote_path="" key_file="" generate=0 alias="" yes=0 json=0
+    local positional=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --system-user) system_user="$2"; shift 2 ;;
+            --path) remote_path="$2"; shift 2 ;;
+            --key) key_file="$2"; shift 2 ;;
+            --generate) generate=1; shift 1 ;;
+            --alias) alias="$2"; shift 2 ;;
+            --yes|-y) yes=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --panel|--dev) plak_ui_error "Connect to that panel first: plak connect --panel <url>"; return 1 ;;
+            --help|-h) plak_panel_link_help; return 0 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) positional+=("$1"); shift 1 ;;
+        esac
+    done
+    [ "${#positional[@]}" -ge 2 ] || { plak_ui_error "Usage: plak panel link <panel-site> <local-site> [options]"; return 1; }
+    site_sel="${positional[0]}"
+    local_site="${positional[1]}"
+
+    plak_connect_require_deps || return 1
+    plak_panel_require_connection || return 1
+    local panel="$PLAK_PANEL_URL_OUT" cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+
+    local site_dir="$SITES_DIR/$local_site.localhost"
+    if [ ! -d "$site_dir" ]; then
+        plak_ui_error "Local site '$local_site' does not exist. Create it first: plak add $local_site"
+        return 1
+    fi
+
+    # 1. Resolve the panel site (id or exact domain) to its numeric id.
+    local site_id="$site_sel" site_domain=""
+    if [[ ! "$site_sel" =~ ^[0-9]+$ ]]; then
+        plak_panel_get "$panel/api/v1/sites?page=1&per_page=100" || return 1
+        site_id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$site_sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("domain", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+        [ -n "$site_id" ] || { plak_ui_error "No panel site '$site_sel' on this account."; return 1; }
+    fi
+
+    # 2. Connection contract.
+    plak_panel_get "$panel/api/v1/sites/$site_id/connection" || return 1
+    local contract="$PLAK_PANEL_JSON"
+    site_domain=$(plak_connect_json_get "$contract" "data.site.domain")
+    local site_status server_id server_name server_ip ssh_port
+    site_status=$(plak_connect_json_get "$contract" "data.site.status")
+    server_id=$(plak_connect_json_get "$contract" "data.server.id")
+    server_name=$(plak_connect_json_get "$contract" "data.server.name")
+    server_ip=$(plak_connect_json_get "$contract" "data.server.ip")
+    ssh_port=$(plak_connect_json_get "$contract" "data.server.ssh_port")
+    [ -n "$ssh_port" ] || ssh_port=22
+    [ -n "$site_domain" ] && [ -n "$server_ip" ] || { plak_ui_error "Incomplete connection data from panel."; return 1; }
+    [ "$json" -eq 0 ] && [ "$site_status" != "active" ] && plak_ui_warn "Panel site status is '$site_status' (not active)."
+
+    # 3. System user.
+    local users_json n_users
+    users_json=$(PLAK_JSON_DOC="$contract" python3 -c 'import json,os; print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}).get("system_users", [])))')
+    n_users=$(PLAK_JSON_DOC="$users_json" python3 -c 'import json,os; print(len(json.loads(os.environ["PLAK_JSON_DOC"])))')
+    if [ -z "$system_user" ]; then
+        if [ "$n_users" -eq 0 ]; then
+            system_user=""
+            [ "$json" -eq 0 ] && echo "No system users listed: authorizing a server-wide key."
+        elif [ -t 0 ] && plak_command_exists gum && [ "$yes" -eq 0 ]; then
+            system_user=$(PLAK_JSON_DOC="$users_json" python3 -c 'import json,os; [print(u["name"]) for u in json.loads(os.environ["PLAK_JSON_DOC"])]' | gum filter --placeholder "Choose remote system user") || return 1
+            [ -n "$system_user" ] || { echo "Cancelled."; return 2; }
+        else
+            plak_ui_error "Multiple system users available. Pass --system-user explicitly (non-interactive)."
+            return 1
+        fi
+    fi
+    if [ -z "$remote_path" ]; then
+        if [ -n "$system_user" ]; then
+            remote_path="/home/$system_user/$site_domain/public"
+        else
+            plak_ui_error "Pass --path explicitly for a server-wide key."
+            return 1
+        fi
+        [ "$json" -eq 0 ] && echo "Remote path default: $remote_path (will verify over SSH)"
+    fi
+
+    # 4. Local SSH key.
+    if [ -z "$key_file" ] && [ "$generate" -eq 0 ]; then
+        local picked
+        if picked=$(plak_panel_pick_local_key); then
+            key_file="$picked"
+        elif [ "$?" -eq 2 ]; then
+            if [ -t 0 ] && [ "$yes" -eq 0 ]; then
+                generate=1
+            else
+                plak_ui_error "Pass --key <private-key> or --generate (non-interactive)."
+                return 1
+            fi
+        else
+            echo "Cancelled."
+            return 2
+        fi
+    fi
+    if [ "$generate" -eq 1 ]; then
+        local slug
+        slug=$(printf '%s' "$site_domain" | tr -c 'A-Za-z0-9_-' '-')
+        key_file="$HOME/.ssh/plak-panel-$slug"
+        if [ ! -f "$key_file" ]; then
+            mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+            ssh-keygen -t ed25519 -f "$key_file" -N '' -C "plak-panel-$site_domain" >/dev/null 2>&1 || {
+                plak_ui_error "Could not generate an SSH key."
+                return 1
+            }
+            chmod 600 "$key_file"
+        fi
+    fi
+    [ -f "$key_file" ] || { plak_ui_error "Key not found: $key_file"; return 1; }
+    local pub_file="$key_file.pub"
+    if [ ! -f "$pub_file" ]; then
+        if plak_command_exists ssh-keygen; then
+            ssh-keygen -y -f "$key_file" > "$pub_file" 2>/dev/null || { plak_ui_error "Could not derive $pub_file."; return 1; }
+        else
+            plak_ui_error "Missing $pub_file and ssh-keygen is unavailable."
+            return 1
+        fi
+    fi
+    plak_panel_valid_pub "$pub_file" || { plak_ui_error "Invalid SSH public key: $pub_file"; return 1; }
+    local suffix key_name pub_body
+    suffix=$(plak_panel_key_suffix "$pub_file") || { plak_ui_error "Could not fingerprint key."; return 1; }
+    key_name="plak-cli-$suffix"
+    pub_body=$(cat "$pub_file")
+
+    # 5. Authorize the public key (server decides idempotent vs conflict).
+    local auth_body auth_out auth_status
+    auth_body=$(PLAK_NAME="$key_name" PLAK_KEY="$pub_body" PLAK_SU="$system_user" python3 -c '
+import json, os
+payload = {"name": os.environ["PLAK_NAME"], "key": os.environ["PLAK_KEY"]}
+if os.environ.get("PLAK_SU"):
+    payload["system_user"] = os.environ["PLAK_SU"]
+print(json.dumps(payload))
+')
+    if ! plak_connect_http POST "$panel/api/v1/servers/$server_id/ssh-keys" "$auth_body" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable during key authorization."
+        return 1
+    fi
+    auth_out="$PLAK_HTTP_BODY"
+    auth_status="$PLAK_HTTP_STATUS"
+    case "$auth_status" in
+        200|201) : ;;
+        401) plak_ui_error "Token invalid. Run 'plak connect' to reconnect."; return 1 ;;
+        403) plak_ui_error "Token lacks ssh:authorize. Reconnect with a key that includes it (plak connect again or Perfil > API Keys)."; return 1 ;;
+        404) plak_ui_error "Server not found on this account (association changed?)."; return 1 ;;
+        409) plak_ui_error "A different key already uses a conflicting name. Retry — names are derived from the key."; return 1 ;;
+        422) plak_ui_error "Panel refused the key: $(plak_connect_json_get "$auth_out" "message"). Nothing was installed."; return 1 ;;
+        503) plak_ui_error "Provider unreachable. Retry later; nothing was installed."; return 1 ;;
+        *) plak_ui_error "Authorization failed (HTTP $auth_status). Nothing was installed."; return 1 ;;
+    esac
+    local duplicate fingerprint
+    duplicate=$(plak_connect_json_get "$auth_out" "data.duplicate")
+    fingerprint=$(plak_connect_json_get "$auth_out" "data.fingerprint")
+    if [ "$json" -eq 0 ]; then
+        if [ "$duplicate" = "True" ]; then
+            echo "HTTP: key already authorized on panel (idempotent, no duplicate)."
+        else
+            echo "HTTP: public key authorized on panel (${fingerprint:- fingerprint withheld})."
+        fi
+    fi
+
+    # 6. Verify SSH access and the real WordPress path. Never bind blind.
+    local ssh_target="$system_user@$server_ip"
+    [ -n "$system_user" ] || ssh_target="$server_ip"
+    local ssh_opts=(-i "$key_file" -p "$ssh_port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+    local quoted_path
+    quoted_path=$(shell_quote "$remote_path")
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" "test -f $quoted_path/wp-config.php" 2>/dev/null; then
+        plak_ui_error "SSH ok but '$remote_path' is not a WordPress root there (no wp-config.php). Not linked."
+        echo "Hint: check --system-user/--path, then retry. The panel key authorization above stands and is reusable."
+        return 1
+    fi
+    [ "$json" -eq 0 ] && echo "SSH: $ssh_target:$remote_path verified (wp-config.php present)."
+
+    # 7. Create or reuse the SSH remote (existing manual remotes untouched).
+    [ -n "$alias" ] || alias="panel-$site_domain"
+    if ! plak_validate_hostname_alias "$alias"; then
+        plak_ui_error "Invalid alias '$alias'."
+        return 1
+    fi
+    if plak_remote_host_exists "$alias"; then
+        local current
+        current=$(plak_remote_get_host "$alias")
+        local chost cuser cport
+        chost=$(printf '%s' "$current" | awk -F'|' '{print $2}')
+        cuser=$(printf '%s' "$current" | awk -F'|' '{print $3}')
+        cport=$(printf '%s' "$current" | awk -F'|' '{print $4}')
+        if [ "$chost" != "$server_ip" ] || [ "$cuser" != "$system_user" ] || [ "${cport:-22}" != "$ssh_port" ]; then
+            plak_ui_error "Alias '$alias' exists for a different remote. Pass --alias or edit it (plak remote edit). Nothing was overwritten."
+            return 1
+        fi
+    else
+        plak_remote_append_config "$alias" "$server_ip" "$system_user" "$ssh_port" "$key_file" "$remote_path"
+    fi
+
+    # 8. Bind to the local site + record the panel link (no secrets).
+    local link_file
+    link_file=$(plak_panel_link_file "$local_site")
+    if [ -f "$link_file" ]; then
+        local old
+        old=$(cat "$link_file")
+        if [ "$(plak_connect_json_get "$old" "panel_url")" = "$panel" ] && [ "$(plak_connect_json_get "$old" "site.id")" = "$site_id" ]; then
+            [ "$json" -eq 0 ] && echo "Already linked to this panel site."
+        elif [ "$yes" -eq 0 ]; then
+            plak_ui_error "Local site already linked elsewhere. Pass --yes to replace (never silent)."
+            return 1
+        fi
+    fi
+    plak_remote_attach_to "$alias" "$local_site" "$yes" || return 1
+    local account
+    account=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "email")
+    local tmp_link
+    tmp_link=$(mktemp) || return 1
+    PLAK_LINK_PANEL="$panel" PLAK_LINK_ACCOUNT="$account" PLAK_LINK_SITE_ID="$site_id" PLAK_LINK_DOMAIN="$site_domain" PLAK_LINK_SERVER_ID="$server_id" PLAK_LINK_SERVER="$server_name" PLAK_LINK_ALIAS="$alias" PLAK_LINK_LOCAL="$local_site" PLAK_LINK_TMP="$tmp_link" python3 -c '
+import json, os, datetime
+doc = {
+  "panel_url": os.environ["PLAK_LINK_PANEL"],
+  "account": os.environ.get("PLAK_LINK_ACCOUNT", ""),
+  "site": {"id": int(os.environ["PLAK_LINK_SITE_ID"]), "domain": os.environ["PLAK_LINK_DOMAIN"]},
+  "server": {"id": int(os.environ["PLAK_LINK_SERVER_ID"]), "name": os.environ["PLAK_LINK_SERVER"]},
+  "remote": os.environ["PLAK_LINK_ALIAS"],
+  "local_site": os.environ["PLAK_LINK_LOCAL"],
+  "linked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+open(os.environ["PLAK_LINK_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
+' || { rm -f "$tmp_link"; return 1; }
+    mv "$tmp_link" "$link_file"
+
+    if [ "$json" -eq 1 ]; then
+        printf '{"linked":true,"local_site":%s,"remote":%s,"panel_site":{"id":%s,"domain":%s}}\n' \
+            "$(plak_json_string "$local_site")" "$(plak_json_string "$alias")" \
+            "$site_id" "$(plak_json_string "$site_domain")"
+    else
+        plak_ui_success "Linked panel site $site_domain to local '$local_site' via remote '$alias'."
+    fi
+}
+
+plak_panel_unlink() {
+    local site_name="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes|-y) yes=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            *) site_name="$1"; shift 1 ;;
+        esac
+    done
+    [ -n "$site_name" ] || { plak_ui_error "Usage: plak panel unlink <local-site> [--yes]"; return 1; }
+    local link_file
+    link_file=$(plak_panel_link_file "$site_name")
+    if [ ! -f "$link_file" ]; then
+        [ "$json" -eq 1 ] && printf '{"linked":false}\n' || echo "No panel link on '$site_name'."
+        return 0
+    fi
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            gum confirm "Remove the panel link on '$site_name'? (remote and SSH key stay)" || { echo "Cancelled."; return 0; }
+        elif [ -t 0 ]; then
+            printf 'Remove the panel link on %s? [y/N] ' "$site_name"
+            read -r ans || ans=""
+            case "$ans" in y|Y|yes|YES) : ;; *) echo "Cancelled."; return 0 ;; esac
+        else
+            plak_ui_error "Use --yes in non-interactive mode."
+            return 1
+        fi
+    fi
+    rm -f "$link_file"
+    if [ "$json" -eq 1 ]; then
+        printf '{"linked":false}\n'
+    else
+        echo "Panel link removed from '$site_name'. Remote kept (plak remote detach to unbind); panel SSH authorization must be removed in Servers > SSH keys."
+    fi
+}
+
+plak_panel_links() {
+    local json=0
+    for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
+    local found=0 out="["
+    local d link
+    for d in "$SITES_DIR"/*.localhost; do
+        [ -d "$d" ] || continue
+        link="$d/.panel-link"
+        [ -f "$link" ] || continue
+        found=1
+        if [ "$json" -eq 1 ]; then
+            out="$out$(cat "$link"),"
+        else
+            local local_name panel_domain remote
+            local_name=$(basename "$d" .localhost)
+            panel_domain=$(plak_connect_json_get "$(cat "$link")" "site.domain")
+            remote=$(plak_connect_json_get "$(cat "$link")" "remote")
+            printf '%-20s %-32s %s\n' "$local_name" "$panel_domain" "$remote"
+        fi
+    done
+    if [ "$json" -eq 1 ]; then
+        out="${out%,}]"
+        [ "$found" -eq 1 ] || out="[]"
+        printf '%s\n' "$out"
+    elif [ "$found" -eq 0 ]; then
+        echo "No panel links."
+    fi
+}

@@ -185,7 +185,45 @@ plak sshkey create <name> [--type ed25519|rsa|ecdsa] [--bits N] [--passphrase P]
 plak sshkey delete <name> [--yes]
 plak sshkey list
 plak sshkey view [<name>]
+
+# Panel account (device flow, Botmail-style; secret never via argv)
+plak connect [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
+plak connect --manual [--panel URL] [--dev] --token-stdin   # echo "$KEY" | plak connect --manual --token-stdin
+plak connect status [--json]
+plak disconnect [--yes]   # local forget only; revoke in panel Perfil > API Keys
 ```
+
+**Panel connection**: `plak connect` requests a pairing and polls until you
+approve it in the panel (`approve_url`, 1 click). Credential lives in
+`${PLAK_HOME:-~/.plak}/connection.json` (dir `700`, file `600`); `--json`
+outputs never include the secret. Dev behind Cloudflare Access needs
+`PLAK_CF_ACCESS_TOKEN` (service token, different from the Plak API key).
+
+**Panel resources (read-only, connected account only)**:
+`plak panel sites [--all] [--json]`, `plak panel site <id|domain>`,
+`plak panel servers [--all] [--json]`, `plak panel server <id|name>`.
+Never mixed with local sites (`plak list`); the saved token is never sent
+to another origin.
+**Panel linking**: `plak panel link <panel-site> <local-site>` authorizes
+one local public key (`ssh:authorize`), verifies SSH + WP path, binds an
+SSH remote and records `.panel-link` (no secrets). Wrong paths never bind;
+SSH authorizations outlive API keys (remove in panel Servers > SSH keys).
+**Panel migration**: `plak push/pull` on linked sites revalidate the panel
+destination first (account/panel/remote/site changes and invalid tokens
+stop with an explanation); manual remotes unchanged.
+**Panel writes (Fase A)**: `providers`, `create-server`, `delete-server`,
+`restart-server`, `create-site`, `delete-site` (opt-in scopes
+`servers:write`/`sites:write`; async creation is polled, never false success).
+**Panel WordPress (Fase B)**: `wp-overview|wp-themes|wp-plugins`,
+`wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc`,
+theme/plugin `activate|deactivate|update|install|delete`,
+`wp-search-replace`, guarded `wp-cli`, `wp-set-php|wp-set-robots`.
+**Panel servers (Fase C)**: `service-list|service-restart|service-reload`,
+`wpcli-install|wpcli-uninstall`, `php-info|php-install|php-cli-set`,
+`opcache-enable|disable|refresh`, `firewall-list|add|del`,
+`users-list|add|del` (`servers:write` for mutations; synchronous).
+**Panel site infra (Fase D)**: `db-*|cron-*|cert-*|redirect-*|alias-*|dns-*|
+authuser-*|cache-*|app-*` (`sites:write` for mutations).
 
 **Remote → site bindings**: `plak remote attach <remote> <site>` writes the remote name to `~/Plak/Sites/<site>.localhost/.remote`. The `remote_path` (WordPress root) is stored in `~/.ssh/config` inside the `Host` block as `# plak-remote-path: <path>`. With a binding, `plak push <site>` and `plak pull <site>` resolve the remote automatically without prompting.
 

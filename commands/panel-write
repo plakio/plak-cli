@@ -1,0 +1,309 @@
+# plak panel Fase A — providers, servers/sites create/delete/restart (CLI-40).
+#
+# Writes require opt-in scopes (servers:write / sites:write, see PLA-186):
+# a 403 always explains how to grant them instead of failing cryptically.
+# Async provisioning (202 busy) is polled until active/failed/timeout and a
+# remote failure is never reported as success.
+
+plak_panel_write_help() {
+    cat <<'HELP'
+Usage:
+  plak panel providers [--json]
+  plak panel create-server --name N --provider ID --region ID --plan ID
+                         [--database T] [--php V] [--os O] [--wait SECS] [--poll SECS] [--json]
+  plak panel delete-server <id|name> [--yes] [--json]
+  plak panel restart-server <id|name> [--yes] [--json]
+  plak panel create-site --domain D --server <id|name> [--wait SECS] [--poll SECS] [--json]
+  plak panel delete-site <id|domain> [--yes] [--json]
+
+Create and operate your own panel servers and sites (write API).
+
+  providers      Show your package providers with regions and plans.
+  --wait SECS    Max seconds to wait for provisioning (default 600).
+  --poll SECS    Poll interval (default 15).
+  --yes          Skip destructive confirmations (delete/restart).
+  --json         Machine-readable output (never includes secrets).
+
+Write scopes (servers:write, sites:write) are opt-in: pick them in the
+panel (Perfil > API Keys) or create a key with them. Pairing-approved
+keys carry read + SSH only.
+HELP
+}
+
+# POST/DELETE with the write error envelope mapped to guidance.
+# Sets PLAK_PANEL_JSON on 2xx. Args: METHOD PATH [BODY]
+plak_panel_write_call() {
+    local method="$1" path="$2" body="${3:-}"
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    if ! plak_connect_http "$method" "$PLAK_PANEL_URL_OUT$path" "$body" "$PLAK_SAVED_TOKEN" "$cf_token"; then
+        plak_ui_error "Panel unreachable. Check the network and 'plak connect status'."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200|201|202)
+            PLAK_PANEL_JSON="$PLAK_HTTP_BODY"
+            return 0
+            ;;
+        401)
+            plak_ui_error "Token invalid, revoked or expired. Run 'plak connect' to reconnect."
+            return 1
+            ;;
+        403)
+            case "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" in
+                personal_token.forbidden)
+                    plak_ui_error "Token lacks the write scope. Grant it in the panel (Perfil > API Keys, tick servers:write/sites:write) or create a key with them."
+                    ;;
+                account.blocked)
+                    plak_ui_error "Account blocked. Contact support."
+                    ;;
+                *)
+                    plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+                    ;;
+            esac
+            return 1
+            ;;
+        404)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            return 1
+            ;;
+        409|422)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            return 1
+            ;;
+        429)
+            plak_ui_error "Rate limited${PLAK_HTTP_RETRY_AFTER:+ (retry after ${PLAK_HTTP_RETRY_AFTER}s)}."
+            return 1
+            ;;
+        503)
+            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message") Nothing was persisted."
+            return 1
+            ;;
+        *)
+            plak_ui_error "Panel request failed (HTTP $PLAK_HTTP_STATUS)."
+            return 1
+            ;;
+    esac
+}
+
+plak_panel_write_confirm() {
+    local prompt="$1" yes="$2"
+    if [ "$yes" -eq 1 ]; then return 0; fi
+    if [ -t 0 ] && plak_command_exists gum; then
+        gum confirm "$prompt" || { echo "Cancelled."; return 1; }
+    elif [ -t 0 ]; then
+        printf '%s [y/N] ' "$prompt"
+        read -r ans || ans=""
+        case "$ans" in y|Y|yes|YES) : ;; *) echo "Cancelled."; return 1 ;; esac
+    else
+        plak_ui_error "Use --yes in non-interactive mode."
+        return 1
+    fi
+}
+
+# Resolve a server id-or-name to its numeric id (prints id).
+plak_panel_resolve_server() {
+    local sel="$1"
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then printf '%s\n' "$sel"; return 0; fi
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/servers?page=1&per_page=100" || return 1
+    local id
+    id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("name", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+    [ -n "$id" ] || { plak_ui_error "No server named '$sel' on this account."; return 1; }
+    printf '%s\n' "$id"
+}
+
+# Poll a just-created resource until active. Args: kind id wait poll.
+# Sets PLAK_PANEL_JSON to the final item envelope.
+plak_panel_poll_active() {
+    local kind="$1" id="$2" wait_secs="${3:-600}" poll_secs="${4:-15}" json="${5:-0}"
+    local elapsed=0 status=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/$kind/$id" || return 1
+        status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+        [ "$status" = "active" ] && return 0
+        if [ "$status" = "failed" ]; then
+            [ "$json" -eq 0 ] && plak_ui_error "Provisioning failed on the panel (status: failed). Check the panel for details."
+            return 1
+        fi
+        if [ "$json" -eq 0 ] && [ -t 1 ]; then
+            printf '\rProvisioning... %ss / %ss (status: %s)' "$elapsed" "$wait_secs" "${status:-busy}"
+        fi
+    done
+    [ "$json" -eq 0 ] && [ -t 1 ] && echo ""
+    if [ "$json" -eq 0 ]; then
+        echo "Still provisioning after ${wait_secs}s (id $id). Check 'plak panel $kind $id' later."
+    fi
+    return 3
+}
+
+plak_panel_providers() {
+    local json=0
+    for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/providers" || return 1
+    if [ "$json" -eq 1 ]; then
+        printf '%s\n' "$PLAK_PANEL_JSON"
+        return 0
+    fi
+    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+import json, os
+provs = json.loads(os.environ["PLAK_JSON_DOC"]).get("data", [])
+if not provs:
+    print("No providers available for your package.")
+for p in provs:
+    print("provider %s: %s" % (p.get("id"), p.get("name")))
+    for r in p.get("regions", []):
+        print("  region %s: %s" % (r.get("id"), r.get("label")))
+    for pl in p.get("plans", []):
+        print("  plan   %s: %s" % (pl.get("id"), pl.get("label")))
+' 2>/dev/null || plak_ui_error "Invalid providers response."
+}
+
+plak_panel_create_server() {
+    local name="" provider="" region="" plan="" database="mysql" php="8.4" os="" wait_secs=600 poll_secs=15 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            --provider) provider="$2"; shift 2 ;;
+            --region) region="$2"; shift 2 ;;
+            --plan) plan="$2"; shift 2 ;;
+            --database) database="$2"; shift 2 ;;
+            --php) php="$2"; shift 2 ;;
+            --os) os="$2"; shift 2 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    if [ -z "$name" ] || [ -z "$provider" ] || [ -z "$region" ] || [ -z "$plan" ]; then
+        plak_ui_error "Missing required flags: --name --provider --region --plan (see 'plak panel providers')."
+        return 1
+    fi
+    local body id status
+    body=$(PLAK_N="$name" PLAK_P="$provider" PLAK_R="$region" PLAK_PL="$plan" PLAK_D="$database" PLAK_PHP="$php" PLAK_OS="$os" python3 -c '
+import json, os
+payload = {"name": os.environ["PLAK_N"], "provider_id": int(os.environ["PLAK_P"]),
+           "provider_region_id": int(os.environ["PLAK_R"]), "provider_plan_id": int(os.environ["PLAK_PL"]),
+           "database_type": os.environ.get("PLAK_D") or "mysql",
+           "php_version": os.environ.get("PLAK_PHP") or "8.4"}
+if os.environ.get("PLAK_OS"):
+    payload["os_type"] = os.environ["PLAK_OS"]
+print(json.dumps(payload))
+') || { plak_ui_error "Invalid numeric provider/region/plan."; return 1; }
+    plak_panel_write_call POST "/api/v1/servers" "$body" || return 1
+    id=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.id")
+    status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+    [ -n "$id" ] || { plak_ui_error "Invalid creation response."; return 1; }
+    if [ "$status" = "active" ]; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s}\n' "$id" || plak_ui_success "Server created (id $id)."
+        return 0
+    fi
+    [ "$json" -eq 0 ] && echo "Server $id provisioning (status: ${status:-busy}). Waiting up to ${wait_secs}s..."
+    if plak_panel_poll_active servers "$id" "$wait_secs" "$poll_secs" "$json"; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"status":"active"}\n' "$id" || plak_ui_success "Server $id is active."
+        return 0
+    else
+        local rc=$?
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"status":"unknown"}\n' "$id"
+        return "$rc"
+    fi
+}
+
+plak_panel_delete_server() {
+    local sel="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in --yes|-y) yes=1; shift 1 ;; --json) json=1; shift 1 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) sel="$1"; shift 1 ;; esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Usage: plak panel delete-server <id|name> [--yes]"; return 1; }
+    local id
+    id=$(plak_panel_resolve_server "$sel") || return 1
+    plak_panel_write_confirm "Delete panel server '$sel' (id $id) with ALL its sites? This cannot be undone." "$yes" || return 1
+    plak_panel_write_call DELETE "/api/v1/servers/$id" || return 1
+    [ "$json" -eq 1 ] && printf '{"deleted":true,"id":%s}\n' "$id" || plak_ui_success "Server $id deleted (remote removal best-effort, see panel)."
+}
+
+plak_panel_restart_server() {
+    local sel="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in --yes|-y) yes=1; shift 1 ;; --json) json=1; shift 1 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) sel="$1"; shift 1 ;; esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Usage: plak panel restart-server <id|name> [--yes]"; return 1; }
+    local id
+    id=$(plak_panel_resolve_server "$sel") || return 1
+    plak_panel_write_confirm "Restart panel server '$sel' (id $id)? Sites will be briefly unreachable." "$yes" || return 1
+    plak_panel_write_call POST "/api/v1/servers/$id/restart" || return 1
+    [ "$json" -eq 1 ] && printf '{"restarted":true,"id":%s}\n' "$id" || plak_ui_success "Server $id is restarting."
+}
+
+plak_panel_create_site() {
+    local domain="" server_sel="" wait_secs=600 poll_secs=15 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --domain) domain="$2"; shift 2 ;;
+            --server) server_sel="$2"; shift 2 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$domain" ] && [ -n "$server_sel" ] || { plak_ui_error "Missing required flags: --domain --server <id|name>."; return 1; }
+    local server_id
+    server_id=$(plak_panel_resolve_server "$server_sel") || return 1
+    local body id status
+    body=$(PLAK_D="$domain" PLAK_S="$server_id" python3 -c '
+import json, os
+print(json.dumps({"domain": os.environ["PLAK_D"], "server_id": int(os.environ["PLAK_S"])}))
+') || return 1
+    plak_panel_write_call POST "/api/v1/sites" "$body" || return 1
+    id=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.id")
+    status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+    [ -n "$id" ] || { plak_ui_error "Invalid creation response."; return 1; }
+    if [ "$status" = "active" ]; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"domain":%s}\n' "$id" "$(plak_json_string "$domain")" || plak_ui_success "Site $domain created (id $id)."
+        return 0
+    fi
+    [ "$json" -eq 0 ] && echo "Site $domain provisioning (status: ${status:-busy}). Waiting up to ${wait_secs}s..."
+    if plak_panel_poll_active sites "$id" "$wait_secs" "$poll_secs" "$json"; then
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"domain":%s,"status":"active"}\n' "$id" "$(plak_json_string "$domain")" || plak_ui_success "Site $domain is active."
+        return 0
+    else
+        local rc=$?
+        [ "$json" -eq 1 ] && printf '{"created":true,"id":%s,"domain":%s,"status":"unknown"}\n' "$id" "$(plak_json_string "$domain")"
+        return "$rc"
+    fi
+}
+
+plak_panel_delete_site() {
+    local sel="" yes=0 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in --yes|-y) yes=1; shift 1 ;; --json) json=1; shift 1 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) sel="$1"; shift 1 ;; esac
+    done
+    [ -n "$sel" ] || { plak_ui_error "Usage: plak panel delete-site <id|domain> [--yes]"; return 1; }
+    local id="$sel"
+    if [[ ! "$sel" =~ ^[0-9]+$ ]]; then
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites?page=1&per_page=100" || return 1
+        id=$(PLAK_JSON_DOC="$PLAK_PANEL_JSON" PLAK_SEL="$sel" python3 -c '
+import json, os
+for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
+    if str(item.get("domain", "")) == os.environ["PLAK_SEL"]:
+        print(item["id"])
+        break
+' 2>/dev/null)
+        [ -n "$id" ] || { plak_ui_error "No site '$sel' on this account."; return 1; }
+    fi
+    plak_panel_write_confirm "Delete panel site '$sel' (id $id)? This cannot be undone." "$yes" || return 1
+    plak_panel_write_call DELETE "/api/v1/sites/$id" || return 1
+    [ "$json" -eq 1 ] && printf '{"deleted":true,"id":%s}\n' "$id" || plak_ui_success "Site $id deleted."
+}

@@ -79,6 +79,9 @@ Commands:
   remote      Manage SSH remotes and site bindings
   hosts       Manage entries in /etc/hosts
   sshkey      Manage SSH keys
+  connect     Connect this machine to your Plak panel account
+  disconnect  Forget the local panel credential
+  panel       List your own panel sites and servers (read-only)
   add         Create a WordPress or plain local site
   import      Create a local site from a backup ZIP or TAR
   clone       Duplicate a local site into an independent copy
@@ -117,6 +120,8 @@ Commands:
 Examples:
   plak remote list
   plak remote connect
+  plak connect
+  plak panel sites
   plak status
 HELP
 }
@@ -173,6 +178,20 @@ HELP
                 plak_skill_help
             else
                 echo "Usage: plak skill install [codex|claude-code|opencode|hermes|pi|global|all]"
+            fi
+            ;;
+        connect|disconnect)
+            if declare -F plak_connect_help >/dev/null 2>&1; then
+                plak_connect_help
+            else
+                echo "Usage: plak connect [--panel URL] [--dev] [--manual] | plak connect status | plak disconnect [--yes]"
+            fi
+            ;;
+        panel)
+            if declare -F plak_panel_help >/dev/null 2>&1; then
+                plak_panel_help
+            else
+                echo "Usage: plak panel <sites|site|servers|server> [--json]"
             fi
             ;;
         install)
@@ -302,7 +321,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health)
+        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
             set +e
             ;;
     esac
@@ -332,6 +351,15 @@ main() {
             ;;
         skill)
             plak_skill "$@"
+            ;;
+        connect)
+            plak_connect "$@"
+            ;;
+        disconnect)
+            plak_disconnect "$@"
+            ;;
+        panel)
+            plak_panel "$@"
             ;;
         add)
             check_dependencies

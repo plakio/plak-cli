@@ -1,0 +1,344 @@
+# plak connect — pairing con el panel estilo Botmail (CLI-24).
+#
+#   plak connect [--panel URL] [--dev] [--no-open] [--wait S] [--poll S]
+#   plak connect --manual [--panel URL] [--dev] [--token-stdin]
+#   plak connect status [--json]
+#   plak disconnect [--yes]
+#
+# Decisión /connect: este CLI no tiene intérprete conversacional; no existe
+# comando `/connect`. Cualquier adaptador externo debe invocar `plak connect`
+# y nunca capturar ni reenviar el secreto a una conversación.
+
+plak_connect_help() {
+    cat <<'HELP'
+Usage:
+  plak connect [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
+  plak connect --manual [--panel URL] [--dev] [--token-stdin] [--json]
+  plak connect status [--json]
+  plak disconnect [--yes]
+
+Connect this machine to your Plak panel account (device flow, Botmail-style):
+requests a pairing, shows/opens the approval link, polls until you approve
+it in the panel with 1 click. No secrets to copy by hand.
+
+  --panel URL   Panel origin (default https://panel.plak.work).
+                Use an explicit URL for staging/dev, e.g. http://127.0.0.1:8000.
+  --dev         Shorthand for $PLAK_PANEL_DEV_URL (default http://127.0.0.1:8000).
+  --no-open     Print the approval link without opening a browser.
+  --wait SECS   Max seconds to wait for approval (default 900 = pairing TTL).
+  --poll SECS   Poll interval in seconds (default 10).
+  --manual      Fallback: paste a personal API key from Perfil > API Keys.
+                For headless/WSL/automation. Never pass the key as an argument:
+                use --token-stdin (echo "$KEY" | plak connect --manual --token-stdin).
+  --json        Machine-readable output (never includes the secret).
+
+Other actions:
+  plak connect status     Show panel, account and token validity.
+  plak disconnect [--yes] Forget the local credential. Revoke the key itself
+                          in the panel: Perfil > API Keys. Revoking there does
+                          not delete other connections.
+
+Dev behind Cloudflare Access: export PLAK_CF_ACCESS_TOKEN (service token).
+It is sent as CF-Access-Token and is different from the Plak API key.
+HELP
+}
+
+plak_connect_status_cmd() {
+    local json=0
+    for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
+    if ! plak_connect_load >/dev/null 2>&1; then
+        [ "$json" -eq 1 ] && printf '{"connected":false}\n' || echo "Not connected. Run: plak connect"
+        return 1
+    fi
+    local user_json rc=0 tmp
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    tmp=$(mktemp) || return 1
+    if plak_connect_validate "$PLAK_SAVED_PANEL" "$PLAK_SAVED_TOKEN" "$cf_token" >"$tmp"; then
+        user_json=$(cat "$tmp"); rm -f "$tmp"
+        local name email uid
+        name=$(plak_connect_json_get "$user_json" "data.name")
+        email=$(plak_connect_json_get "$user_json" "data.email")
+        uid=$(plak_connect_json_get "$user_json" "data.id")
+        if [ "$json" -eq 1 ]; then
+            printf '{"connected":true,"panel_url":%s,"user":{"id":%s,"name":%s,"email":%s}}\n' \
+                "$(plak_json_string "$PLAK_SAVED_PANEL")" "${uid:-null}" \
+                "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+        else
+            echo "Connected to $PLAK_SAVED_PANEL as ${name:-?} <${email:-?}>"
+        fi
+        return 0
+    else
+        rc=$?
+        rm -f "$tmp"
+        case "$rc" in
+            10) msg="Token invalid, revoked or expired." ;;
+            11) msg="Account blocked." ;;
+            *) msg="Panel unreachable (HTTP $PLAK_HTTP_STATUS)." ;;
+        esac
+        if [ "$json" -eq 1 ]; then
+            printf '{"connected":false,"panel_url":%s,"error":%s}\n' \
+                "$(plak_json_string "$PLAK_SAVED_PANEL")" "$(plak_json_string "$msg")"
+        else
+            plak_ui_error "$msg Run 'plak connect' to reconnect or revoke in Perfil > API Keys."
+        fi
+        return 1
+    fi
+}
+
+plak_connect_disconnect() {
+    local yes=0
+    for a in "$@"; do case "$a" in --yes|-y) yes=1 ;; esac; done
+    local file panel=""
+    file=$(plak_connect_storage_file)
+    if plak_connect_load >/dev/null 2>&1; then
+        panel="$PLAK_SAVED_PANEL"
+    elif [ ! -f "$file" ]; then
+        echo "Not connected."
+        return 0
+    fi
+    if [ "$yes" -eq 0 ] && [ -t 0 ] && plak_command_exists gum; then
+        gum confirm "Forget the local credential${panel:+ for $panel}?" || { echo "Cancelled."; return 0; }
+    elif [ "$yes" -eq 0 ] && [ -t 0 ]; then
+        printf 'Forget the local credential%s? [y/N] ' "${panel:+ for $panel}"
+        read -r ans || ans=""
+        case "$ans" in y|Y|yes|YES) : ;; *) echo "Cancelled."; return 0 ;; esac
+    elif [ "$yes" -eq 0 ]; then
+        plak_ui_error "Refusing to disconnect without --yes in non-interactive mode."
+        return 1
+    fi
+    rm -f "$file"
+    echo "Disconnected locally${panel:+ from $panel}."
+    echo "To revoke the key on the server: panel Perfil > API Keys > Revoke."
+    echo "Local forget is not a remote revoke; SSH keys installed separately are unaffected."
+}
+
+plak_connect_manual() {
+    local panel="" token="" use_stdin=0 json=0
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --panel) panel="$2"; shift 2 ;;
+            --dev) panel="$PLAK_CONNECT_DEV_URL"; shift 1 ;;
+            --token-stdin) use_stdin=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --cf-access-token) cf_token="$2"; shift 2 ;;
+            --token|--key) plak_ui_error "Refusing --token: the secret would leak via argv/history. Use --token-stdin."; return 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    if [ -z "$panel" ]; then
+        panel=$(plak_connect_resolve_panel) || { plak_ui_error "Invalid panel URL."; return 1; }
+    else
+        plak_connect_normalize_url "$panel" >/dev/null || { plak_ui_error "Invalid panel URL '$panel'."; return 1; }
+        panel=$(plak_connect_normalize_url "$panel")
+    fi
+    if [ "$use_stdin" -eq 1 ]; then
+        token=""
+        IFS= read -r token || true
+    elif [ -t 0 ]; then
+        printf 'Panel: %s\n' "$panel"
+        printf 'Paste a personal API key (Perfil > API Keys). Input is hidden.\n'
+        stty -echo 2>/dev/null || true
+        IFS= read -r token || token=""
+        stty echo 2>/dev/null || true
+        echo ""
+    else
+        plak_ui_error "No TTY. Pipe the key: echo \"\$KEY\" | plak connect --manual --token-stdin"
+        return 1
+    fi
+    token="$(printf '%s' "$token" | tr -d ' \t\r\n')"
+    if [ -z "$token" ]; then
+        echo "Cancelled."
+        return 2
+    fi
+    local user_json tmp rc
+    tmp=$(mktemp) || return 1
+    plak_connect_validate "$panel" "$token" "$cf_token" >"$tmp"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$tmp"
+        case "$rc" in
+            10) plak_ui_error "Key rejected (invalid/revoked/expired). Existing connection untouched." ;;
+            11) plak_ui_error "Account blocked. Existing connection untouched." ;;
+            *) plak_ui_error "Panel unreachable (HTTP ${PLAK_HTTP_STATUS:-?}). Existing connection untouched." ;;
+        esac
+        return 1
+    fi
+    user_json=$(cat "$tmp"); rm -f "$tmp"
+    if ! plak_connect_save "$panel" "$token" "$user_json"; then
+        plak_ui_error "Validated, but the credential could not be stored."
+        return 1
+    fi
+    token=""
+    local name email
+    name=$(plak_connect_json_get "$user_json" "data.name")
+    email=$(plak_connect_json_get "$user_json" "data.email")
+    if [ "$json" -eq 1 ]; then
+        printf '{"connected":true,"panel_url":%s,"user":{"name":%s,"email":%s}}\n' \
+            "$(plak_json_string "$panel")" "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+    else
+        plak_ui_success "Connected to $panel as ${name:-?} <${email:-?}>"
+    fi
+}
+
+plak_connect_device() {
+    local panel="" no_open=0 wait_secs="$PLAK_CONNECT_DEFAULT_WAIT" poll_secs="$PLAK_CONNECT_DEFAULT_POLL" json=0
+    local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --panel) panel="$2"; shift 2 ;;
+            --dev) panel="$PLAK_CONNECT_DEV_URL"; shift 1 ;;
+            --no-open) no_open=1; shift 1 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            --cf-access-token) cf_token="$2"; shift 2 ;;
+            --token|--key) plak_ui_error "Refusing --token: use the device flow or --manual --token-stdin."; return 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    case "$wait_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --wait '$wait_secs'."; return 1 ;; esac
+    case "$poll_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --poll '$poll_secs'."; return 1 ;; esac
+    [ "$poll_secs" -ge 2 ] || poll_secs=2
+    if [ -z "$panel" ]; then
+        panel=$(plak_connect_resolve_panel) || { plak_ui_error "Invalid panel URL."; return 1; }
+    else
+        plak_connect_normalize_url "$panel" >/dev/null || { plak_ui_error "Invalid panel URL '$panel'."; return 1; }
+        panel=$(plak_connect_normalize_url "$panel")
+    fi
+    local device_name="${HOSTNAME:-$(hostname 2>/dev/null || echo cli)}"
+    local body pending approve_url code expires
+    body=$(PLAK_DEVICE="$device_name" python3 -c 'import json, os; print(json.dumps({"device_name": os.environ["PLAK_DEVICE"][:100]}))')
+    if ! plak_connect_http POST "$panel/api/v1/cli/pair" "$body" "" "$cf_token"; then
+        plak_ui_error "Panel unreachable. Check the URL and network."
+        return 1
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 1
+    fi
+    if [ "$PLAK_HTTP_STATUS" = "429" ]; then
+        plak_ui_error "Rate limited${PLAK_HTTP_RETRY_AFTER:+ (retry after ${PLAK_HTTP_RETRY_AFTER}s)}. Try again later."
+        return 1
+    fi
+    if [ "$PLAK_HTTP_STATUS" != "201" ]; then
+        plak_ui_error "Pairing request failed (HTTP $PLAK_HTTP_STATUS)."
+        return 1
+    fi
+    pending=$(plak_connect_json_get "$PLAK_HTTP_BODY" "pending_token")
+    approve_url=$(plak_connect_json_get "$PLAK_HTTP_BODY" "approve_url")
+    code=$(plak_connect_json_get "$PLAK_HTTP_BODY" "pairing_code")
+    expires=$(plak_connect_json_get "$PLAK_HTTP_BODY" "expires_at")
+    if [ -z "$pending" ] || [ -z "$approve_url" ]; then
+        plak_ui_error "Invalid pairing response from panel."
+        return 1
+    fi
+    if [ "$json" -eq 0 ]; then
+        echo "Approve this device in the panel:"
+        echo "  $approve_url"
+        [ -n "$code" ] && echo "Code: $code${expires:+ (expires $expires)}"
+    fi
+    if [ "$no_open" -eq 0 ] && plak_connect_can_open_browser; then
+        plak_connect_open_url "$approve_url" || echo "Could not open a browser; approve manually at the link above."
+    elif [ "$json" -eq 0 ] && { plak_connect_is_wsl || [ ! -t 1 ]; }; then
+        echo "(No browser here — approve manually at the link above.)"
+    fi
+    local elapsed=0 status=""
+    while [ "$elapsed" -lt "$wait_secs" ]; do
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+        if ! plak_connect_http GET "$panel/api/v1/cli/pair/status" "" "$pending" "$cf_token"; then
+            [ "$json" -eq 0 ] && echo "Network hiccup; retrying..." >&2
+            continue
+        fi
+        if [ "$PLAK_HTTP_STATUS" = "429" ]; then
+            sleep "${PLAK_HTTP_RETRY_AFTER:-30}"
+            continue
+        fi
+        if [ "$PLAK_HTTP_STATUS" = "401" ]; then
+            if [ "$json" -eq 1 ]; then
+                printf '{"connected":false,"error":"pairing expired or purged"}\n'
+            else
+                plak_ui_error "Pairing expired or purged. Run 'plak connect' again."
+            fi
+            return 3
+        fi
+        status=$(plak_connect_json_get "$PLAK_HTTP_BODY" "status")
+        case "$status" in
+            approved) break ;;
+            rejected)
+                if [ "$json" -eq 1 ]; then printf '{"connected":false,"error":"rejected"}\n'; else echo "Pairing rejected in the panel. No connection saved."; fi
+                return 3
+                ;;
+            expired)
+                if [ "$json" -eq 1 ]; then printf '{"connected":false,"error":"expired"}\n'; else echo "Pairing expired. Run 'plak connect' again."; fi
+                return 3
+                ;;
+            pending|"") : ;;
+            *) : ;;
+        esac
+        if [ "$json" -eq 0 ] && [ -t 1 ]; then
+            printf '\rWaiting for approval... %ss / %ss' "$elapsed" "$wait_secs"
+        fi
+    done
+    [ "$json" -eq 0 ] && [ -t 1 ] && echo ""
+    if [ "$status" != "approved" ]; then
+        if [ "$json" -eq 1 ]; then printf '{"connected":false,"error":"timed out waiting for approval"}\n'; else echo "Timed out waiting for approval. No connection saved."; fi
+        return 3
+    fi
+    local user_json tmp rc
+    tmp=$(mktemp) || return 1
+    plak_connect_validate "$panel" "$pending" "$cf_token" >"$tmp"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$tmp"
+        plak_ui_error "Approved, but the key does not authenticate yet. Retry 'plak connect status'."
+        return 1
+    fi
+    user_json=$(cat "$tmp"); rm -f "$tmp"
+    if ! plak_connect_save "$panel" "$pending" "$user_json"; then
+        plak_ui_error "Approved, but the credential could not be stored."
+        return 1
+    fi
+    pending=""; user_json=""
+    if ! plak_connect_load >/dev/null 2>&1; then
+        plak_ui_error "Could not persist the connection."
+        return 1
+    fi
+    local name
+    name=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "name")
+    if [ "$json" -eq 1 ]; then
+        printf '{"connected":true,"panel_url":%s}\n' "$(plak_json_string "$panel")"
+    else
+        plak_ui_success "Connected to $panel${name:+ as $name}."
+    fi
+}
+
+plak_connect() {
+    plak_connect_require_deps || return 1
+    local action="device"
+    if [ $# -gt 0 ]; then
+        case "$1" in
+            status) action="status"; shift ;;
+            disconnect|logout|forget) action="disconnect"; shift ;;
+            --manual|manual) action="manual"; shift ;;
+            --help|-h|help) plak_connect_help; return 0 ;;
+            --*) action="device" ;;
+            *) plak_ui_error "Unknown connect action '$1'"; plak_connect_help; return 1 ;;
+        esac
+    fi
+    case "$action" in
+        status) plak_connect_status_cmd "$@" ;;
+        disconnect) plak_connect_disconnect "$@" ;;
+        manual) plak_connect_manual "$@" ;;
+        device)
+            for a in "$@"; do case "$a" in --manual) plak_connect_manual "$@"; return $? ;; --help|-h) plak_connect_help; return 0 ;; esac; done
+            plak_connect_device "$@"
+            ;;
+    esac
+}
+
+plak_disconnect() {
+    plak_connect_require_deps || return 1
+    plak_connect_disconnect "$@"
+}

@@ -1,0 +1,293 @@
+# Plak Connect: panel pairing (CLI-24) — device flow estilo Botmail.
+#
+# Flujo base: POST /api/v1/cli/pair -> approve_url -> poll status ->
+# el mismo token pendiente se convierte en API key personal.
+# Fallback manual: pegar una API key de Perfil > API Keys (headless/WSL/auto).
+#
+# Seguridad:
+# - El secreto solo viaja en memoria y en el body de la respuesta de pairing.
+# - Almacén: ${PLAK_HOME:-$HOME/.plak}/connection.json, dir 700, archivo 600,
+#   escritura atómica. Nunca se carga como shell (no `source`), nunca en logs,
+#   argv, historial ni salida JSON.
+# - Sin -L en curl para la API: no reenviar el Bearer a otro origen.
+# - Dependencias declaradas: curl + python3 (parser JSON real).
+
+PLAK_CONNECT_PROD_URL="${PLAK_CONNECT_PROD_URL:-https://panel.plak.work}"
+PLAK_CONNECT_DEV_URL="${PLAK_PANEL_DEV_URL:-http://127.0.0.1:8000}"
+PLAK_CONNECT_DEFAULT_WAIT="${PLAK_CONNECT_DEFAULT_WAIT:-900}"
+PLAK_CONNECT_DEFAULT_POLL="${PLAK_CONNECT_DEFAULT_POLL:-10}"
+
+plak_connect_require_deps() {
+    if ! plak_command_exists curl; then
+        plak_ui_error "curl is required for 'plak connect'."
+        return 1
+    fi
+    if ! plak_command_exists python3; then
+        plak_ui_error "python3 is required for 'plak connect' (JSON parsing)."
+        return 1
+    fi
+}
+
+plak_connect_storage_file() {
+    printf '%s\n' "${PLAK_HOME:-$HOME/.plak}/connection.json"
+}
+
+plak_connect_ensure_storage() {
+    local dir file
+    file=$(plak_connect_storage_file)
+    dir=$(dirname "$file")
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        chmod 700 "$dir"
+    else
+        chmod 700 "$dir" 2>/dev/null || true
+    fi
+    if [ ! -f "$file" ]; then
+        : > "$file"
+        chmod 600 "$file"
+    else
+        chmod 600 "$file" 2>/dev/null || true
+    fi
+}
+
+# Normaliza la URL del panel: sin barra final, solo http(s)://.
+plak_connect_normalize_url() {
+    local url="${1:-}"
+    url="${url%/}"
+    case "$url" in
+        http://*|https://*) printf '%s\n' "$url" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Resuelve el panel: --panel URL | --dev | env PLAK_PANEL_URL | prod.
+plak_connect_resolve_panel() {
+    local explicit="" dev=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --panel) explicit="${2:-}"; shift 2 ;;
+            --dev) dev=1; shift 1 ;;
+            *) shift 1 ;;
+        esac
+    done
+    if [ -n "$explicit" ]; then
+        plak_connect_normalize_url "$explicit" || return 1
+        return 0
+    fi
+    if [ "$dev" -eq 1 ]; then
+        plak_connect_normalize_url "$PLAK_CONNECT_DEV_URL" || return 1
+        return 0
+    fi
+    if [ -n "${PLAK_PANEL_URL:-}" ]; then
+        plak_connect_normalize_url "$PLAK_PANEL_URL" || return 1
+        return 0
+    fi
+    printf '%s\n' "$PLAK_CONNECT_PROD_URL"
+}
+
+plak_connect_is_wsl() {
+    grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null
+}
+
+plak_connect_can_open_browser() {
+    [ -t 1 ] || return 1
+    plak_connect_is_wsl && return 1
+    [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || [ "$(uname -s)" = "Darwin" ] || return 1
+    return 0
+}
+
+plak_connect_open_url() {
+    local url="$1"
+    if plak_connect_is_wsl; then
+        return 1
+    fi
+    case "$(uname -s)" in
+        Darwin)
+            open "$url" >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+        Linux)
+            if plak_command_exists xdg-open; then
+                xdg-open "$url" >/dev/null 2>&1 && return 0
+            fi
+            return 1
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Extrae un campo JSON por ruta con puntos (p.ej. data.email). Vacío si falta.
+plak_connect_json_get() {
+    local json="$1" path="$2"
+    PLAK_JSON_DOC="$json" PLAK_JSON_PATH="$path" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ.get("PLAK_JSON_DOC", ""))
+except Exception:
+    print("")
+    raise SystemExit(0)
+cur = doc
+for part in os.environ.get("PLAK_JSON_PATH", "").split("."):
+    if isinstance(cur, dict) and part in cur:
+        cur = cur[part]
+    else:
+        print("")
+        raise SystemExit(0)
+if cur is None:
+    print("")
+elif isinstance(cur, (dict, list)):
+    print(json.dumps(cur))
+else:
+    print(str(cur))
+' 2>/dev/null
+}
+
+# GET/POST JSON contra la API sin seguir redirecciones.
+# Uso: plak_connect_http METHOD URL [BODY] [BEARER] [CF_TOKEN]
+# Exporta: PLAK_HTTP_STATUS, PLAK_HTTP_BODY, PLAK_HTTP_RETRY_AFTER.
+plak_connect_http() {
+    local method="$1" url="$2" body="${3:-}" bearer="${4:-}" cf_token="${5:-}"
+    local headers_file body_file code
+    headers_file=$(mktemp) || return 1
+    body_file=$(mktemp) || { rm -f "$headers_file"; return 1; }
+    local args=(-sS --max-time 20 --connect-timeout 10 -X "$method" -D "$headers_file" -o "$body_file" -w '%{http_code}')
+    args+=(-H 'Accept: application/json' -H 'User-Agent: PlakCLI/connect')
+    [ -n "$body" ] && args+=(-H 'Content-Type: application/json' --data "$body")
+    [ -n "$bearer" ] && args+=(-H "Authorization: Bearer $bearer")
+    [ -n "$cf_token" ] && args+=(-H "CF-Access-Token: $cf_token")
+    code=$(curl "${args[@]}" "$url" 2>/dev/null) || code="000"
+    PLAK_HTTP_STATUS="$code"
+    PLAK_HTTP_BODY=$(cat "$body_file" 2>/dev/null || true)
+    PLAK_HTTP_RETRY_AFTER=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d ' \r\n' || true)
+    rm -f "$headers_file" "$body_file"
+    [ "$code" != "000" ]
+}
+
+plak_connect_is_html() {
+    case "$1" in
+        '<'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Detecta bloqueo de Cloudflare Access / WAF en respuestas no-JSON.
+plak_connect_is_access_block() {
+    local status="$1" body="$2"
+    if plak_connect_is_html "$body"; then
+        case "$body" in
+            *Cloudflare*|*cf-*|*Just\ a\ moment*|*Attention\ Required*) return 0 ;;
+        esac
+        case "$status" in
+            301|302|303|307|308|403) return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+plak_connect_access_hint() {
+    cat <<'HINT' >&2
+This panel answer looks like Cloudflare Access (login page / redirect / challenge),
+not the Plak API. The browser session does not carry over to this HTTP client.
+
+Provide an Access service token explicitly (never the Plak API key):
+  export PLAK_CF_ACCESS_TOKEN='<CF-Access-Token value>'
+  plak connect --panel <url>   # reintenta con el header CF-Access-Token
+
+Ask the panel owner for the Access token out-of-band; it is different from
+Perfil > API Keys and must not be pasted into chats or logs.
+HINT
+}
+
+# Guarda conexión: panel_url + token + identidad mínima. Atómico, 600.
+plak_connect_save() {
+    local panel_url="$1" token="$2" user_json="$3"
+    local file tmp name email uid
+    file=$(plak_connect_storage_file)
+    plak_connect_ensure_storage
+    uid=$(plak_connect_json_get "$user_json" "data.id")
+    name=$(plak_connect_json_get "$user_json" "data.name")
+    email=$(plak_connect_json_get "$user_json" "data.email")
+    tmp=$(mktemp "$(dirname "$file")/.connection.XXXXXX") || return 1
+    chmod 600 "$tmp"
+    PLAK_SAVE_PANEL="$panel_url" PLAK_SAVE_TOKEN="$token" PLAK_SAVE_USER="$user_json" PLAK_SAVE_TMP="$tmp" python3 -c '
+import json, os, datetime
+doc = {
+  "panel_url": os.environ["PLAK_SAVE_PANEL"],
+  "token": os.environ["PLAK_SAVE_TOKEN"],
+  "user": {
+    "id": None,
+    "name": "",
+    "email": "",
+  },
+  "saved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+try:
+    u = json.loads(os.environ.get("PLAK_SAVE_USER", "") or "{}")
+    d = u.get("data", u) if isinstance(u, dict) else {}
+    if isinstance(d, dict):
+        doc["user"]["id"] = d.get("id")
+        doc["user"]["name"] = d.get("name", "")
+        doc["user"]["email"] = d.get("email", "")
+except Exception:
+    pass
+open(os.environ["PLAK_SAVE_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
+' 2>/dev/null || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$file"
+    chmod 600 "$file"
+}
+
+# Carga conexión sin imprimir el secreto. Exporta PLAK_SAVED_PANEL/USER_JSON.
+plak_connect_load() {
+    local file content panel token
+    file=$(plak_connect_storage_file)
+    [ -f "$file" ] || return 1
+    content=$(cat "$file" 2>/dev/null) || return 1
+    [ -n "$content" ] || return 1
+    panel=$(plak_connect_json_get "$content" "panel_url")
+    token=$(plak_connect_json_get "$content" "token")
+    [ -n "$panel" ] && [ -n "$token" ] || return 1
+    PLAK_SAVED_PANEL="$panel"
+    PLAK_SAVED_TOKEN="$token"
+    PLAK_SAVED_USER_JSON=$(PLAK_JSON_DOC="$content" python3 -c '
+import json, os
+print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("user", {})))
+' 2>/dev/null)
+    export PLAK_SAVED_PANEL PLAK_SAVED_TOKEN PLAK_SAVED_USER_JSON
+    return 0
+}
+
+plak_connect_saved_token() {
+    plak_connect_load >/dev/null 2>&1 || return 1
+    printf '%s' "$PLAK_SAVED_TOKEN"
+}
+
+# Valida un token contra GET /api/v1/user. Imprime el JSON en stdout.
+# Códigos: 0 válido, 10 inválido/revocado/caducado, 11 bloqueada, 12 red/acceso.
+plak_connect_validate() {
+    local panel="$1" token="$2" cf_token="${3:-}"
+    if ! plak_connect_http GET "$panel/api/v1/user" "" "$token" "$cf_token"; then
+        return 12
+    fi
+    if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
+        plak_connect_access_hint
+        return 12
+    fi
+    case "$PLAK_HTTP_STATUS" in
+        200)
+            printf '%s' "$PLAK_HTTP_BODY"
+            return 0
+            ;;
+        401)
+            return 10
+            ;;
+        403)
+            return 11
+            ;;
+        429)
+            return 12
+            ;;
+        *)
+            return 12
+            ;;
+    esac
+}

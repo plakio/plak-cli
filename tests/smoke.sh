@@ -106,6 +106,14 @@ fi
 ./tests/migration.sh
 bash ./tests/php-security.sh
 bash ./tests/snapshots.sh
+bash ./tests/connect.sh
+bash ./tests/panel.sh
+bash ./tests/panel-link.sh
+bash ./tests/panel-migrate.sh
+bash ./tests/panel-write.sh
+bash ./tests/panel-wp.sh
+bash ./tests/panel-server.sh
+bash ./tests/panel-infra.sh
 bash ./tests/import.sh
 bash ./tests/clone.sh
 bash ./tests/dashboard.sh
