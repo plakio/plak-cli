@@ -510,7 +510,8 @@ plak_site_install() {
     # Note: Don't call plak_site_configure_mariadb_port here — it creates
     # plak.cnf which conflicts with Homebrew's MariaDB default config.
 
-    # No standalone PHP install — wp-cli is invoked through frankenphp php-cli
+    # No unrelated standalone PHP install — WP uses frankenphp php-cli, or a
+    # fingerprint-matched sibling php-zts for the upstream 1.13.0 CLI regression.
     # (see get_wp_cmd in main), so FrankenPHP's bundled PHP is the single PHP
     # runtime for both web and CLI. On Linux the php-zts-* extensions installed
     # above provide WordPress's required extensions to FrankenPHP.
