@@ -3443,6 +3443,13 @@ update_etc_hosts() {
 
     local missing_hosts=()
     for host in "${required_hosts[@]}"; do
+        # Browser special-use handling is not a libc resolver test. On WSL,
+        # avoid a sudo edit only when this Linux resolver already gives the
+        # loopback address used by Plak; other clients are documented separately.
+        if [ "${IS_WSL:-false}" = true ] && [[ "$host" = *.localhost ]] &&
+            command -v getent >/dev/null && getent ahostsv4 "$host" 2>/dev/null | grep -q '^127\.0\.0\.1[[:space:]]'; then
+            continue
+        fi
         # Use grep -q to quietly check if the entry exists
         if ! grep -q "127.0.0.1[[:space:]]\+$host" /etc/hosts; then
             missing_hosts+=("$host")
@@ -3457,7 +3464,10 @@ update_etc_hosts() {
         done
 
         # Use sudo tee to append all missing entries at once
-        echo -e "$entries_to_add" | sudo tee -a /etc/hosts > /dev/null
+        if ! printf '%b' "$entries_to_add" | sudo tee -a /etc/hosts >/dev/null; then
+            echo 'Error: Linux /etc/hosts update failed; retry interactively with sudo authorization. Browser .localhost resolution does not prove Linux CLI resolution.' >&2
+            return 1
+        fi
         echo "   - ✅ Done."
     else
         echo "   - ✅ All entries are present."
@@ -8478,13 +8488,15 @@ plak_hosts_write_hosts_file() {
     backup_path="${PLAK_HOSTS_FILE}.plak.bak.$(date +%Y%m%d%H%M%S)"
 
     if [ -w "$PLAK_HOSTS_FILE" ]; then
-        cp "$PLAK_HOSTS_FILE" "$backup_path"
-        cat "$tmp_file" > "$PLAK_HOSTS_FILE"
+        cp "$PLAK_HOSTS_FILE" "$backup_path" || return 1
+        cat "$tmp_file" > "$PLAK_HOSTS_FILE" || return 1
         return 0
     fi
 
-    sudo cp "$PLAK_HOSTS_FILE" "$backup_path"
-    sudo cp "$tmp_file" "$PLAK_HOSTS_FILE"
+    if ! sudo cp "$PLAK_HOSTS_FILE" "$backup_path" || ! sudo cp "$tmp_file" "$PLAK_HOSTS_FILE"; then
+        echo "Error: could not update $PLAK_HOSTS_FILE; sudo authorization is required. No success reported." >&2
+        return 1
+    fi
 }
 
 plak_hosts_add_entry() {
@@ -16634,7 +16646,7 @@ plak_site_reload() {
         rm -f "$pending"
         create_gui_file
         regenerate_caddyfile
-        update_etc_hosts
+        update_etc_hosts || return $?
         [ -f "$pending" ] || break
     done
 
@@ -17880,8 +17892,59 @@ plak_site_trust_linuxbrew_bundles() {
     return "$failed"
 }
 
+plak_site_trust_windows() {
+    local apply=false root_cert fingerprint encoded program
+    case "${1:-}" in --yes) apply=true; shift ;; esac
+    [ "$#" -eq 0 ] || { echo 'Usage: plak trust --windows [--yes]' >&2; return 1; }
+    [ "${IS_WSL:-false}" = true ] || { echo 'Error: Windows trust requires WSL interop.' >&2; return 1; }
+    if ! command -v openssl >/dev/null || ! command -v powershell.exe >/dev/null; then
+        echo 'Error: openssl and powershell.exe are required; enable WSL interop. No trust store changed.' >&2; return 1;
+    fi
+    root_cert=$(plak_site_caddy_root_cert) || { echo 'Error: Caddy local root.crt not found; check Caddy storage.' >&2; return 1; }
+    if grep -q 'PRIVATE KEY' "$root_cert" ||
+        ! openssl x509 -in "$root_cert" -noout -text 2>/dev/null | grep -q 'CA:TRUE' ||
+        ! openssl verify -CAfile "$root_cert" "$root_cert" >/dev/null 2>&1; then
+        echo 'Error: root must be a valid public CA certificate without a private key.' >&2; return 1
+    fi
+    fingerprint=$(openssl x509 -in "$root_cert" -noout -fingerprint -sha256) || return 1
+    printf 'Windows destination: CurrentUser\\Root (not LocalMachine).\nCertificate: %s\n%s\n' "$root_cert" "$fingerprint"
+    if [ "$apply" = false ]; then
+        echo 'No store changed. Verify the fingerprint, then authorize with plak trust --windows --yes.'
+        return 0
+    fi
+    encoded=$(openssl x509 -in "$root_cert" -outform DER | base64 | tr -d '\r\n') || return 1
+    [ -n "$encoded" ] && [[ "$encoded" =~ ^[A-Za-z0-9+/=]+$ ]] || return 1
+    program=$(cat <<POWERSHELL
+\$ErrorActionPreference = 'Stop';
+try {
+  \$bytes = [Convert]::FromBase64String('$encoded');
+  \$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,\$bytes);
+  if (\$cert.HasPrivateKey -or \$cert.Subject -ne \$cert.Issuer) { throw 'Not a public root certificate'; }
+  \$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','CurrentUser');
+  \$store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite);
+  try {
+    \$found = \$store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, \$cert.Thumbprint, \$false);
+    if (\$found.Count -eq 0) { \$store.Add(\$cert); }
+    Write-Output ('Trusted Windows CurrentUser root: ' + \$cert.Thumbprint);
+  } finally { \$store.Close(); }
+} catch { Write-Error \$_; exit 1; }
+POWERSHELL
+    )
+    powershell.exe -NoProfile -NonInteractive -Command "$program" || {
+        echo 'Error: Windows current-user trust failed; check interop/policy. Linux trust was not changed.' >&2; return 1;
+    }
+    echo 'Restart Windows Chrome/Edge. Linux/system/NSS/Homebrew stores were not changed.'
+}
+
 plak_site_trust() {
+    case "${1:-}" in
+        --windows) shift; plak_site_trust_windows "$@"; return $? ;;
+        -h|--help) echo 'Usage: plak trust [--windows [--yes]]'; return 0 ;;
+        '') ;;
+        *) echo 'Usage: plak trust [--windows [--yes]]' >&2; return 1 ;;
+    esac
     echo "🔐 Installing Plak's local root certificate..."
+    [ "${IS_WSL:-false}" != true ] || echo 'Linux trust only; Windows browsers need explicit plak trust --windows onboarding.'
     if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
         plak_ui_error 'Run plak trust without sudo; only the system-store step escalates privileges.'
         return 1
@@ -17900,12 +17963,7 @@ plak_site_trust() {
         # Without it Firefox and Chromium keep showing the "Not Secure"
         # warning even though curl and Chrome-with-system-roots are fine.
         if ! command -v certutil &>/dev/null; then
-            echo "   - Installing NSS tools for browser trust..."
-            if [ "$PKG_MANAGER" = "apt" ]; then
-                $SUDO_CMD apt install -y libnss3-tools &>/dev/null || true
-            elif [ "$PKG_MANAGER" = "dnf" ]; then
-                $SUDO_CMD dnf install -y nss-tools &>/dev/null || true
-            fi
+            echo '   - NSS tools missing; explicitly install libnss3-tools (apt) or nss-tools (dnf) if browser profile trust is needed.'
         fi
     fi
 
