@@ -215,11 +215,16 @@ plak wp <site> <wp-cli arguments...>
 plak agent <site> [--json]
 plak path <name>
 plak url <name>
+plak edit <name> [--print-url] [--no-open]
 plak log [site] [-f]
 ```
 
 `plak add <name> --static` creates a static site with the default HTML starter at
 `public/index.html`. It has no database and no WordPress files.
+
+Static sites get a local **Edit** launcher on the page and can also be opened
+with `plak edit <name>`. The editor lives in Plak's app directory, not in
+`public/`, and is never part of the published site.
 
 Run WP-CLI from any directory using the site's FrankenPHP runtime:
 

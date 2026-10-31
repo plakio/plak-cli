@@ -83,6 +83,7 @@ Commands:
   disconnect  Forget the local panel credential
   panel       List your own panel sites and servers (read-only)
   add         Create a WordPress or static local site
+  edit        Open the local HTML editor for a static site
   import      Create a local site from a backup ZIP or TAR
   clone       Duplicate a local site into an independent copy
   delete      Delete a local site
@@ -321,7 +322,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
+        add|import|clone|delete|rename|list|path|edit|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
             set +e
             ;;
     esac
@@ -388,6 +389,10 @@ main() {
         path)
             check_dependencies
             plak_site_path "$@"
+            ;;
+        edit)
+            check_dependencies
+            plak_site_edit "$@"
             ;;
         pull)
             check_dependencies
@@ -3991,6 +3996,28 @@ EOM
                     echo '    }' >> "$CADDYFILE_PATH"
                     echo '    rewrite @ms_assets /{re.ms_assets.1}' >> "$CADDYFILE_PATH"
                 fi
+
+                # Static sites serve their HTML through the local capture
+                # router so it can inject the Plak Edit launcher. The file on
+                # disk stays clean; the router only decorates the response.
+                # WordPress sites keep their own HTML Editor plugin.
+                if [ ! -f "$site_path/public/wp-config.php" ]; then
+                    if [ -f "$site_path/public/index.html" ]; then
+                        echo '    @plak_editor_index path /' >> "$CADDYFILE_PATH"
+                        echo '    handle @plak_editor_index {' >> "$CADDYFILE_PATH"
+                        echo "        root * \"$APP_DIR/site-router\"" >> "$CADDYFILE_PATH"
+                        echo "        rewrite * /render.php?plak_site=${site_name%.localhost}&plak_path=/" >> "$CADDYFILE_PATH"
+                        echo '        php_server' >> "$CADDYFILE_PATH"
+                        echo '    }' >> "$CADDYFILE_PATH"
+                    fi
+                    echo '    @plak_editor_html path *.html' >> "$CADDYFILE_PATH"
+                    echo '    handle @plak_editor_html {' >> "$CADDYFILE_PATH"
+                    echo "        root * \"$APP_DIR/site-router\"" >> "$CADDYFILE_PATH"
+                    echo "        rewrite * /render.php?plak_site=${site_name%.localhost}&plak_path={path}" >> "$CADDYFILE_PATH"
+                    echo '        php_server' >> "$CADDYFILE_PATH"
+                    echo '    }' >> "$CADDYFILE_PATH"
+                fi
+
                 echo "    php_server" >> "$CADDYFILE_PATH"
 
                 if [ ! -f "$site_path/public/wp-config.php" ]; then
@@ -7663,6 +7690,11 @@ if (($_GET['format'] ?? '') === 'text') {
     echo json_encode($report, JSON_PARTIAL_OUTPUT_ON_ERROR);
 }
 EOM
+
+    # Deploy the local HTML editor app and the static-site capture router.
+    # The editor lives under App/gui; only the router touches the served HTML.
+    mkdir -p "$APP_DIR/lib" "$APP_DIR/site-router" || return 1
+    deploy_html_editor "$GUI_DIR/editor" "$APP_DIR" || return 1
 
     # Clean up temp files
     rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"
@@ -13186,6 +13218,91 @@ plak_site_disable() {
     
     echo "✅ Services stopped."
 }
+# Source: commands/site/edit
+# Open the local HTML editor for a static site.
+plak_site_edit_usage() {
+    cat <<'HELP'
+Usage:
+  plak edit <site> [--print-url] [--no-open]
+
+Open the local HTML editor for a static site. It opens the site with the
+Edit launcher, or the editor directly when the site has no index.html.
+HELP
+}
+
+plak_site_edit() {
+    local site="" print_url=false no_open=false arg
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
+        case "$arg" in
+            --print-url) print_url=true ;;
+            --no-open) no_open=true ;;
+            -h|--help) plak_site_edit_usage; return 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; return 1 ;;
+            *)
+                if [ -n "$site" ]; then
+                    echo "Error: unexpected argument '$arg'." >&2
+                    return 1
+                fi
+                site="$arg"
+                ;;
+        esac
+        shift
+    done
+
+    if [ -z "$site" ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            local candidates=() site_dir name
+            for site_dir in "$SITES_DIR"/*.localhost; do
+                [ -d "$site_dir/public" ] || continue
+                [ -f "$site_dir/public/wp-config.php" ] && continue
+                name=$(basename "$site_dir" .localhost)
+                candidates+=("$name")
+            done
+            if [ "${#candidates[@]}" -eq 0 ]; then
+                echo "Error: no static sites found." >&2
+                return 1
+            fi
+            site=$(printf '%s\n' "${candidates[@]}" | gum choose) || return 1
+            [ -n "$site" ] || return 1
+        else
+            plak_site_edit_usage >&2
+            return 1
+        fi
+    fi
+
+    local site_dir="$SITES_DIR/$site.localhost"
+    if [ ! -d "$site_dir/public" ]; then
+        echo "Error: site '$site.localhost' not found." >&2
+        return 1
+    fi
+    if [ -f "$site_dir/public/wp-config.php" ]; then
+        echo "Error: '$site.localhost' is a WordPress site. Use the HTML Editor plugin in wp-admin." >&2
+        return 1
+    fi
+
+    if ! is_caddy_running; then
+        start_caddy_service || return 1
+    fi
+
+    local url
+    if [ -f "$site_dir/public/index.html" ]; then
+        url="$(url_for "$site.localhost")/?plak-edit=1"
+    else
+        url="$(url_for "plak.localhost")/editor/?site=$site"
+    fi
+
+    echo "$url"
+    if [ "$print_url" = true ] || [ "$no_open" = true ]; then
+        return 0
+    fi
+    if type plak_connect_open_url >/dev/null 2>&1; then
+        plak_connect_open_url "$url" || echo "Open the URL manually: $url"
+    else
+        echo "Open the URL in your browser: $url"
+    fi
+}
+
 # Source: commands/site/enable
 plak_site_enable() {
     echo "🚀 Enabling Plak services..."
@@ -19809,5 +19926,1336 @@ plak_version() {
     fi
 }
 
+# --- HTML Editor Assets ---
+deploy_html_editor() {
+    local editor_dir="${1:-$GUI_DIR/editor}"
+    local app_dir="${2:-$APP_DIR}"
+    mkdir -p "$editor_dir" "$app_dir/lib" "$app_dir/site-router" || return 1
+    cat > "$editor_dir/api.php" <<'PLAK_EDITOR_ASSET_EOF'
+<?php
+declare(strict_types=1);
+
+require_once dirname(__DIR__, 2) . '/lib/html-site.php';
+require_once dirname(__DIR__) . '/dashboard-auth.php';
+
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
+
+function plak_editor_json(array $payload, int $status = 200): never
+{
+    http_response_code($status);
+    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+function plak_editor_error(string $message, int $status = 400, array $extra = []): never
+{
+    plak_editor_json(['success' => false, 'message' => $message] + $extra, $status);
+}
+
+$ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+$loopback = in_array($ip, ['127.0.0.1', '::1', '::ffff:127.0.0.1'], true);
+// Allow the WSL2 private adapter so a Windows browser can reach the editor,
+// but never the Tailscale CGNAT/ULA ranges: editing is local-only.
+$private = preg_match('/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fe80:|::ffff:(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.))/i', $ip) === 1;
+if (!$loopback && !$private) {
+    plak_editor_error('This answers only on the machine running Plak.', 403);
+}
+
+$token = plak_site_dashboard_token(plak_html_home() . '/Plak/cache/dashboard-token');
+$given = (string) ($_SERVER['HTTP_X_PLAK_CSRF'] ?? '');
+if ($given === '' || !hash_equals($token, $given)) {
+    plak_editor_error('Invalid or missing CSRF token.', 403);
+}
+
+$requestHost = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
+$source = (string) ($_SERVER['HTTP_ORIGIN'] ?? ($_SERVER['HTTP_REFERER'] ?? ''));
+$sourceHost = $source !== '' ? (string) parse_url($source, PHP_URL_HOST) : '';
+if ($requestHost === '' || $sourceHost === '' || strcasecmp($requestHost, $sourceHost) !== 0) {
+    plak_editor_error('Cross-origin request blocked.', 403);
+}
+
+$method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+$action = (string) ($_GET['action'] ?? '');
+$site = (string) ($_GET['site'] ?? '');
+$public = plak_html_public_dir($site);
+if ($public === null) {
+    plak_editor_error('Static site not found.', 404);
+}
+
+if ($method === 'GET' && $action === 'files') {
+    $files = [];
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($public, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iterator as $entry) {
+            if (!$entry->isFile()) {
+                continue;
+            }
+            $path = $entry->getPathname();
+            $rel = substr($path, strlen($public) + 1);
+            if (preg_match('#(^|/)\.#', $rel)) {
+                continue;
+            }
+            if (preg_match('#(^|/)(wp-content|wp-includes|wp-admin|node_modules|vendor)(/|$)#i', $rel)) {
+                continue;
+            }
+            if (!preg_match('/\.(?:html?|htm)$/i', $rel)) {
+                continue;
+            }
+            $files[] = [
+                'path' => str_replace(DIRECTORY_SEPARATOR, '/', $rel),
+                'size' => (int) $entry->getSize(),
+                'mtime' => (int) $entry->getMTime(),
+            ];
+            if (count($files) >= 500) {
+                break;
+            }
+        }
+    } catch (Throwable $e) {
+        plak_editor_error('Could not list the site files.', 500);
+    }
+
+    usort($files, static function (array $a, array $b): int {
+        if ($a['path'] === 'index.html') return -1;
+        if ($b['path'] === 'index.html') return 1;
+        return strcasecmp($a['path'], $b['path']);
+    });
+
+    plak_editor_json([
+        'success' => true,
+        'site' => $site,
+        'domain' => plak_html_site_base($site),
+        'files' => $files,
+    ]);
+}
+
+if ($method === 'GET' && $action === 'read') {
+    $file = (string) ($_GET['file'] ?? '');
+    $path = plak_html_resolve($public, $file, false);
+    if ($path === null) {
+        plak_editor_error('HTML file not found.', 404);
+    }
+    $size = (int) filesize($path);
+    if ($size > 5 * 1024 * 1024) {
+        plak_editor_error('HTML file is too large to edit (max 5 MB).', 413);
+    }
+    $content = file_get_contents($path);
+    if ($content === false) {
+        plak_editor_error('Could not read the HTML file.', 500);
+    }
+    if (function_exists('mb_check_encoding') && !mb_check_encoding($content, 'UTF-8')) {
+        plak_editor_error('HTML file is not valid UTF-8.', 415);
+    }
+    plak_editor_json([
+        'success' => true,
+        'file' => str_replace(DIRECTORY_SEPARATOR, '/', substr($path, strlen($public) + 1)),
+        'content' => $content,
+        'sha256' => hash('sha256', $content),
+        'mtime' => (int) filemtime($path),
+        'size' => $size,
+    ]);
+}
+
+if ($method === 'POST' && $action === 'save') {
+    $raw = file_get_contents('php://input');
+    $input = json_decode((string) $raw, true);
+    if (!is_array($input)) {
+        plak_editor_error('Invalid JSON body.');
+    }
+
+    $file = (string) ($input['file'] ?? '');
+    $content = (string) ($input['content'] ?? '');
+    $baseSha = (string) ($input['base_sha256'] ?? '');
+    $path = plak_html_resolve($public, $file, false);
+    if ($path === null) {
+        plak_editor_error('HTML file not found.', 404);
+    }
+    if (strlen($content) > 5 * 1024 * 1024) {
+        plak_editor_error('HTML file is too large to save (max 5 MB).', 413);
+    }
+    if (function_exists('mb_check_encoding') && !mb_check_encoding($content, 'UTF-8')) {
+        plak_editor_error('HTML content is not valid UTF-8.', 415);
+    }
+
+    $current = file_get_contents($path);
+    if ($current === false) {
+        plak_editor_error('Could not read the current HTML file.', 500);
+    }
+    $currentSha = hash('sha256', $current);
+    if ($baseSha === '' || !hash_equals($currentSha, $baseSha)) {
+        plak_editor_json([
+            'success' => false,
+            'code' => 'conflict',
+            'message' => 'The file changed on disk. Reload before saving.',
+            'sha256' => $currentSha,
+        ], 409);
+    }
+
+    $backupDir = plak_html_home() . '/Plak/cache/html-editor/' . $site . '/' . str_replace(['/', '\\'], '__', $file);
+    if (!is_dir($backupDir) && !@mkdir($backupDir, 0755, true) && !is_dir($backupDir)) {
+        plak_editor_error('Could not create the editor backup folder.', 500);
+    }
+    $backup = $backupDir . '/' . date('Ymd-His') . '-' . bin2hex(random_bytes(3)) . '.html';
+    if (!@copy($path, $backup)) {
+        plak_editor_error('Could not back up the current HTML file.', 500);
+    }
+
+    $temp = tempnam(dirname($path), '.plak-edit-');
+    if ($temp === false) {
+        plak_editor_error('Could not create a temporary file.', 500);
+    }
+    if (file_put_contents($temp, $content) === false) {
+        @unlink($temp);
+        plak_editor_error('Could not write the edited HTML file.', 500);
+    }
+    $mode = fileperms($path);
+    if ($mode !== false) {
+        @chmod($temp, $mode & 0777);
+    }
+    if (!@rename($temp, $path)) {
+        @unlink($temp);
+        plak_editor_error('Could not replace the HTML file.', 500);
+    }
+
+    plak_editor_json([
+        'success' => true,
+        'file' => str_replace(DIRECTORY_SEPARATOR, '/', substr($path, strlen($public) + 1)),
+        'sha256' => hash('sha256', $content),
+        'mtime' => (int) filemtime($path),
+        'backup' => basename($backup),
+    ]);
+}
+
+plak_editor_error('Unsupported action.', 405);
+PLAK_EDITOR_ASSET_EOF
+    cat > "$editor_dir/editor.css" <<'PLAK_EDITOR_ASSET_EOF'
+:root {
+  color-scheme: light dark;
+  --bg: #f5f5f1;
+  --panel: #ffffff;
+  --panel-2: #eeece5;
+  --ink: #10110f;
+  --muted: #62665f;
+  --border: #d9d6cc;
+  --accent: #2f36fa;
+  --acid: #b7fa45;
+  --danger: #b42318;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101210;
+    --panel: #171a16;
+    --panel-2: #1f231e;
+    --ink: #eef0e9;
+    --muted: #9aa095;
+    --border: #2a2f28;
+    --accent: #8f9bff;
+    --acid: #b7fa45;
+    --danger: #ff8a80;
+  }
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+button, select, textarea { font: inherit; }
+button { cursor: pointer; }
+a { color: inherit; }
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: .7rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  z-index: 5;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  white-space: nowrap;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.brand-sub {
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.site {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: .05rem;
+  padding-left: 1rem;
+  border-left: 1px solid var(--border);
+}
+.site strong {
+  overflow: hidden;
+  max-width: 22rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .9rem;
+}
+.site a {
+  color: var(--muted);
+  font-size: .74rem;
+  text-decoration: none;
+}
+.site a:hover { color: var(--accent); }
+.file-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  color: var(--muted);
+  font-size: .78rem;
+}
+.file-picker select {
+  max-width: 18rem;
+  min-height: 34px;
+  padding: .35rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.actions button,
+.actions .ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: .4rem .68rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: .8rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.actions button:hover,
+.actions .ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.actions button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.actions button.primary:hover { filter: brightness(1.08); color: #fff; }
+.actions button:disabled { opacity: .45; cursor: default; }
+.status {
+  min-width: 6rem;
+  color: var(--muted);
+  font-size: .74rem;
+  text-align: right;
+}
+.banner {
+  padding: .7rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel));
+  color: var(--danger);
+  font-size: .84rem;
+  font-weight: 550;
+}
+.canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--panel-2);
+}
+#preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+#code {
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 1.1rem 1.2rem;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: var(--panel);
+  color: var(--ink);
+  font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+}
+#code[hidden], #preview[hidden] { display: none; }
+body.embed #dashboard-link { display: none; }
+body.embed .site { max-width: 28rem; }
+@media (max-width: 760px) {
+  .topbar { gap: .55rem; }
+  .site { padding-left: 0; border-left: 0; }
+  .file-picker { order: 4; width: 100%; }
+  .file-picker select { width: 100%; max-width: none; }
+  .actions { margin-left: 0; width: 100%; }
+  .actions .status { margin-left: auto; }
+}
+PLAK_EDITOR_ASSET_EOF
+    cat > "$editor_dir/editor.js" <<'PLAK_EDITOR_ASSET_EOF'
+(() => {
+  const meta = (name) => document.querySelector(`meta[name="${name}"]`)?.content || '';
+  const site = meta('plak-site');
+  const domain = meta('plak-domain');
+  const csrf = meta('plak-csrf');
+  const initialFile = (meta('plak-file') || 'index.html').replace(/^\/+/, '');
+  const embed = meta('plak-embed') === '1';
+
+  const fileSelect = document.getElementById('file-select');
+  const preview = document.getElementById('preview');
+  const code = document.getElementById('code');
+  const saveButton = document.getElementById('save');
+  const codeToggle = document.getElementById('code-toggle');
+  const closeButton = document.getElementById('close');
+  const status = document.getElementById('status');
+  const banner = document.getElementById('banner');
+
+  const state = {
+    files: [],
+    file: '',
+    source: '',
+    saved: '',
+    sha: '',
+    dirty: false,
+    saving: false,
+    mode: 'preview',
+    initial: new WeakMap(),
+    loading: false,
+  };
+
+  if (closeButton) closeButton.hidden = !embed;
+
+  async function request(action, { method = 'GET', params = {}, body = null } = {}) {
+    const url = new URL('api.php', location.href);
+    url.searchParams.set('action', action);
+    url.searchParams.set('site', site);
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
+    });
+
+    const response = await fetch(url, {
+      method,
+      cache: 'no-store',
+      headers: {
+        'X-Plak-CSRF': csrf,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify({ ...body, site, csrf }) : undefined,
+    });
+
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error(`Invalid server response (${response.status}).`);
+    }
+    if (!response.ok || !data.success) {
+      const error = new Error(data.message || `Request failed (${response.status}).`);
+      error.code = data.code || '';
+      error.sha256 = data.sha256 || '';
+      throw error;
+    }
+    return data;
+  }
+
+  function escapeText(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  }
+
+  function escapeAttr(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  }
+
+  const EDITABLE = new Set([
+    'a', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'li', 'blockquote', 'figcaption', 'div', 'span',
+    'td', 'th', 'dt', 'dd', 'caption', 'summary',
+    'label', 'button', 'strong', 'em', 'small', 'time',
+    'address', 'cite', 'q',
+  ]);
+  const FORBIDDEN = new Set([
+    'script', 'style', 'iframe', 'noscript', 'svg', 'template',
+    'textarea', 'select', 'option', 'video', 'audio', 'canvas',
+  ]);
+  const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title']);
+  const VOID = new Set([
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+    'link', 'meta', 'param', 'source', 'track', 'wbr',
+  ]);
+
+  function findTagEnd(source, start) {
+    let quote = '';
+    for (let index = start + 1; index < source.length; index += 1) {
+      const char = source[index];
+      if (quote) {
+        if (char === quote) quote = '';
+      } else if (char === '"' || char === "'") {
+        quote = char;
+      } else if (char === '>') {
+        return index + 1;
+      }
+    }
+    return source.length;
+  }
+
+  function tagInfo(tag) {
+    const match = tag.match(/^<\s*(\/?)\s*([a-zA-Z0-9-]+)/);
+    if (!match || /^<\s*[!?]/.test(tag)) return null;
+    return { closing: match[1] === '/', name: match[2].toLowerCase() };
+  }
+
+  function tokenize(source) {
+    const segments = [];
+    const stack = [];
+    let cursor = 0;
+
+    while (cursor < source.length) {
+      if (source[cursor] === '<') {
+        if (source.startsWith('<!--', cursor)) {
+          const end = source.indexOf('-->', cursor + 4);
+          const stop = end === -1 ? source.length : end + 3;
+          segments.push({ type: 'tag', value: source.slice(cursor, stop) });
+          cursor = stop;
+          continue;
+        }
+        if (source.startsWith('<![CDATA[', cursor)) {
+          const end = source.indexOf(']]>', cursor + 9);
+          const stop = end === -1 ? source.length : end + 3;
+          segments.push({ type: 'tag', value: source.slice(cursor, stop) });
+          cursor = stop;
+          continue;
+        }
+        if (source.startsWith('<!', cursor) || source.startsWith('<?', cursor)) {
+          const end = source.indexOf('>', cursor);
+          const stop = end === -1 ? source.length : end + 1;
+          segments.push({ type: 'tag', value: source.slice(cursor, stop) });
+          cursor = stop;
+          continue;
+        }
+
+        const end = findTagEnd(source, cursor);
+        const tag = source.slice(cursor, end);
+        segments.push({ type: 'tag', value: tag });
+        const info = tagInfo(tag);
+
+        if (info) {
+          if (!info.closing && !VOID.has(info.name) && !/\/\s*>$/.test(tag)) {
+            stack.push(info.name);
+            if (RAW_TEXT.has(info.name)) {
+              const close = new RegExp(`</\\s*${info.name}\\s*>`, 'i');
+              const rest = source.slice(end);
+              const match = rest.match(close);
+              if (match) {
+                const contentEnd = end + match.index;
+                if (contentEnd > end) {
+                  segments.push({
+                    type: 'text',
+                    value: source.slice(end, contentEnd),
+                    editable: false,
+                  });
+                }
+                stack.pop();
+                cursor = contentEnd;
+                continue;
+              }
+            }
+          } else if (info.closing) {
+            const index = stack.lastIndexOf(info.name);
+            if (index !== -1) stack.splice(index);
+          }
+        }
+
+        cursor = end;
+        continue;
+      }
+
+      const next = source.indexOf('<', cursor);
+      const stop = next === -1 ? source.length : next;
+      segments.push({
+        type: 'text',
+        value: source.slice(cursor, stop),
+        editable: stack.some((name) => EDITABLE.has(name))
+          && !stack.some((name) => FORBIDDEN.has(name)),
+      });
+      cursor = stop;
+    }
+
+    return segments;
+  }
+
+  function baseHref() {
+    const directory = state.file.includes('/')
+      ? state.file.slice(0, state.file.lastIndexOf('/') + 1)
+      : '';
+    return `${domain.replace(/\/+$/, '')}/${directory}`;
+  }
+
+  function buildPreview(source) {
+    const segments = tokenize(source);
+    let textIndex = 0;
+    const body = segments.map((segment) => {
+      if (segment.type !== 'text') return segment.value;
+      if (!segment.editable || !segment.value.trim()) return segment.value;
+      const index = textIndex;
+      textIndex += 1;
+      return `<span data-plak-text-index="${index}" contenteditable="true" spellcheck="true">${segment.value}</span>`;
+    }).join('');
+
+    const head = `
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: https: http:; media-src data: blob: https: http:; style-src 'unsafe-inline' https: http:; font-src data: https: http:; script-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'">
+      <base href="${escapeAttr(baseHref())}">
+      <style data-plak-editor-styles>
+        [data-plak-text-index] { cursor: text; outline: 1px dashed transparent !important; outline-offset: 2px !important; }
+        [data-plak-text-index]:hover { outline-color: rgba(47, 54, 250, .55) !important; background: rgba(47, 54, 250, .06) !important; }
+        [data-plak-text-index]:focus { outline: 2px solid #2f36fa !important; background: rgba(47, 54, 250, .08) !important; }
+      </style>`;
+
+    let documentHtml = body
+      .replace(/<base\b[^>]*>/gi, '')
+      .replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*>/gi, '')
+      .replace(/<meta[^>]+http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
+
+    if (/<head(?:\s[^>]*)?>/i.test(documentHtml)) {
+      documentHtml = documentHtml.replace(/<head(?:\s[^>]*)?>/i, (match) => match + head);
+    } else if (/<html(?:\s[^>]*)?>/i.test(documentHtml)) {
+      documentHtml = documentHtml.replace(
+        /<html(?:\s[^>]*)?>/i,
+        (match) => `${match}<head>${head}</head>`,
+      );
+    } else {
+      documentHtml = `<!doctype html><html><head>${head}</head><body>${documentHtml}</body></html>`;
+    }
+
+    return documentHtml;
+  }
+
+  function replaceTextSegment(source, index, text) {
+    const segments = tokenize(source);
+    let textIndex = 0;
+    for (const segment of segments) {
+      if (segment.type !== 'text' || !segment.editable || !segment.value.trim()) continue;
+      if (textIndex === index) {
+        segment.value = escapeText(text);
+        break;
+      }
+      textIndex += 1;
+    }
+    return segments.map((segment) => segment.value).join('');
+  }
+
+  function updateChrome() {
+    saveButton.disabled = !state.dirty || state.saving;
+    if (state.saving) {
+      status.textContent = 'Saving…';
+    } else if (state.dirty) {
+      status.textContent = 'Unsaved changes';
+    } else if (state.loading) {
+      status.textContent = 'Loading…';
+    } else {
+      status.textContent = 'Saved';
+    }
+  }
+
+  function showBanner(message, withReload = false) {
+    banner.replaceChildren();
+    if (!message) {
+      banner.hidden = true;
+      return;
+    }
+    banner.append(document.createTextNode(message));
+    if (withReload) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Reload file';
+      button.addEventListener('click', () => {
+        if (confirm('Discard your unsaved changes and reload the file?')) {
+          loadFile(state.file, true).catch((error) => showBanner(error.message, true));
+        }
+      });
+      banner.append(button);
+    }
+    banner.hidden = false;
+  }
+
+  function attachPreview() {
+    const doc = preview.contentDocument;
+    if (!doc) return;
+
+    state.initial = new WeakMap();
+    doc.addEventListener('click', (event) => {
+      if (event.target.closest('a, button')) event.preventDefault();
+    });
+    doc.addEventListener('submit', (event) => event.preventDefault());
+    doc.addEventListener('blur', () => commitAll(), true);
+
+    doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
+      state.initial.set(element, element.textContent || '');
+      element.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          element.blur();
+        }
+      });
+    });
+  }
+
+  function commitAll() {
+    if (state.mode !== 'preview') return;
+    const doc = preview.contentDocument;
+    if (!doc) return;
+
+    const changed = [];
+    doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
+      const index = Number(element.dataset.plakTextIndex);
+      if (Number.isNaN(index)) return;
+      const original = state.initial.get(element);
+      if (original !== undefined && (element.textContent || '') !== original) {
+        changed.push({ index, text: element.textContent || '' });
+      }
+    });
+    if (!changed.length) return;
+
+    changed.sort((left, right) => right.index - left.index);
+    let next = state.source;
+    changed.forEach(({ index, text }) => {
+      next = replaceTextSegment(next, index, text);
+    });
+
+    if (next !== state.source) {
+      state.source = next;
+      state.dirty = state.source !== state.saved;
+    }
+    doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
+      state.initial.set(element, element.textContent || '');
+    });
+    updateChrome();
+  }
+
+  function renderPreview() {
+    state.mode = 'preview';
+    preview.hidden = false;
+    code.hidden = true;
+    codeToggle.textContent = 'Code';
+    preview.onload = attachPreview;
+    preview.srcdoc = buildPreview(state.source);
+  }
+
+  async function loadFile(file, force = false) {
+    if (!force && state.dirty && !confirm('Discard your unsaved changes?')) return;
+    state.loading = true;
+    updateChrome();
+    showBanner('');
+    const data = await request('read', { params: { file } });
+    state.file = data.file;
+    state.source = data.content;
+    state.saved = data.content;
+    state.sha = data.sha256;
+    state.dirty = false;
+    state.loading = false;
+    code.value = state.source;
+    fileSelect.value = state.file;
+    renderPreview();
+    updateChrome();
+  }
+
+  async function loadFiles() {
+    const data = await request('files');
+    state.files = data.files || [];
+    fileSelect.replaceChildren();
+    state.files.forEach((file) => {
+      const option = document.createElement('option');
+      option.value = file.path;
+      option.textContent = file.path;
+      fileSelect.append(option);
+    });
+    if (!state.files.length) {
+      showBanner('No HTML files were found in this site.');
+      saveButton.disabled = true;
+      status.textContent = 'No HTML files';
+      return;
+    }
+    const wanted = state.files.some((file) => file.path === initialFile)
+      ? initialFile
+      : state.files[0].path;
+    state.file = wanted;
+    fileSelect.value = wanted;
+    await loadFile(wanted, true);
+  }
+
+  async function save() {
+    if (state.saving) return;
+    if (state.mode === 'code') {
+      state.source = code.value;
+      state.dirty = state.source !== state.saved;
+    } else {
+      commitAll();
+    }
+    if (!state.dirty) return;
+
+    state.saving = true;
+    updateChrome();
+    showBanner('');
+    try {
+      const data = await request('save', {
+        method: 'POST',
+        body: {
+          file: state.file,
+          content: state.source,
+          base_sha256: state.sha,
+        },
+      });
+      state.saved = state.source;
+      state.sha = data.sha256;
+      state.dirty = false;
+      showBanner('');
+      if (embed && window.parent !== window) {
+        window.parent.postMessage({ type: 'plak-editor-saved' }, '*');
+      }
+    } catch (error) {
+      showBanner(error.message, error.code === 'conflict');
+    } finally {
+      state.saving = false;
+      updateChrome();
+    }
+  }
+
+  fileSelect.addEventListener('change', () => {
+    const next = fileSelect.value;
+    if (next === state.file) return;
+    if (state.dirty && !confirm('Discard your unsaved changes?')) {
+      fileSelect.value = state.file;
+      return;
+    }
+    loadFile(next, true).catch((error) => showBanner(error.message));
+  });
+
+  codeToggle.addEventListener('click', () => {
+    if (state.mode === 'preview') {
+      commitAll();
+      state.mode = 'code';
+      code.value = state.source;
+      preview.hidden = true;
+      code.hidden = false;
+      codeToggle.textContent = 'Preview';
+      code.focus();
+    } else {
+      state.source = code.value;
+      state.dirty = state.source !== state.saved;
+      renderPreview();
+      updateChrome();
+    }
+  });
+
+  code.addEventListener('input', () => {
+    state.source = code.value;
+    state.dirty = state.source !== state.saved;
+    updateChrome();
+  });
+
+  saveButton.addEventListener('click', () => save().catch((error) => showBanner(error.message)));
+
+  closeButton.addEventListener('click', () => {
+    if (embed && window.parent !== window) {
+      window.parent.postMessage({ type: 'plak-editor-close' }, '*');
+    }
+  });
+
+  window.addEventListener('beforeunload', (event) => {
+    if (!state.dirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
+  loadFiles().catch((error) => {
+    status.textContent = 'Could not load';
+    showBanner(error.message);
+  });
+})();
+PLAK_EDITOR_ASSET_EOF
+    cat > "$editor_dir/index.php" <<'PLAK_EDITOR_ASSET_EOF'
+<?php
+declare(strict_types=1);
+
+require_once dirname(__DIR__, 2) . '/lib/html-site.php';
+require_once dirname(__DIR__) . '/dashboard-auth.php';
+
+$site = isset($_GET['site']) ? (string) $_GET['site'] : '';
+$public = plak_html_public_dir($site);
+if ($public === null) {
+    http_response_code(404);
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Editor · Plak</title></head><body style="font-family:system-ui;padding:3rem;background:#f5f5f1;color:#10110f"><h1>Static site not found</h1><p>The HTML editor only opens static sites. If this is a WordPress site, use its HTML Editor plugin.</p><p><a href="' . htmlspecialchars(plak_html_dashboard_base(), ENT_QUOTES, 'UTF-8') . '/">Back to the Plak dashboard</a></p></body></html>';
+    exit;
+}
+
+$token = plak_site_dashboard_token(plak_html_home() . '/Plak/cache/dashboard-token');
+$domain = plak_html_site_base($site) ?: '';
+$initialFile = isset($_GET['file']) ? ltrim((string) $_GET['file'], '/') : 'index.html';
+$embed = isset($_GET['embed']) && (string) $_GET['embed'] === '1';
+$dashboard = plak_html_dashboard_base();
+$siteUrl = $domain . '/';
+
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: no-referrer');
+?><!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="plak-csrf" content="<?= htmlspecialchars($token, ENT_QUOTES, 'UTF-8') ?>">
+<meta name="plak-site" content="<?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?>">
+<meta name="plak-domain" content="<?= htmlspecialchars($domain, ENT_QUOTES, 'UTF-8') ?>">
+<meta name="plak-file" content="<?= htmlspecialchars($initialFile, ENT_QUOTES, 'UTF-8') ?>">
+<meta name="plak-embed" content="<?= $embed ? '1' : '0' ?>">
+<title>Edit <?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?> · Plak</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body class="<?= $embed ? 'embed' : '' ?>">
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">&gt;</span>
+    <span>Plak <span class="brand-sub">HTML editor</span></span>
+  </div>
+  <div class="site">
+    <strong><?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?></strong>
+    <a href="<?= htmlspecialchars($siteUrl, ENT_QUOTES, 'UTF-8') ?>" target="_blank" rel="noopener">open site ↗</a>
+  </div>
+  <label class="file-picker">
+    <span>File</span>
+    <select id="file-select" aria-label="HTML file"></select>
+  </label>
+  <div class="actions">
+    <button type="button" id="code-toggle">Code</button>
+    <button type="button" id="save" class="primary" disabled>Save</button>
+    <span id="status" class="status">Loading…</span>
+    <a class="ghost" href="<?= htmlspecialchars($dashboard, ENT_QUOTES, 'UTF-8') ?>/" target="_blank" rel="noopener" id="dashboard-link">Dashboard</a>
+    <button type="button" id="close" class="ghost" hidden>Close</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main class="canvas">
+  <iframe id="preview" title="Site preview" sandbox="allow-same-origin"></iframe>
+  <textarea id="code" spellcheck="false" hidden></textarea>
+</main>
+
+<script src="editor.js" defer></script>
+</body>
+</html>
+PLAK_EDITOR_ASSET_EOF
+    cat > "$app_dir/lib/html-site.php" <<'PLAK_EDITOR_ASSET_EOF'
+<?php
+declare(strict_types=1);
+
+/**
+ * Shared helpers for the local static-site HTML editor.
+ *
+ * The editor and the capture router both run on the same machine and only
+ * touch files under ~/Plak/Sites/<site>.localhost/public.
+ */
+
+if (!defined('PLAK_HTML_HOME')) {
+    // Replaced with the invoking user's home when Plak deploys the editor.
+    define('PLAK_HTML_HOME', '__PLAK_HOME__');
+}
+
+function plak_html_home(): string
+{
+    return rtrim(PLAK_HTML_HOME, '/');
+}
+
+function plak_html_sites_dir(): string
+{
+    return plak_html_home() . '/Plak/Sites';
+}
+
+function plak_html_site_name(string $site): ?string
+{
+    return preg_match('/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/', $site) ? $site : null;
+}
+
+function plak_html_public_dir(string $site): ?string
+{
+    $name = plak_html_site_name($site);
+    if ($name === null || plak_html_home() === '') {
+        return null;
+    }
+
+    $public = realpath(plak_html_sites_dir() . '/' . $name . '.localhost/public');
+    if ($public === false || !is_dir($public)) {
+        return null;
+    }
+    // The HTML editor is only for static sites. WordPress has its own plugin.
+    if (is_file($public . '/wp-config.php')) {
+        return null;
+    }
+    return $public;
+}
+
+function plak_html_resolve(string $public, string $rel, bool $allowDir = false): ?string
+{
+    $rel = str_replace('\\', '/', $rel);
+    if ($rel === '' || str_contains($rel, "\0")) {
+        return null;
+    }
+
+    $rel = ltrim($rel, '/');
+    if (preg_match('#(^|/)\.\.(/|$)#', $rel)) {
+        return null;
+    }
+
+    $path = realpath($public . '/' . $rel);
+    if ($path === false) {
+        return null;
+    }
+    if ($path !== $public && !str_starts_with($path, $public . DIRECTORY_SEPARATOR)) {
+        return null;
+    }
+
+    if (is_dir($path)) {
+        if (!$allowDir) {
+            return null;
+        }
+        $path = $path . '/index.html';
+    }
+
+    if (!is_file($path) || !preg_match('/\.(?:html?|htm)$/i', $path)) {
+        return null;
+    }
+    return $path;
+}
+
+function plak_html_https_port(): int
+{
+    $port = 443;
+    $config = plak_html_home() . '/Plak/config';
+    if (is_file($config)) {
+        $cfg = parse_ini_file($config);
+        if (is_array($cfg) && !empty($cfg['HTTPS_PORT'])) {
+            $port = (int) $cfg['HTTPS_PORT'];
+        }
+    }
+    return $port;
+}
+
+function plak_html_dashboard_base(): string
+{
+    $port = plak_html_https_port();
+    return 'https://plak.localhost' . ($port === 443 ? '' : ':' . $port);
+}
+
+function plak_html_site_base(string $site): ?string
+{
+    $name = plak_html_site_name($site);
+    if ($name === null) {
+        return null;
+    }
+    $port = plak_html_https_port();
+    return 'https://' . $name . '.localhost' . ($port === 443 ? '' : ':' . $port);
+}
+PLAK_EDITOR_ASSET_EOF
+    cat > "$editor_dir/loader.js" <<'PLAK_EDITOR_ASSET_EOF'
+(() => {
+  const script = document.currentScript;
+  if (!script || window.top !== window.self) return;
+
+  const site = script.dataset.plakSite || '';
+  const host = script.dataset.plakHost || '';
+  const page = script.dataset.plakPage || '/';
+  if (!site || !host || location.hostname !== host) return;
+  if (document.getElementById('plak-editor-host')) return;
+
+  const editorOrigin = new URL(script.src).origin;
+  const file = page === '/' ? 'index.html' : page.replace(/^\/+/, '');
+  const editorUrl = `${editorOrigin}/editor/?site=${encodeURIComponent(site)}&embed=1&file=${encodeURIComponent(file)}`;
+
+  const hostElement = document.createElement('div');
+  hostElement.id = 'plak-editor-host';
+  hostElement.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
+  const shadow = hostElement.attachShadow({ mode: 'open' });
+  shadow.innerHTML = `
+    <style>
+      :host { all: initial; }
+      .launcher,
+      .overlay { pointer-events: auto; }
+      .launcher {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 2;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 44px;
+        padding: 11px 16px;
+        border: 1px solid #10110f;
+        border-radius: 0;
+        background: #b7fa45;
+        color: #10110f;
+        box-shadow: 4px 4px 0 #10110f;
+        cursor: pointer;
+        font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+      .launcher:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #10110f; }
+      .launcher:focus-visible { outline: 3px solid #344aff; outline-offset: 3px; }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 3;
+        display: grid;
+        place-items: center;
+        padding: 16px;
+      }
+      .overlay[hidden] { display: none; }
+      .backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(8, 10, 14, .62);
+        backdrop-filter: blur(3px);
+      }
+      .frame-wrap {
+        position: relative;
+        width: min(100%, 1440px);
+        height: calc(100vh - 32px);
+        border: 1px solid #10110f;
+        background: #fff;
+        box-shadow: 8px 8px 0 #10110f;
+        overflow: hidden;
+      }
+      iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: #fff;
+      }
+      .close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 2;
+        width: 38px;
+        height: 38px;
+        border: 1px solid #10110f;
+        border-radius: 0;
+        background: #fff;
+        color: #10110f;
+        cursor: pointer;
+        font: 600 20px/1 system-ui, sans-serif;
+      }
+      .close:hover { background: #b7fa45; }
+      @media (max-width: 700px) {
+        .overlay { padding: 0; }
+        .frame-wrap { width: 100%; height: 100vh; box-shadow: none; }
+        .launcher { right: 14px; bottom: 14px; }
+      }
+    </style>
+    <button type="button" class="launcher" id="plak-edit-launcher">Edit</button>
+    <div class="overlay" id="plak-edit-overlay" hidden>
+      <div class="backdrop"></div>
+      <div class="frame-wrap">
+        <button type="button" class="close" id="plak-edit-close" aria-label="Close editor" title="Close editor">×</button>
+        <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>
+      </div>
+    </div>`;
+
+  document.documentElement.appendChild(hostElement);
+
+  const launcher = shadow.getElementById('plak-edit-launcher');
+  const overlay = shadow.getElementById('plak-edit-overlay');
+  const frame = shadow.getElementById('plak-edit-frame');
+  const close = shadow.getElementById('plak-edit-close');
+  let opened = false;
+  let saved = false;
+  let previousOverflow = '';
+
+  function open() {
+    if (opened) return;
+    opened = true;
+    frame.src = editorUrl;
+    overlay.hidden = false;
+    previousOverflow = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = 'hidden';
+    close.focus();
+  }
+
+  function shut() {
+    if (!opened) return;
+    opened = false;
+    overlay.hidden = true;
+    frame.src = 'about:blank';
+    document.documentElement.style.overflow = previousOverflow;
+    if (saved) {
+      saved = false;
+      location.reload();
+    } else {
+      launcher.focus();
+    }
+  }
+
+  launcher.addEventListener('click', open);
+  close.addEventListener('click', shut);
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && opened) {
+      event.preventDefault();
+      shut();
+    }
+  });
+
+  window.addEventListener('message', (event) => {
+    if (event.origin !== editorOrigin) return;
+    if (event.data?.type === 'plak-editor-close') shut();
+    if (event.data?.type === 'plak-editor-saved') saved = true;
+  });
+
+  const url = new URL(location.href);
+  if (url.searchParams.get('plak-edit') === '1') {
+    url.searchParams.delete('plak-edit');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+    open();
+  }
+})();
+PLAK_EDITOR_ASSET_EOF
+    cat > "$app_dir/site-router/render.php" <<'PLAK_EDITOR_ASSET_EOF'
+<?php
+declare(strict_types=1);
+
+require_once dirname(__DIR__) . '/lib/html-site.php';
+
+$site = isset($_GET['plak_site']) ? (string) $_GET['plak_site'] : '';
+$requested = isset($_GET['plak_path']) ? (string) $_GET['plak_path'] : '/';
+$public = plak_html_public_dir($site);
+if ($public === null) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Site not found.');
+}
+
+$rel = $requested === '/' || $requested === '' ? 'index.html' : ltrim($requested, '/');
+$file = plak_html_resolve($public, $rel, false);
+if ($file === null) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Not found.');
+}
+
+$html = file_get_contents($file);
+if ($html === false) {
+    http_response_code(500);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Could not read the file.');
+}
+
+$host = (string) ($_SERVER['HTTP_HOST'] ?? '');
+$hostname = strtolower(rtrim(preg_replace('/:\d+$/', '', $host) ?: $host, '.'));
+
+// Only decorate the site's own local host (or an explicit local mapping).
+// A `plak share` tunnel or a LAN address must never receive the editor.
+$allowedHosts = [strtolower($site . '.localhost')];
+$mappingsFile = dirname($public) . '/mappings';
+if (is_file($mappingsFile)) {
+    foreach (file($mappingsFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $mapping) {
+        $mapping = strtolower(trim($mapping));
+        if ($mapping !== '' && !str_starts_with($mapping, '#')) {
+            $allowedHosts[] = rtrim($mapping, '.');
+        }
+    }
+}
+if (!in_array($hostname, $allowedHosts, true)) {
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+        exit;
+    }
+    echo $html;
+    exit;
+}
+
+$editorBase = plak_html_dashboard_base();
+$page = '/' . ltrim($rel, '/');
+$loader = '<script src="' . htmlspecialchars($editorBase . '/editor/loader.js?v=1', ENT_QUOTES, 'UTF-8') . '"'
+    . ' data-plak-site="' . htmlspecialchars($site, ENT_QUOTES, 'UTF-8') . '"'
+    . ' data-plak-host="' . htmlspecialchars($hostname, ENT_QUOTES, 'UTF-8') . '"'
+    . ' data-plak-page="' . htmlspecialchars($page, ENT_QUOTES, 'UTF-8') . '"></script>';
+
+if (stripos($html, '</body>') !== false) {
+    $html = preg_replace_callback(
+        '/<\/body>/i',
+        static fn(): string => $loader . '</body>',
+        $html,
+        1
+    );
+} else {
+    $html .= $loader;
+}
+
+header('Content-Type: text/html; charset=utf-8');
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+    exit;
+}
+echo $html;
+PLAK_EDITOR_ASSET_EOF
+    local home_escaped
+    home_escaped=$(printf '%s' "${HOME:-}" | sed -e 's/[\/&|]/\\&/g')
+    sed "s|__PLAK_HOME__|$home_escaped|g" "$app_dir/lib/html-site.php" > "$app_dir/lib/html-site.php.tmp" || return 1
+    mv "$app_dir/lib/html-site.php.tmp" "$app_dir/lib/html-site.php" || return 1
+    echo "   - ✅ Deployed HTML editor."
+}
 # Pass all script arguments to the main function.
 main "$@"

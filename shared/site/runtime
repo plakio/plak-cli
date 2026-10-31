@@ -1247,6 +1247,28 @@ EOM
                     echo '    }' >> "$CADDYFILE_PATH"
                     echo '    rewrite @ms_assets /{re.ms_assets.1}' >> "$CADDYFILE_PATH"
                 fi
+
+                # Static sites serve their HTML through the local capture
+                # router so it can inject the Plak Edit launcher. The file on
+                # disk stays clean; the router only decorates the response.
+                # WordPress sites keep their own HTML Editor plugin.
+                if [ ! -f "$site_path/public/wp-config.php" ]; then
+                    if [ -f "$site_path/public/index.html" ]; then
+                        echo '    @plak_editor_index path /' >> "$CADDYFILE_PATH"
+                        echo '    handle @plak_editor_index {' >> "$CADDYFILE_PATH"
+                        echo "        root * \"$APP_DIR/site-router\"" >> "$CADDYFILE_PATH"
+                        echo "        rewrite * /render.php?plak_site=${site_name%.localhost}&plak_path=/" >> "$CADDYFILE_PATH"
+                        echo '        php_server' >> "$CADDYFILE_PATH"
+                        echo '    }' >> "$CADDYFILE_PATH"
+                    fi
+                    echo '    @plak_editor_html path *.html' >> "$CADDYFILE_PATH"
+                    echo '    handle @plak_editor_html {' >> "$CADDYFILE_PATH"
+                    echo "        root * \"$APP_DIR/site-router\"" >> "$CADDYFILE_PATH"
+                    echo "        rewrite * /render.php?plak_site=${site_name%.localhost}&plak_path={path}" >> "$CADDYFILE_PATH"
+                    echo '        php_server' >> "$CADDYFILE_PATH"
+                    echo '    }' >> "$CADDYFILE_PATH"
+                fi
+
                 echo "    php_server" >> "$CADDYFILE_PATH"
 
                 if [ ! -f "$site_path/public/wp-config.php" ]; then
@@ -4919,6 +4941,11 @@ if (($_GET['format'] ?? '') === 'text') {
     echo json_encode($report, JSON_PARTIAL_OUTPUT_ON_ERROR);
 }
 EOM
+
+    # Deploy the local HTML editor app and the static-site capture router.
+    # The editor lives under App/gui; only the router touches the served HTML.
+    mkdir -p "$APP_DIR/lib" "$APP_DIR/site-router" || return 1
+    deploy_html_editor "$GUI_DIR/editor" "$APP_DIR" || return 1
 
     # Clean up temp files
     rm "$GUI_DIR/api.php.tmp" "$GUI_DIR/index.php.tmp"

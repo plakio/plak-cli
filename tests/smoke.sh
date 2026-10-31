@@ -117,6 +117,7 @@ bash ./tests/panel-infra.sh
 bash ./tests/import.sh
 bash ./tests/clone.sh
 bash ./tests/dashboard.sh
+bash ./tests/html-editor.sh
 bash ./tests/install-db-port.sh
 bash ./tests/db-port.sh
 bash ./tests/path-prelude.sh

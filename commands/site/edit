@@ -1,0 +1,83 @@
+# Open the local HTML editor for a static site.
+plak_site_edit_usage() {
+    cat <<'HELP'
+Usage:
+  plak edit <site> [--print-url] [--no-open]
+
+Open the local HTML editor for a static site. It opens the site with the
+Edit launcher, or the editor directly when the site has no index.html.
+HELP
+}
+
+plak_site_edit() {
+    local site="" print_url=false no_open=false arg
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
+        case "$arg" in
+            --print-url) print_url=true ;;
+            --no-open) no_open=true ;;
+            -h|--help) plak_site_edit_usage; return 0 ;;
+            -*) echo "Error: unknown option '$arg'." >&2; return 1 ;;
+            *)
+                if [ -n "$site" ]; then
+                    echo "Error: unexpected argument '$arg'." >&2
+                    return 1
+                fi
+                site="$arg"
+                ;;
+        esac
+        shift
+    done
+
+    if [ -z "$site" ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            local candidates=() site_dir name
+            for site_dir in "$SITES_DIR"/*.localhost; do
+                [ -d "$site_dir/public" ] || continue
+                [ -f "$site_dir/public/wp-config.php" ] && continue
+                name=$(basename "$site_dir" .localhost)
+                candidates+=("$name")
+            done
+            if [ "${#candidates[@]}" -eq 0 ]; then
+                echo "Error: no static sites found." >&2
+                return 1
+            fi
+            site=$(printf '%s\n' "${candidates[@]}" | gum choose) || return 1
+            [ -n "$site" ] || return 1
+        else
+            plak_site_edit_usage >&2
+            return 1
+        fi
+    fi
+
+    local site_dir="$SITES_DIR/$site.localhost"
+    if [ ! -d "$site_dir/public" ]; then
+        echo "Error: site '$site.localhost' not found." >&2
+        return 1
+    fi
+    if [ -f "$site_dir/public/wp-config.php" ]; then
+        echo "Error: '$site.localhost' is a WordPress site. Use the HTML Editor plugin in wp-admin." >&2
+        return 1
+    fi
+
+    if ! is_caddy_running; then
+        start_caddy_service || return 1
+    fi
+
+    local url
+    if [ -f "$site_dir/public/index.html" ]; then
+        url="$(url_for "$site.localhost")/?plak-edit=1"
+    else
+        url="$(url_for "plak.localhost")/editor/?site=$site"
+    fi
+
+    echo "$url"
+    if [ "$print_url" = true ] || [ "$no_open" = true ]; then
+        return 0
+    fi
+    if type plak_connect_open_url >/dev/null 2>&1; then
+        plak_connect_open_url "$url" || echo "Open the URL manually: $url"
+    else
+        echo "Open the URL in your browser: $url"
+    fi
+}

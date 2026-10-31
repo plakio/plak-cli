@@ -93,11 +93,16 @@ plak login <site> [<user>] [--raw]    # --raw prints only the URL
 plak wp <site> <wp-cli arguments...> # uses the same PHP runtime as the web
 plak path <site>
 plak url <site>
+plak edit <site> [--print-url] [--no-open]
 plak log [site] [-f]
 ```
 
 `--static` creates a static site with the default HTML starter at
 `public/index.html`. It has no database and no WordPress files.
+
+Static sites show a local **Edit** launcher on the page; `plak edit <site>`
+opens it directly. The editor lives in Plak's app directory, not in `public/`,
+and is never part of the published site.
 
 Use `plak wp <site> plugin list --format=json` or
 `plak wp <site> option get siteurl` from any directory. New WordPress sites are

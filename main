@@ -83,6 +83,7 @@ Commands:
   disconnect  Forget the local panel credential
   panel       List your own panel sites and servers (read-only)
   add         Create a WordPress or static local site
+  edit        Open the local HTML editor for a static site
   import      Create a local site from a backup ZIP or TAR
   clone       Duplicate a local site into an independent copy
   delete      Delete a local site
@@ -321,7 +322,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
+        add|import|clone|delete|rename|list|path|edit|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
             set +e
             ;;
     esac
@@ -388,6 +389,10 @@ main() {
         path)
             check_dependencies
             plak_site_path "$@"
+            ;;
+        edit)
+            check_dependencies
+            plak_site_edit "$@"
             ;;
         pull)
             check_dependencies

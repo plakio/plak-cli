@@ -236,6 +236,18 @@ grep -q '~/Plak/Sites/landing.localhost/public' "$SITES_DIR/landing.localhost/pu
 grep -q 'plak.localhost' "$SITES_DIR/landing.localhost/public/index.html" || fail 'starter missing dashboard'
 if ./plak.sh add removed --plain --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted removed --plain'; fi
 [ ! -e "$SITES_DIR/removed.localhost" ] || fail 'created resources with removed --plain'
+
+# The edit command targets the static launcher and refuses WordPress.
+(
+    source commands/site/edit
+    is_caddy_running() { return 0; }
+    edit_url=$(plak_site_edit landing --print-url)
+    [[ "$edit_url" == *"landing.localhost"*"/?plak-edit=1"* ]] || fail 'plak edit did not target the static site launcher'
+    mkdir -p "$SITES_DIR/bare.localhost/public"
+    bare_url=$(plak_site_edit bare --print-url)
+    [[ "$bare_url" == *"/editor/?site=bare"* ]] || fail 'plak edit did not fall back to the editor page'
+    if plak_site_edit new --print-url >/dev/null 2>&1; then fail 'plak edit accepted a WordPress site'; fi
+) || exit 1
 for version in latest 6.8.1 nightly; do
     name="version-${version//./-}"
     ./plak.sh add "$name" --wp-version "$version" --no-reload >"$tmpdir/out" 2>"$tmpdir/err"

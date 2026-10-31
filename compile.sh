@@ -11,6 +11,10 @@ if [ ! -f "$MAIN_SCRIPT" ] || [ ! -d "$COMMANDS_DIR" ] || [ ! -d "$LIB_DIR" ]; t
     echo "Error: run compile.sh from the Plak repository root." >&2
     exit 1
 fi
+if [ ! -d editor ]; then
+    echo "Error: editor assets are missing; run compile.sh from the Plak repository root." >&2
+    exit 1
+fi
 
 echo "Compiling $OUTPUT_FILE..."
 
@@ -35,6 +39,31 @@ grep -vFx 'main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
         cat "$cmd_file"
         echo ""
     done
+
+    echo "# --- HTML Editor Assets ---"
+    echo 'deploy_html_editor() {'
+    echo '    local editor_dir="${1:-$GUI_DIR/editor}"'
+    echo '    local app_dir="${2:-$APP_DIR}"'
+    echo '    mkdir -p "$editor_dir" "$app_dir/lib" "$app_dir/site-router" || return 1'
+    while IFS= read -r asset; do
+        case "$asset" in
+            editor/lib/html-site.php) target='$app_dir/lib/html-site.php' ;;
+            editor/site-router/render.php) target='$app_dir/site-router/render.php' ;;
+            editor/*) target='$editor_dir/'"$(basename "$asset")" ;;
+            *) continue ;;
+        esac
+        printf '    cat > "%s" <<%s\n' "$target" "'PLAK_EDITOR_ASSET_EOF'"
+        cat "$asset"
+        printf 'PLAK_EDITOR_ASSET_EOF\n'
+    done < <(find editor -type f | sort)
+    cat <<'EDITOR_FOOTER'
+    local home_escaped
+    home_escaped=$(printf '%s' "${HOME:-}" | sed -e 's/[\/&|]/\\&/g')
+    sed "s|__PLAK_HOME__|$home_escaped|g" "$app_dir/lib/html-site.php" > "$app_dir/lib/html-site.php.tmp" || return 1
+    mv "$app_dir/lib/html-site.php.tmp" "$app_dir/lib/html-site.php" || return 1
+    echo "   - ✅ Deployed HTML editor."
+}
+EDITOR_FOOTER
 
     echo '# Pass all script arguments to the main function.'
     echo 'main "$@"'
