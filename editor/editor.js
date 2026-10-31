@@ -469,9 +469,19 @@
 
   saveButton.addEventListener('click', () => save().catch((error) => showBanner(error.message)));
 
-  closeButton.addEventListener('click', () => {
-    if (embed && window.parent !== window) {
-      window.parent.postMessage({ type: 'plak-editor-close' }, '*');
+  function requestClose() {
+    if (!embed || window.parent === window) return;
+    if (state.dirty && !confirm('Discard your unsaved changes?')) return;
+    window.parent.postMessage({ type: 'plak-editor-close' }, '*');
+  }
+
+  closeButton.addEventListener('click', requestClose);
+  // Focus lives inside this iframe while editing, so the parent cannot hear
+  // Escape; close from here instead.
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      requestClose();
     }
   });
 

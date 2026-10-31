@@ -29,42 +29,30 @@
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        min-height: 44px;
-        padding: 11px 16px;
-        border: 1px solid #10110f;
-        border-radius: 0;
-        background: #b7fa45;
-        color: #10110f;
-        box-shadow: 4px 4px 0 #10110f;
+        min-height: 40px;
+        padding: .55rem .9rem;
+        border: 1px solid #2f36fa;
+        border-radius: 8px;
+        background: #2f36fa;
+        color: #fff;
+        box-shadow: 0 6px 20px rgba(16, 17, 15, .22);
         cursor: pointer;
-        font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        letter-spacing: .04em;
-        text-transform: uppercase;
+        font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: .01em;
       }
-      .launcher:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #10110f; }
-      .launcher:focus-visible { outline: 3px solid #344aff; outline-offset: 3px; }
+      .launcher:hover { filter: brightness(1.08); }
+      .launcher:focus-visible { outline: 3px solid rgba(47, 54, 250, .45); outline-offset: 3px; }
       .overlay {
         position: fixed;
         inset: 0;
         z-index: 3;
-        display: grid;
-        place-items: center;
-        padding: 16px;
+        background: #fff;
       }
       .overlay[hidden] { display: none; }
-      .backdrop {
-        position: absolute;
-        inset: 0;
-        background: rgba(8, 10, 14, .62);
-        backdrop-filter: blur(3px);
-      }
       .frame-wrap {
-        position: relative;
-        width: min(100%, 1440px);
-        height: calc(100vh - 32px);
-        border: 1px solid #10110f;
+        width: 100%;
+        height: 100%;
         background: #fff;
-        box-shadow: 8px 8px 0 #10110f;
         overflow: hidden;
       }
       iframe {
@@ -74,32 +62,13 @@
         border: 0;
         background: #fff;
       }
-      .close {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        z-index: 2;
-        width: 38px;
-        height: 38px;
-        border: 1px solid #10110f;
-        border-radius: 0;
-        background: #fff;
-        color: #10110f;
-        cursor: pointer;
-        font: 600 20px/1 system-ui, sans-serif;
-      }
-      .close:hover { background: #b7fa45; }
       @media (max-width: 700px) {
-        .overlay { padding: 0; }
-        .frame-wrap { width: 100%; height: 100vh; box-shadow: none; }
         .launcher { right: 14px; bottom: 14px; }
       }
     </style>
     <button type="button" class="launcher" id="plak-edit-launcher">Edit</button>
     <div class="overlay" id="plak-edit-overlay" hidden>
-      <div class="backdrop"></div>
       <div class="frame-wrap">
-        <button type="button" class="close" id="plak-edit-close" aria-label="Close editor" title="Close editor">×</button>
         <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>
       </div>
     </div>`;
@@ -109,7 +78,6 @@
   const launcher = shadow.getElementById('plak-edit-launcher');
   const overlay = shadow.getElementById('plak-edit-overlay');
   const frame = shadow.getElementById('plak-edit-frame');
-  const close = shadow.getElementById('plak-edit-close');
   let opened = false;
   let saved = false;
   let previousOverflow = '';
@@ -121,7 +89,7 @@
     overlay.hidden = false;
     previousOverflow = document.documentElement.style.overflow;
     document.documentElement.style.overflow = 'hidden';
-    close.focus();
+    frame.focus();
   }
 
   function shut() {
@@ -139,7 +107,6 @@
   }
 
   launcher.addEventListener('click', open);
-  close.addEventListener('click', shut);
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && opened) {

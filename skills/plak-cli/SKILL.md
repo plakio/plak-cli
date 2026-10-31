@@ -112,6 +112,39 @@ Use `plak wp <site> plugin list --format=json` or
 marked `WP_ENVIRONMENT_TYPE=local`; failed provisioning removes only resources
 created by that attempt. A reload-only failure keeps the completed site for retry.
 
+## Creating a site for the user
+
+When the user asks you to create a site, never guess its name or its type.
+Ask these two questions first, in this order, unless the user already answered
+them:
+
+1. What should the site be called?
+2. Should it be a static HTML site or a WordPress site?
+
+Then create it with the matching flag:
+
+| Type | Command |
+| --- | --- |
+| Static HTML | `plak add <name> --static` |
+| WordPress | `plak add <name> --agent` |
+
+- `--static` creates a static site with `public/index.html`; it has no database
+  and no WordPress files.
+- `--agent` explicitly prepares a WordPress site for an agent: it installs and
+  activates WP-MCP and HTML Editor, enables WP-MCP abilities, mints an
+  Application Password, and registers the site in `wp-mcp-cli`. If preparation
+  fails after creation, repair it with `plak agent <name>` (idempotent).
+- `--agent` cannot be combined with `--static`. `--plain` and `--html` are not
+  valid flags.
+
+Do not create a WordPress site just because the user did not name a type; ask.
+
+After creating the site, report:
+
+- the site URL: `plak url <name>`
+- for WordPress, the login URL: `plak login <name> --raw`
+- the dashboard: `https://plak.localhost`
+
 ## Agent-ready sites (WP-MCP)
 
 **When you create a WordPress site for yourself, always pass `--agent`** unless
