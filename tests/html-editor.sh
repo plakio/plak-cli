@@ -77,6 +77,10 @@ grep -q 'editor.js?v=' "$GUI_DIR/editor/index.php" || fail "editor.js is not cac
 grep -q 'editor.css?v=' "$GUI_DIR/editor/index.php" || fail "editor.css is not cache-busted"
 grep -q 'loader.js?v=' "$APP_DIR/site-router/render.php" || fail "loader.js is not cache-busted"
 grep -q "addEventListener('input'" "$GUI_DIR/editor/editor.js" || fail "editor does not commit on input"
+grep -q 'data-plak-format="bold"' "$GUI_DIR/editor/editor.js" || fail "editor lacks the bold format control"
+grep -q 'plak-image-drop' "$GUI_DIR/editor/editor.js" || fail "editor lacks the image drop target"
+grep -q 'id="undo"' "$GUI_DIR/editor/index.php" || fail "editor lacks the undo control"
+grep -q 'id="redo"' "$GUI_DIR/editor/index.php" || fail "editor lacks the redo control"
 
 editor_port=$(free_port)
 router_port=$(free_port)

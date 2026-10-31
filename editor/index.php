@@ -55,8 +55,10 @@ header('Referrer-Policy: no-referrer');
     <select id="file-select" aria-label="HTML file"></select>
   </label>
   <div class="actions">
+    <button type="button" id="undo" class="icon" disabled title="Undo" aria-label="Undo">↶</button>
+    <button type="button" id="redo" class="icon" disabled title="Redo" aria-label="Redo">↷</button>
     <button type="button" id="code-toggle">Code</button>
-    <button type="button" id="save" class="primary" disabled>Save</button>
+    <button type="button" id="save" class="primary" disabled title="Save (⌘S)">Save</button>
     <span id="status" class="status">Loading…</span>
     <a class="ghost" href="<?= htmlspecialchars($dashboard, ENT_QUOTES, 'UTF-8') ?>/" target="_blank" rel="noopener" id="dashboard-link">Dashboard</a>
     <button type="button" id="close" class="ghost" hidden>Close</button>

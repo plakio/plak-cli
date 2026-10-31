@@ -223,8 +223,9 @@ plak log [site] [-f]
 `public/index.html`. It has no database and no WordPress files.
 
 Static sites get a local **Edit** launcher on the page and can also be opened
-with `plak edit <name>`. The editor edits text, images (URL, alt or upload to
-`public/uploads/`), links (href and target) and raw HTML, with SHA conflict
+with `plak edit <name>`. The editor edits text (bold, italic, underline),
+images (URL, alt, upload to `public/uploads/` or drop a file onto an existing
+image), links (href and target) and raw HTML, with undo/redo, SHA conflict
 checks and backups. It lives in Plak's app directory, not in `public/`, and is
 never part of the published site.
 

@@ -11,6 +11,8 @@
   const code = document.getElementById('code');
   const saveButton = document.getElementById('save');
   const codeToggle = document.getElementById('code-toggle');
+  const undoButton = document.getElementById('undo');
+  const redoButton = document.getElementById('redo');
   const closeButton = document.getElementById('close');
   const status = document.getElementById('status');
   const banner = document.getElementById('banner');
@@ -112,6 +114,21 @@
       .replaceAll('>', '&gt;');
   }
 
+  function sanitizeInlineHtml(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const allowed = new Set(['b', 'strong', 'i', 'em', 'u']);
+    const serialize = (node) => {
+      if (node.nodeType === 3) return escapeText(node.nodeValue || '');
+      if (node.nodeType !== 1) return '';
+      const tag = node.tagName.toLowerCase();
+      if (tag === 'br') return '<br>';
+      const inner = Array.from(node.childNodes).map(serialize).join('');
+      return allowed.has(tag) ? `<${tag}>${inner}</${tag}>` : inner;
+    };
+    return Array.from(template.content.childNodes).map(serialize).join('');
+  }
+
   function decodeAttr(value) {
     return String(value)
       .replaceAll('&quot;', '"')
@@ -176,7 +193,7 @@
     'a', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'li', 'blockquote', 'figcaption', 'div', 'span',
     'td', 'th', 'dt', 'dd', 'caption', 'summary',
-    'label', 'button', 'strong', 'em', 'small', 'time',
+    'label', 'button', 'strong', 'b', 'em', 'i', 'u', 'small', 'time',
     'address', 'cite', 'q',
   ]);
   const FORBIDDEN = new Set([
@@ -340,6 +357,12 @@
         [data-plak-text-index]:focus { outline: 2px solid #2f36fa !important; background: rgba(47, 54, 250, .08) !important; }
         img[data-plak-image-index] { cursor: pointer; }
         img[data-plak-image-index]:hover { outline: 3px solid #2f36fa; outline-offset: -3px; }
+        img[data-plak-image-index].plak-image-drop {
+          outline: 3px dashed #2f36fa !important;
+          outline-offset: -3px !important;
+          opacity: .72;
+          cursor: copy;
+        }
         .plak-link-edit {
           display: none;
           margin-left: .35rem;
@@ -354,6 +377,34 @@
         }
         a[data-plak-link-index]:hover .plak-link-edit,
         a[data-plak-link-index]:focus-within .plak-link-edit { display: inline-block; }
+        .plak-format-bar {
+          all: initial;
+          position: fixed;
+          left: 12px;
+          bottom: 12px;
+          z-index: 2147483647;
+          display: flex;
+          gap: 2px;
+          padding: 3px;
+          border-radius: 8px;
+          background: rgba(16, 17, 15, .92);
+          box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
+          font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        .plak-format-bar button {
+          all: unset;
+          box-sizing: border-box;
+          display: grid;
+          place-items: center;
+          width: 30px;
+          height: 28px;
+          border-radius: 5px;
+          color: #fff;
+          cursor: pointer;
+          text-align: center;
+        }
+        .plak-format-bar button:hover { background: rgba(255, 255, 255, .16); }
+        .plak-format-bar button:focus-visible { outline: 2px solid #b7fa45; outline-offset: 1px; }
       </style>`;
 
     let documentHtml = body
@@ -372,16 +423,28 @@
       documentHtml = `<!doctype html><html><head>${head}</head><body>${documentHtml}</body></html>`;
     }
 
+    const toolbar = `
+      <div class="plak-format-bar" contenteditable="false" role="toolbar" aria-label="Text formatting">
+        <button type="button" data-plak-format="bold" title="Bold"><b>B</b></button>
+        <button type="button" data-plak-format="italic" title="Italic"><i>I</i></button>
+        <button type="button" data-plak-format="underline" title="Underline"><u>U</u></button>
+      </div>`;
+    if (/<\/body>/i.test(documentHtml)) {
+      documentHtml = documentHtml.replace(/<\/body>/i, `${toolbar}</body>`);
+    } else {
+      documentHtml += toolbar;
+    }
+
     return documentHtml;
   }
 
-  function replaceTextSegment(source, index, text) {
+  function replaceTextSegment(source, index, html) {
     const segments = tokenize(source);
     let textIndex = 0;
     for (const segment of segments) {
       if (segment.type !== 'text' || !segment.editable || !segment.value.trim()) continue;
       if (textIndex === index) {
-        segment.value = escapeText(text);
+        segment.value = sanitizeInlineHtml(html);
         break;
       }
       textIndex += 1;
@@ -400,6 +463,77 @@
     } else {
       status.textContent = 'Saved';
     }
+  }
+
+  const history = { stack: [], index: -1, timer: null };
+
+  function updateHistoryChrome() {
+    if (undoButton) undoButton.disabled = history.index <= 0;
+    if (redoButton) {
+      redoButton.disabled = history.index < 0 || history.index >= history.stack.length - 1;
+    }
+  }
+
+  function pushHistory(source) {
+    if (history.index >= 0 && history.stack[history.index] === source) {
+      updateHistoryChrome();
+      return;
+    }
+    history.stack = history.stack.slice(0, history.index + 1);
+    history.stack.push(source);
+    if (history.stack.length > 120) history.stack.shift();
+    history.index = history.stack.length - 1;
+    updateHistoryChrome();
+  }
+
+  function resetHistory(source = state.source) {
+    if (history.timer) {
+      clearTimeout(history.timer);
+      history.timer = null;
+    }
+    history.stack = [source];
+    history.index = 0;
+    updateHistoryChrome();
+  }
+
+  function scheduleHistory() {
+    if (history.timer) clearTimeout(history.timer);
+    history.timer = setTimeout(() => {
+      history.timer = null;
+      pushHistory(state.source);
+    }, 450);
+  }
+
+  function flushHistory() {
+    if (history.timer) {
+      clearTimeout(history.timer);
+      history.timer = null;
+    }
+    pushHistory(state.source);
+  }
+
+  function restoreHistory() {
+    if (history.index < 0 || history.index >= history.stack.length) return;
+    state.source = history.stack[history.index];
+    state.dirty = state.source !== state.saved;
+    code.value = state.source;
+    if (state.mode === 'preview') renderPreview();
+    updateChrome();
+    updateHistoryChrome();
+  }
+
+  function undo() {
+    flushHistory();
+    if (history.index <= 0) return;
+    history.index -= 1;
+    restoreHistory();
+  }
+
+  function redo() {
+    flushHistory();
+    if (history.index >= history.stack.length - 1) return;
+    history.index += 1;
+    restoreHistory();
   }
 
   function showBanner(message, withReload = false) {
@@ -435,16 +569,48 @@
     // Commit on input so Save enables as soon as the user types instead of
     // waiting for the editable element to lose focus.
     doc.addEventListener('input', () => commitAll());
-    doc.addEventListener('blur', () => commitAll(), true);
+    doc.addEventListener('blur', () => {
+      commitAll();
+      flushHistory();
+    }, true);
     doc.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         requestClose();
+        return;
+      }
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+      } else if (key === 'y') {
+        event.preventDefault();
+        redo();
+      } else if (key === 's') {
+        event.preventDefault();
+        save().catch((error) => showBanner(error.message));
+      } else if (key === 'b' || key === 'i' || key === 'u') {
+        event.preventDefault();
+        doc.execCommand('styleWithCSS', false, false);
+        doc.execCommand(key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'underline', false, null);
+        commitAll();
       }
     });
 
+    doc.querySelectorAll('[data-plak-format]').forEach((button) => {
+      button.addEventListener('mousedown', (event) => event.preventDefault());
+      button.addEventListener('click', () => {
+        doc.execCommand('styleWithCSS', false, false);
+        doc.execCommand(button.dataset.plakFormat, false, null);
+        commitAll();
+      });
+    });
+
     doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
-      state.initial.set(element, element.textContent || '');
+      state.initial.set(element, element.innerHTML);
       element.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
@@ -468,6 +634,67 @@
         openLinkModal(Number(element.dataset.plakLinkEdit));
       });
     });
+
+    let dropTarget = null;
+    const clearDrop = () => {
+      if (dropTarget) dropTarget.classList.remove('plak-image-drop');
+      dropTarget = null;
+    };
+    const draggedFiles = (event) => (
+      Array.from(event.dataTransfer?.types || []).includes('Files')
+    );
+    doc.addEventListener('dragover', (event) => {
+      if (draggedFiles(event)) event.preventDefault();
+      const image = event.target.closest?.('img[data-plak-image-index]');
+      if (!image) return;
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      if (dropTarget !== image) {
+        clearDrop();
+        dropTarget = image;
+        image.classList.add('plak-image-drop');
+      }
+    });
+    doc.addEventListener('dragleave', (event) => {
+      if (event.target === dropTarget) clearDrop();
+    });
+    doc.addEventListener('drop', async (event) => {
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (files.length) event.preventDefault();
+      clearDrop();
+      const image = event.target.closest?.('img[data-plak-image-index]');
+      if (!image) {
+        if (files.length) {
+          showBanner('Drop the image over an existing image to replace it.');
+        }
+        return;
+      }
+      if (!files.length) return;
+      if (files.length > 1) {
+        showBanner('Drop one image at a time.');
+        return;
+      }
+      const file = files[0];
+      if (!file.type.startsWith('image/')) {
+        showBanner('Drop an image file: JPEG, PNG, GIF, WebP or AVIF.');
+        return;
+      }
+      const index = Number(image.dataset.plakImageIndex);
+      const fileAtDrop = state.file;
+      image.style.opacity = '0.45';
+      try {
+        const data = await upload(file);
+        if (state.file !== fileAtDrop) return;
+        commitAll();
+        state.source = replaceTag(state.source, 'img', index, (tag) => setAttr(tag, 'src', data.url));
+        state.dirty = state.source !== state.saved;
+        pushHistory(state.source);
+        renderPreview();
+        updateChrome();
+      } catch (error) {
+        image.style.opacity = '';
+        showBanner(error.message);
+      }
+    });
   }
 
   function commitAll() {
@@ -480,24 +707,25 @@
       const index = Number(element.dataset.plakTextIndex);
       if (Number.isNaN(index)) return;
       const original = state.initial.get(element);
-      if (original !== undefined && (element.textContent || '') !== original) {
-        changed.push({ index, text: element.textContent || '' });
+      if (original !== undefined && element.innerHTML !== original) {
+        changed.push({ index, html: element.innerHTML });
       }
     });
     if (!changed.length) return;
 
     changed.sort((left, right) => right.index - left.index);
     let next = state.source;
-    changed.forEach(({ index, text }) => {
-      next = replaceTextSegment(next, index, text);
+    changed.forEach(({ index, html }) => {
+      next = replaceTextSegment(next, index, html);
     });
 
     if (next !== state.source) {
       state.source = next;
       state.dirty = state.source !== state.saved;
+      scheduleHistory();
     }
     doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
-      state.initial.set(element, element.textContent || '');
+      state.initial.set(element, element.innerHTML);
     });
     updateChrome();
   }
@@ -565,6 +793,7 @@
       return setAttr(withSrc, 'alt', imageAlt.value.trim(), false);
     });
     state.dirty = state.source !== state.saved;
+    pushHistory(state.source);
     renderPreview();
     updateChrome();
     closeImageModal();
@@ -595,6 +824,7 @@
       return setAttr(withHref, 'target', linkTarget.checked ? '_blank' : '');
     });
     state.dirty = state.source !== state.saved;
+    pushHistory(state.source);
     renderPreview();
     updateChrome();
     closeLinkModal();
@@ -629,6 +859,7 @@
     state.loading = false;
     code.value = state.source;
     fileSelect.value = state.file;
+    resetHistory(state.source);
     renderPreview();
     updateChrome();
   }
@@ -682,6 +913,7 @@
       state.saved = state.source;
       state.sha = data.sha256;
       state.dirty = false;
+      resetHistory(state.source);
       showBanner('');
       if (embed && window.parent !== window) {
         window.parent.postMessage({ type: 'plak-editor-saved' }, '*');
@@ -707,6 +939,7 @@
   codeToggle.addEventListener('click', () => {
     if (state.mode === 'preview') {
       commitAll();
+      flushHistory();
       state.mode = 'code';
       code.value = state.source;
       preview.hidden = true;
@@ -716,6 +949,7 @@
     } else {
       state.source = code.value;
       state.dirty = state.source !== state.saved;
+      flushHistory();
       renderPreview();
       updateChrome();
     }
@@ -724,10 +958,14 @@
   code.addEventListener('input', () => {
     state.source = code.value;
     state.dirty = state.source !== state.saved;
+    scheduleHistory();
     updateChrome();
   });
+  code.addEventListener('blur', flushHistory);
 
   saveButton.addEventListener('click', () => save().catch((error) => showBanner(error.message)));
+  undoButton.addEventListener('click', undo);
+  redoButton.addEventListener('click', redo);
 
   document.querySelectorAll('[data-modal-close]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -765,6 +1003,27 @@
       return;
     }
     requestClose();
+  });
+
+  window.addEventListener('keydown', (event) => {
+    const mod = event.metaKey || event.ctrlKey;
+    if (!mod) return;
+    const key = event.key.toLowerCase();
+    if (key === 's') {
+      event.preventDefault();
+      save().catch((error) => showBanner(error.message));
+      return;
+    }
+    const target = event.target;
+    if (target instanceof Element && target.closest('input, textarea, select')) return;
+    if (key === 'z') {
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+    } else if (key === 'y') {
+      event.preventDefault();
+      redo();
+    }
   });
 
   window.addEventListener('beforeunload', (event) => {

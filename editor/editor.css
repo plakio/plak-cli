@@ -137,6 +137,12 @@ a { color: inherit; }
   border-color: var(--accent);
   color: var(--accent);
 }
+.actions button.icon {
+  width: 34px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
 .actions button.primary {
   border-color: var(--accent);
   background: var(--accent);

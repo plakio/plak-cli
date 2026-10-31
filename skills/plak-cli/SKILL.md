@@ -104,8 +104,9 @@ Use `--static` for a new static HTML site. `--plain` and `--html` are not valid
 flags.
 
 Static sites show a local **Edit** launcher on the page; `plak edit <site>`
-opens it directly. The editor edits text inline, images (URL, alt or upload to
-`public/uploads/`), links (href and target) and raw HTML, with SHA conflict
+opens it directly. The editor edits text inline (bold, italic, underline),
+images (URL, alt, upload to `public/uploads/` or drop a file onto an existing
+image), links (href and target) and raw HTML, with undo/redo, SHA conflict
 checks and backups. It lives in Plak's app directory, not in `public/`, and is
 never part of the published site.
 
