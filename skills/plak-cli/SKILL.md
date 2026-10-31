@@ -100,6 +100,9 @@ plak log [site] [-f]
 `--static` creates a static site with the default HTML starter at
 `public/index.html`. It has no database and no WordPress files.
 
+Use `--static` for a new static HTML site. `--plain` and `--html` are not valid
+flags.
+
 Static sites show a local **Edit** launcher on the page; `plak edit <site>`
 opens it directly. The editor lives in Plak's app directory, not in `public/`,
 and is never part of the published site.
