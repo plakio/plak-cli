@@ -47,17 +47,18 @@ Use `scripts/release.sh` from the repository root. Commit functional changes fir
 ./scripts/release.sh --yes
 ```
 
-This auto-increments the patch version from `PLAK_VERSION`, compiles `plak.sh`, runs smoke tests, commits the release bump, pushes `main`, and creates and pushes the GitHub tag. The tag triggers the automated Homebrew tap update.
+This auto-increments the patch version from `PLAK_VERSION`, compiles `plak.sh`, runs smoke tests, commits the release bump, pushes `main`, and creates and pushes the GitHub tag. The tag triggers the automated Homebrew tap update and the release-notes workflow.
 
-Publishing is **tag-driven**: the Git tag is the source of truth and the only release channel.
+Publishing is **tag-driven**: the Git tag is the source of truth and the distribution channel. A GitHub Release page is generated for notes; it is not a distribution trigger.
 
 1. `scripts/release.sh` pushes the version bump to `main` and pushes tag `v<version>`.
 2. The tag starts `.github/workflows/notify-homebrew-tap.yml`.
-3. That workflow dispatches the update to `plakio/homebrew-tap`.
+3. The tag also starts `.github/workflows/release-notes.yml`, which creates the GitHub Release with generated notes.
+4. The notify workflow dispatches the update to `plakio/homebrew-tap`.
 
 `scripts/release.sh` compiles `plak.sh` before creating the tag, so the tag archive used by Homebrew and the `plak.sh` downloaded by the stable channel contain the same compiled release source.
 
-`scripts/release.sh` does **not** create a GitHub Release page, and "publish a version" does not authorize creating one. GitHub Releases are not needed by Homebrew, the universal installer (`install.sh`, served by `https://plak.sh/install`) or `plak upgrade`. Homebrew builds from the tag archive; the installer and `plak upgrade` resolve the newest stable `vMAJOR.MINOR.PATCH` tag from the GitHub tags API and download `plak.sh` from that exact tag. They never fall back to `main` or `releases/latest`. See the stable channel section in `docs/homebrew.md`. If a GitHub Release page is ever wanted for editorial notes, it is a separate, explicitly authorized step after the tag and the tap update, and it must not be treated as the publication trigger.
+`scripts/release.sh` does **not** create the GitHub Release page; `.github/workflows/release-notes.yml` does it from the tag, with generated notes. The release page is supplementary and must not be treated as the publication trigger. GitHub Releases are not needed by Homebrew, the universal installer (`install.sh`, served by `https://plak.sh/install`) or `plak upgrade`. Homebrew builds from the tag archive; the installer and `plak upgrade` resolve the newest stable `vMAJOR.MINOR.PATCH` tag from the GitHub tags API and download `plak.sh` from that exact tag. They never fall back to `main` or `releases/latest`. See the stable channel section in `docs/homebrew.md`.
 
 For an explicit version:
 

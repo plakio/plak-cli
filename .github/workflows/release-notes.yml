@@ -1,0 +1,60 @@
+name: Publish release notes
+
+# Distribution stays tag-driven. This workflow only creates the visible GitHub
+# Release page (title and generated notes) for an existing vX.Y.Z tag.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish notes for (for example, v0.4.69)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="v${INPUT_TAG:-$REF_TAG}"
+          TAG="v${TAG#v}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
+
+          git fetch --tags --force
+
+          # A manual or repeated run must not overwrite curated notes.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it unchanged."
+            exit 0
+          fi
+
+          if PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null); then
+            gh release create "$TAG" --verify-tag \
+              --title "Plak $TAG" \
+              --generate-notes \
+              --notes-start-tag "$PREV"
+          else
+            gh release create "$TAG" --verify-tag \
+              --title "Plak $TAG" \
+              --generate-notes
+          fi

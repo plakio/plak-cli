@@ -19,8 +19,8 @@ What this does:
   2. Compiles plak.sh and go.sh, then runs smoke tests
   3. Commits "Release <version>"
   4. Pushes main, tags v<version>, and pushes the tag
-  5. The tag triggers the automated Homebrew tap update
-  6. Does not create a GitHub Release page: the tag is the publication channel
+  5. The tag triggers the Homebrew tap update and the GitHub Release notes workflow
+  6. Does not create the GitHub Release page locally; GitHub Actions publishes it
 USAGE
 }
 
@@ -157,10 +157,11 @@ echo "==> Pushing main"
 git push origin main
 
 echo "==> Creating and pushing tag $TAG"
-# The tag is the publication channel. Do not add a GitHub Release page here:
-# Homebrew, install.sh and plak upgrade do not need one.
+# The tag is the publication channel. A separate GitHub Actions workflow
+# creates a supplementary GitHub Release page with generated notes; it is not
+# used by Homebrew, install.sh or plak upgrade.
 git tag "$TAG"
 git push origin "$TAG"
 
-echo "==> Release $VERSION complete; the tag is published and GitHub Actions will update the Homebrew tap."
-echo "==> No GitHub Release page was created (tags are the publication channel)."
+echo "==> Release $VERSION complete; the tag is published and GitHub Actions will update the Homebrew tap and publish the release notes."
+echo "==> The GitHub Release page is generated from the tag; it is not a distribution channel."
