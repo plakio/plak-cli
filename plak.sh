@@ -19265,7 +19265,9 @@ plak_site_wsl_hosts() {
 
 # Source: commands/skill
 PLAK_SKILL_NAME="plak-cli"
-PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/plak-cli/main/skills/plak-cli}"
+# Match the installed binary: a v0.4.69 binary must not receive a v0.4.70
+# skill. Development checkouts copy skills/plak-cli locally instead.
+PLAK_SKILL_RAW_BASE="${PLAK_SKILL_RAW_BASE:-https://raw.githubusercontent.com/plakio/plak-cli/v${PLAK_VERSION}/skills/plak-cli}"
 # The WP-MCP companion skill is installed beside the Plak skill for the same
 # targets, so an agent that drives a Plak site knows how to use wp-mcp too.
 PLAK_WPMCP_SKILL_NAME="wp-mcp"

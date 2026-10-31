@@ -25,6 +25,11 @@ fail() {
     exit 1
 }
 
+# The skill installer must fetch the skill from the binary's release tag, not
+# from main; otherwise an old Homebrew binary can receive a newer skill.
+grep -Fq 'plak-cli/v${PLAK_VERSION}/skills/plak-cli' commands/skill \
+    || fail "skill installer does not match the binary release tag"
+
 # The release script must not create release pages or remove tags.
 for forbidden in \
     'gh release' \
