@@ -69,7 +69,7 @@ PY
 health_stop
 if plak_health_opcache --json > "$health_results/stopped.json" 2> "$health_results/stopped.log"; then exit 1; fi
 plak_health_opcache set opcache.enable=1 --restart > "$health_results/enabled.log"
-plak_site_add plain-health --plain --no-reload > "$health_results/plain.log"
+plak_site_add static-health --static --no-reload > "$health_results/static.log"
 
 # Load both protocols with the same files, OPcache limit and PHP thread pool.
 # curl's parallel transfer scheduler can reuse connections and multiplex h2;
@@ -82,7 +82,7 @@ for protocol in h1 h2; do
     python3 - "$protocol" "$https_port" "$ca" "$health_results" "$web_pid" <<'PY'
 import json,sys,subprocess,time,statistics,pathlib
 mode,port,ca,out,pid=sys.argv[1:]; directory=pathlib.Path(out)
-endpoints=[('dashboard','plak.localhost','/'),('static','plain-health.localhost','/'),
+endpoints=[('dashboard','plak.localhost','/'),('static','static-health.localhost','/'),
            ('wordpress','ms-subdirectories.localhost','/'),('wp-login','ms-subdirectories.localhost','/wp-login.php'),
            ('wp-assets','ms-subdirectories.localhost','/wp-includes/css/dashicons.min.css')]
 def rss():

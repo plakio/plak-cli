@@ -82,7 +82,7 @@ Commands:
   connect     Connect this machine to your Plak panel account
   disconnect  Forget the local panel credential
   panel       List your own panel sites and servers (read-only)
-  add         Create a WordPress or plain local site
+  add         Create a WordPress or static local site
   import      Create a local site from a backup ZIP or TAR
   clone       Duplicate a local site into an independent copy
   delete      Delete a local site
@@ -220,7 +220,7 @@ HELP
             echo "  and only applies them when asked. 'http2' probes protocol negotiation."
             ;;
         add)
-            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--plain] [--agent|--no-agent] [--no-reload]"
+            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--static] [--agent|--no-agent] [--no-reload]"
             echo ""
             echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
             echo "              register the site with wp-mcp-cli). WordPress only."
@@ -1798,6 +1798,341 @@ try {
 PHP
 }
 
+# Source: shared/site/html-starter
+# Write the default starter for a new static site.
+# The starter is a static index.html so the local HTML editor can edit it later.
+write_html_site_starter() {
+    local public_dir="$1" site_name="$2"
+    if [ -z "$public_dir" ] || [ ! -d "$public_dir" ] || [ -z "$site_name" ]; then
+        return 1
+    fi
+
+    local site_url site_host display_path dashboard_url template
+    site_url=$(url_for "$site_name.localhost") || return 1
+    site_host="${site_url#https://}"
+    display_path="$public_dir"
+    if [ -n "${HOME:-}" ] && [[ "$display_path" == "$HOME/"* ]]; then
+        display_path="~${display_path#"$HOME"}"
+    fi
+    dashboard_url="$(url_for "plak.localhost")/"
+
+    read -r -d '' template <<'HTML_STARTER_EOF' || true
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="Your new local HTML site, ready to edit.">
+<title>__SITE_HOST__ · Plak CLI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f5f5f1;
+    --ink: #10110f;
+    --muted: #62665f;
+    --acid: #b7fa45;
+    --blue: #344aff;
+    --dark: #111511;
+    --shell: #0e110f;
+    --shelltxt: #d6e9d3;
+    --line: #10110f;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Space Grotesk", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .grid-bg {
+    background-image:
+      linear-gradient(rgba(16, 17, 15, .055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(16, 17, 15, .055) 1px, transparent 1px);
+    background-size: 58px 58px;
+  }
+  .wrap {
+    width: min(100% - 4rem, 1120px);
+    margin: 0 auto;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.75rem 0;
+    border-bottom: 1px solid var(--ink);
+  }
+  .brand,
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: .55rem;
+    font: 500 13px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .brand .mark { color: var(--blue); font-weight: 700; }
+  .status { color: var(--muted); }
+  .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--ink);
+    border-radius: 50%;
+    background: var(--acid);
+    flex: none;
+  }
+  .hero { padding: clamp(4rem, 9vw, 6.5rem) 0 clamp(4rem, 8vw, 5.5rem); }
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    margin: 0 0 1.4rem;
+    color: var(--muted);
+    font: 500 13px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  h1 {
+    margin: 0 0 1.5rem;
+    font-size: clamp(4.5rem, 13vw, 9.5rem);
+    font-weight: 700;
+    letter-spacing: -.075em;
+    line-height: .88;
+  }
+  h1 .blue { color: var(--blue); }
+  .host {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin: 0 0 1.75rem;
+  }
+  .host-label {
+    padding: .38rem .55rem;
+    background: var(--ink);
+    color: #fff;
+    font: 500 11px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .host-name {
+    font: 500 clamp(1.1rem, 2vw, 1.5rem) "DM Mono", ui-monospace, monospace;
+    letter-spacing: -.02em;
+  }
+  .tag {
+    padding: .32rem .5rem;
+    border: 1px solid var(--ink);
+    font: 500 11px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .lead {
+    max-width: 40rem;
+    margin: 0 0 1.75rem;
+    color: var(--muted);
+    font-size: clamp(1.1rem, 2vw, 1.35rem);
+    line-height: 1.55;
+  }
+  .terminal {
+    max-width: 48rem;
+    margin: 0 0 2.1rem;
+    border: 1px solid #000;
+    background: var(--shell);
+    color: var(--shelltxt);
+    box-shadow: 12px 12px 0 var(--ink);
+  }
+  .terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 40px;
+    padding: 0 15px;
+    border-bottom: 1px solid #373f38;
+    background: #1b1f1b;
+  }
+  .terminal-bar i {
+    display: block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #5b625a;
+  }
+  .terminal-bar i:nth-child(1) { background: #ff5f57; }
+  .terminal-bar i:nth-child(2) { background: #febc2e; }
+  .terminal-bar i:nth-child(3) { background: #28c840; }
+  .terminal-title {
+    margin-left: auto;
+    color: #b8bfb4;
+    font: 12px "DM Mono", ui-monospace, monospace;
+  }
+  .terminal pre {
+    margin: 0;
+    padding: 1.35rem 1.55rem;
+    font: 14px/1.9 "DM Mono", ui-monospace, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .terminal .prompt { color: var(--acid); }
+  .terminal .cmd { color: #fff; }
+  .terminal .path { color: #97aaff; }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .8rem;
+    margin: 0 0 1.5rem;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    min-height: 48px;
+    padding: .95rem 1.2rem;
+    border: 1px solid var(--ink);
+    background: transparent;
+    color: var(--ink);
+    font: 500 14px "DM Mono", ui-monospace, monospace;
+    letter-spacing: -.01em;
+    text-transform: uppercase;
+    text-decoration: none;
+    transition: transform .15s, box-shadow .15s;
+  }
+  .btn.primary {
+    background: var(--ink);
+    color: #fff;
+    box-shadow: 4px 4px 0 #787c74;
+  }
+  .btn:hover {
+    transform: translate(3px, 3px);
+    box-shadow: none;
+  }
+  .btn:focus-visible,
+  a:focus-visible {
+    outline: 3px solid var(--blue);
+    outline-offset: 4px;
+  }
+  .hint {
+    margin: 0;
+    color: var(--muted);
+    font: 500 12px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .hint strong { color: var(--ink); }
+  .ticker {
+    border-block: 1px solid var(--ink);
+    background: var(--acid);
+    overflow: hidden;
+  }
+  .ticker-in {
+    display: flex;
+    justify-content: center;
+    gap: 3.75rem;
+    padding: 1.1rem 0;
+    font: 500 14px "DM Mono", ui-monospace, monospace;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .footer {
+    background: var(--ink);
+    color: #fff;
+    padding: 2.2rem 0;
+    font: 13px "DM Mono", ui-monospace, monospace;
+  }
+  .footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+  }
+  .footer a { color: #fff; }
+  @media (max-width: 680px) {
+    .wrap { width: min(100% - 2.5rem, 1120px); }
+    .hero { padding-top: 3.5rem; }
+    h1 { font-size: clamp(4rem, 20vw, 6.5rem); }
+    .terminal { box-shadow: 8px 8px 0 var(--ink); }
+    .actions .btn { width: 100%; }
+    .ticker-in {
+      justify-content: flex-start;
+      gap: 1.9rem;
+      padding-inline: 1.25rem;
+      font-size: 12px;
+    }
+    .footer-inner { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<main class="grid-bg">
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true">&gt;</span> PLAK CLI</div>
+      <div class="status"><span class="dot" aria-hidden="true"></span> LOCAL SITE</div>
+    </header>
+
+    <section class="hero">
+      <p class="eyebrow"><span class="dot" aria-hidden="true"></span> A NEW SITE / READY TO EDIT</p>
+      <h1>Hello<span class="blue">.</span></h1>
+
+      <div class="host">
+        <span class="host-label">Site</span>
+        <span class="host-name">__SITE_HOST__</span>
+        <span class="tag">HTTPS</span>
+      </div>
+
+      <p class="lead">Your site is ready. Start building by editing the files in:</p>
+
+      <div class="terminal">
+        <div class="terminal-bar" aria-hidden="true">
+          <i></i><i></i><i></i>
+          <span class="terminal-title">plak — __SITE_HOST__</span>
+        </div>
+        <pre><span class="prompt">❯</span> <span class="cmd">cd</span> <span class="path">__SITE_PATH__</span></pre>
+      </div>
+
+      <div class="actions">
+        <a class="btn primary" href="__DASHBOARD_URL__">PLAK DASHBOARD <span aria-hidden="true">↗</span></a>
+        <a class="btn" href="https://plak.sh/">PLAK.SH <span aria-hidden="true">↗</span></a>
+      </div>
+
+      <p class="hint">Click <strong>Edit</strong> on this page to change the text, images and links.</p>
+    </section>
+  </div>
+
+  <div class="ticker">
+    <div class="ticker-in">
+      <span>LOCAL HTTPS</span><span>✳</span>
+      <span>EDITABLE HTML</span><span>✳</span>
+      <span>NO BUILD STEP</span>
+    </div>
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <span>SERVED BY <a href="https://plak.sh/">PLAK</a></span>
+    <span>__SITE_HOST__ · LOCAL ONLY</span>
+  </div>
+</footer>
+</body>
+</html>
+HTML_STARTER_EOF
+
+    template=${template//__SITE_HOST__/$site_host}
+    template=${template//__SITE_PATH__/$display_path}
+    template=${template//__DASHBOARD_URL__/$dashboard_url}
+
+    printf '%s\n' "$template" > "$public_dir/index.html" || return 1
+    echo "   - ✅ Wrote static HTML starter."
+}
+
 # Source: shared/site/multisite
 # shellcheck disable=SC2016 # Single-quoted eval programs are PHP, not shell.
 # Authoritative network queries use WordPress, never a marker file alone.
@@ -3213,140 +3548,6 @@ heredoc
     echo "   - ✅ Injected one-time login MU-plugin."
 }
 
-# Write a Plak-branded landing index.php into a plain site's public dir.
-# The heredoc below is the user's PHP — it reads $_SERVER['HTTP_HOST'] and
-# __FILE__ at request time, so it self-identifies wherever it's served from.
-write_plain_site_landing() {
-    local public_dir="$1"
-    if [ -z "$public_dir" ] || [ ! -d "$public_dir" ]; then
-        return 1
-    fi
-
-read -r -d '' build_landing << 'LANDING_EOF'
-<?php
-$host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-$file = __FILE__;
-$dir  = dirname(__FILE__);
-$home = getenv('HOME') ?: '';
-$display_dir = ($home && str_starts_with($dir, $home)) ? '~' . substr($dir, strlen($home)) : $dir;
-?><!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>Plak CLI</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%232f36fa'/><text x='32' y='46' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='white'>P</text></svg>">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..600&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-:root {
-  --bg: #fbfaf7; --bg-elev: #ffffff; --bg-sunk: #f4f2ec;
-  --border: #e8e4da; --text: #1a1c1b; --text-soft: #3a3d3a;
-  --muted: #6b6f6a; --dim: #9a9d97;
-  /* sRGB fallback first; the oklch override on the next line is ignored by
-     browsers without oklch() support (Firefox <113, Chrome <111, Safari <16.4)
-     so the hex value wins — otherwise the whole declaration would be invalid
-     and --accent would fall back to its initial value (unset). */
-  --accent: #2f36fa;       --accent-ink: #1c4c58;
-  --accent: oklch(55% 0.18 255); --accent-ink: oklch(35% 0.08 190);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1210; --bg-elev: #161a17; --bg-sunk: #0b0e0c;
-    --border: #252925; --text: #edeee9; --text-soft: #c6c9c1;
-    --muted: #8a8e85; --dim: #5d615a;
-    --accent: #2f36fa;       --accent-ink: #83d2e0;
-    --accent: oklch(70% 0.15 255); --accent-ink: oklch(82% 0.10 190);
-  }
-}
-html { background: var(--bg); }
-body {
-  font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  color: var(--text); background: var(--bg);
-  min-height: 100vh; display: grid; place-items: center;
-  padding: 2rem; -webkit-font-smoothing: antialiased;
-  font-feature-settings: "ss01", "cv11";
-}
-main { max-width: 560px; text-align: center; }
-.mark { width: 56px; height: 56px; margin: 0 auto 1.75rem; display: block; }
-h1 {
-  font-family: 'Fraunces', 'Times New Roman', serif;
-  font-style: italic; font-weight: 500;
-  font-size: clamp(2.25rem, 5vw, 3.25rem);
-  letter-spacing: -0.025em; line-height: 1.02;
-  margin-bottom: 0.55rem;
-}
-.host {
-  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 0.9rem; color: var(--muted); margin-bottom: 1.75rem;
-}
-p { color: var(--text-soft); line-height: 1.55; font-size: 1.02rem; margin-bottom: 1rem; }
-.path {
-  display: inline-block;
-  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 0.82rem;
-  padding: 0.45rem 0.8rem;
-  background: var(--bg-sunk); border: 1px solid var(--border);
-  border-radius: 7px; color: var(--text-soft);
-  margin: 0.25rem 0 2rem; word-break: break-all;
-}
-.actions { display: inline-flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
-.pill {
-  display: inline-flex; align-items: center; gap: 0.45em;
-  padding: 0.55rem 1.05rem; border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-elev); color: var(--text-soft);
-  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 0.85rem; text-decoration: none;
-  transition: border-color 120ms, color 120ms, background 120ms;
-}
-.pill:hover { border-color: var(--accent); color: var(--accent-ink); background: var(--bg-sunk); }
-.pill.primary { background: var(--accent); border-color: var(--accent); color: #0a1a1c; }
-.pill.primary:hover { filter: brightness(1.08); background: var(--accent); color: #0a1a1c; }
-footer {
-  margin-top: 3rem;
-  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 0.72rem; color: var(--dim); letter-spacing: 0.05em;
-}
-footer a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--border); }
-footer a:hover { color: var(--text); }
-</style>
-</head>
-<body>
-<main>
-  <svg class="mark" viewBox="0 0 64 64" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <defs><clipPath id="c"><circle cx="32" cy="32" r="28"/></clipPath></defs>
-    <g clip-path="url(#c)">
-      <rect width="64" height="64" fill="#f6f1e8"/>
-      <rect y="32" width="64" height="32" fill="#2f36fa"/>
-      <path d="M 4 32 C 4 22, 12 12, 22 12 C 30 12, 34 18, 42 16 C 50 14, 58 18, 60 24 L 60 32 Z" fill="#8bb382"/>
-      <line x1="2" y1="32" x2="62" y2="32" stroke="#1c4c58" stroke-width="2.5" fill="none"/>
-      <g stroke="#1c4c58" stroke-width="2.6" fill="none">
-        <path d="M 10 42 Q 18 38, 26 42 T 42 42 T 56 42"/>
-        <path d="M 14 50 Q 22 46, 30 50 T 46 50 T 56 50"/>
-      </g>
-    </g>
-    <circle cx="32" cy="32" r="28" stroke="#1c4c58" stroke-width="3" fill="none"/>
-  </svg>
-  <h1>Hello.</h1>
-  <div class="host"><?= htmlspecialchars($host) ?></div>
-  <p>Your site is ready. Start building by editing files in:</p>
-  <div class="path"><?= htmlspecialchars($display_dir) ?></div>
-  <div class="actions">
-    <a class="pill primary" href="https://plak.localhost/">Plak dashboard</a>
-    <a class="pill" href="https://plak.sh/" target="_blank" rel="noopener">plak.sh ↗</a>
-  </div>
-  <footer>Served by <a href="https://plak.sh" target="_blank" rel="noopener">Plak</a></footer>
-</main>
-</body>
-</html>
-LANDING_EOF
-
-    printf '%s\n' "$build_landing" > "$public_dir/index.php" || return 1
-    echo "   - ✅ Wrote Plak landing page."
-}
-
 # Load configuration from ~/Plak/config
 source_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -4127,7 +4328,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     $sites_info[] = [
                         'name' => str_replace('.localhost', '', $item),
                         'domain' => 'https://' . $item . $__plak_site_port_suffix,
-                        'type' => file_exists($site_path . "/public/wp-config.php") ? 'WordPress' : 'Plain',
+                        'type' => file_exists($site_path . "/public/wp-config.php") ? 'WordPress' : 'Static',
                         'display_path' => '~/Plak/Sites/' . $item,
                         'full_path' => $site_path,
                         'size_bytes' => isset($size_cache[$item]) ? (int) $size_cache[$item] : null,
@@ -4296,12 +4497,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
             if (!empty($site_name) && preg_match('/^[a-zA-Z0-9-]+$/', $site_name)) {
-                $is_plain = (bool) ($input['is_plain'] ?? false);
-                $type_flag = $is_plain ? '--plain' : '';
+                $is_static = (bool) ($input['is_static'] ?? false);
+                $type_flag = $is_static ? '--static' : '';
                 // Manual creation never depends on optional agent tooling.
                 // Always express the checkbox choice instead of inheriting CLI
                 // defaults (which depend on tools installed on the machine).
-                $agent_flag = !$is_plain ? (!empty($input['agent']) ? '--agent' : '--no-agent') : '';
+                $agent_flag = !$is_static ? (!empty($input['agent']) ? '--agent' : '--no-agent') : '';
                 $command = sprintf('HOME=%s %s add %s %s %s --no-reload 2>&1', escapeshellarg($user_home), escapeshellarg($plak_site_path), escapeshellarg($site_name), $type_flag, $agent_flag);
                 // Remember we're adding so the post-exec block below can
                 // measure the new site's size and fold it into the cache.
@@ -5731,10 +5932,10 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                     <div class="new-site-alert-text">
                         <strong x-text="alert.name + '.localhost'"></strong> is ready.
                     </div>
-                    <template x-if="!alert.isPlain">
+                    <template x-if="!alert.isStatic">
                         <button class="pill primary" :disabled="alert.isLoggingIn" @click="loginToNewSite(alert)" x-text="alert.isLoggingIn ? 'opening…' : 'log in to admin'"></button>
                     </template>
-                    <template x-if="alert.isPlain">
+                    <template x-if="alert.isStatic">
                         <a class="pill primary" :href="'https://' + alert.name + '.localhost' + PORT_SUFFIX" target="_blank" rel="noopener" @click="dismissAlert(alert.id)">open site</a>
                     </template>
                     <button class="new-site-alert-close" @click="dismissAlert(alert.id)" aria-label="Dismiss" title="Dismiss">×</button>
@@ -5767,10 +5968,10 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                 <form @submit.prevent="addSite()">
                     <input type="text" x-model="newSite.name" @input="newSite.name = newSite.name.toLowerCase().replace(/[^a-z0-9-]/g, '')" placeholder="site-name" required :disabled="newSite.isLoading" x-ref="newSiteInput">
                     <label class="plain-toggle">
-                        <input type="checkbox" x-model="newSite.isPlain" :disabled="newSite.isLoading">
-                        plain (no WordPress)
+                        <input type="checkbox" x-model="newSite.isStatic" :disabled="newSite.isLoading">
+                        static (no WordPress)
                     </label>
-                    <label class="plain-toggle" x-show="!newSite.isPlain" x-cloak title="Install WP-MCP and register the site with wp-mcp-cli">
+                    <label class="plain-toggle" x-show="!newSite.isStatic" x-cloak title="Install WP-MCP and register the site with wp-mcp-cli">
                         <input type="checkbox" x-model="newSite.agent" :disabled="newSite.isLoading">
                         agent-ready (MCP)
                     </label>
@@ -6388,10 +6589,10 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                 importError: null,
                 isRefreshingSizes: false,
                 filter: '',
-                typeFilter: null, // null | 'WordPress' | 'Plain' — set via the row type pills, cleared via the chip × or overall filter clear
+                typeFilter: null, // null | 'WordPress' | 'Static' — set via the row type pills, cleared via the chip × or overall filter clear
                 sort: 'name',
                 sortModes: ['name', 'size', 'modified'],
-                newSite: { name: '', isPlain: false, agent: false, isLoading: false, error: '', output: '' },
+                newSite: { name: '', isStatic: false, agent: false, isLoading: false, error: '', output: '' },
                 snackbar: { visible: false, message: '', isError: false, timer: null },
                 // Persistent dismissible banners for newly-created sites — the
                 // snackbar only lives ~3.5s, not long enough to reach for the
@@ -7176,10 +7377,10 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                     this.newSite.output = '';
                     this.newSite.isLoading = true;
                     const name = this.newSite.name;
-                    const isPlain = this.newSite.isPlain;
-                    const agent = isPlain ? false : this.newSite.agent;
+                    const isStatic = this.newSite.isStatic;
+                    const agent = isStatic ? false : this.newSite.agent;
 
-                    const add = await this.apiPost('add_site', { site_name: name, is_plain: isPlain, agent });
+                    const add = await this.apiPost('add_site', { site_name: name, is_static: isStatic, agent });
                     if (add.success) {
                         // Optimistic insert: we already know every field the row
                         // template uses. No auto-refresh — the Caddy reload that
@@ -7189,7 +7390,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                         this.sites.push({
                             name,
                             domain: 'https://' + name + '.localhost' + PORT_SUFFIX,
-                            type: isPlain ? 'Plain' : 'WordPress',
+                            type: isStatic ? 'Static' : 'WordPress',
                             display_path: '~/Plak/Sites/' + name + '.localhost',
                             full_path: SITES_DIR + '/' + name + '.localhost',
                             // Server calculates size in add_site and returns it
@@ -7206,12 +7407,12 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
 
                         // Surface a persistent alert so the user can jump
                         // straight into the new site without hunting for the
-                        // row. WP sites get a one-time admin login; plain
+                        // row. WP sites get a one-time admin login; static
                         // sites get a simple "open site" link.
                         this.alerts.push({
                             id: Date.now() + Math.random(),
                             name,
-                            isPlain,
+                            isStatic,
                             isLoggingIn: false,
                         });
                     } else {
@@ -11599,7 +11800,7 @@ plak_site_add() (
             --wp-version)
                 [ "$#" -ge 2 ] || { echo 'Error: --wp-version requires latest, nightly or a release number.' >&2; exit 1; }
                 wp_version="$2"; version_flag=true; shift ;;
-            --plain) site_type="plain" ;;
+            --static) site_type="static" ;;
             --no-reload) no_reload_flag=true ;;
             --agent) agent_mode=true agent_flag="true" ;;
             --no-agent) agent_mode=false agent_flag="false" ;;
@@ -11615,20 +11816,20 @@ plak_site_add() (
         esac
         shift
     done
-    if [ -n "$multisite" ] && [ "$site_type" = plain ]; then
-        echo 'Error: --multisite cannot be combined with --plain.' >&2; exit 1
+    if [ -n "$multisite" ] && [ "$site_type" = static ]; then
+        echo 'Error: --multisite cannot be combined with --static.' >&2; exit 1
     fi
     if [ -n "$multisite" ]; then
         if [ "$agent_flag" = true ]; then echo 'Error: automatic agent preparation has no multisite scope; use explicit network/subsite WP-CLI commands.' >&2; exit 1; fi
         agent_flag=false; agent_mode=false
     fi
     plak_core_version_valid "$wp_version" || { echo "Error: invalid WordPress version '$wp_version'; use latest, nightly or a release such as 6.8.1." >&2; exit 1; }
-    if [ "$version_flag" = true ] && [ "$site_type" = plain ]; then
-        echo 'Error: --wp-version applies only to WordPress sites; omit it with --plain.' >&2
+    if [ "$version_flag" = true ] && [ "$site_type" = static ]; then
+        echo 'Error: --wp-version applies only to WordPress sites; omit it with --static.' >&2
         exit 1
     fi
-    if [ "$agent_flag" = "true" ] && [ "$site_type" = plain ]; then
-        echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --plain." >&2
+    if [ "$agent_flag" = "true" ] && [ "$site_type" = static ]; then
+        echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --static." >&2
         exit 1
     fi
     # Default: a new WordPress site becomes agent-ready when wp-mcp-cli is
@@ -11686,8 +11887,8 @@ plak_site_add() (
     mkdir "$site_dir/public" "$site_dir/logs" || exit 1
     echo "➕ Creating $site_type site: $full_hostname"
 
-    if [ "$site_type" = plain ]; then
-        write_plain_site_landing "$site_dir/public" || exit 1
+    if [ "$site_type" = static ]; then
+        write_html_site_starter "$site_dir/public" "$site_name" || exit 1
     else
         echo "🗄️ Creating database: $db_name"
         if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
@@ -11774,6 +11975,9 @@ PHP
         local admin_url
         admin_url="$(url_for "$full_hostname")/wp-admin"
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(plak_terminal_link "$admin_url")" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $(plak_terminal_link "$one_time_login_url")"
+    elif [ "$site_type" = static ]; then
+        echo "   URL: $(url_for "$full_hostname")/"
+        echo "   Starter: $SITES_DIR/$full_hostname/public/index.html"
     fi
 )
 
@@ -13359,7 +13563,7 @@ plak_history_schedule() (
 plak_site_import_usage() {
     cat <<'HELP'
 Usage:
-  plak import <name> <backup.zip> [--plain] [--yes] [--no-reload]
+  plak import <name> <backup.zip> [--static] [--yes] [--no-reload]
 
 Create a local site from a WordPress backup ZIP or TAR. Accepts Plak exports,
 Local exports, and hosting backups that contain a single-site WordPress tree
@@ -13444,7 +13648,7 @@ plak_site_import() {
     local site_name="" archive="" site_type="wordpress" yes=0 no_reload=false arg
     for arg in "$@"; do
         case "$arg" in
-            --plain) site_type="plain" ;;
+            --static) site_type="static" ;;
             --yes|-y) yes=1 ;;
             --no-reload) no_reload=true ;;
             --help|-h) plak_site_import_usage; return 0 ;;
@@ -13491,7 +13695,7 @@ plak_site_import() {
     fi
 
     echo "Creating site '$site_name.localhost'..."
-    "$PLAK_SITE_CMD" add "$site_name" --plain --no-reload || {
+    "$PLAK_SITE_CMD" add "$site_name" --static --no-reload || {
         echo "Error: could not create the destination site." >&2
         return 1
     }
@@ -13529,7 +13733,7 @@ plak_site_import() {
     fi
 
     # Reinstall the local helper plugin and referenced site configuration.
-    if [ "$site_type" != plain ]; then
+    if [ "$site_type" != static ]; then
         inject_mu_plugin "$SITES_DIR/$site_name.localhost/public" || true
     fi
 
@@ -13542,7 +13746,7 @@ plak_site_import() {
 
     # An imported WordPress site should be usable by agents too; prepare it when
     # possible and otherwise say how, without failing the import.
-    if [ "$site_type" != plain ]; then
+    if [ "$site_type" != static ]; then
         plak_agent_maybe_prepare "$site_name"
     fi
 
@@ -14708,7 +14912,7 @@ plak_site_list() {
                 $sites[] = [
                     "name" => str_replace(".localhost", "", $item),
                     "domain" => "https://" . $item . $port_suffix,
-                    "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Plain",
+                    "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Static",
                     "size" => $size,
                     "agent_ready" => file_exists($site_path . "/agent-ready"),
                     "multisite_mode" => is_file($site_path . "/.multisite-mode") ? trim(file_get_contents($site_path . "/.multisite-mode")) : null,
@@ -17144,7 +17348,7 @@ Usage:
   plak snapshot <site> export <id> [--output <path>]
 
 Snapshots are local recovery points of a site's files and database. Static
-(plain) sites include only their files.
+Static sites include only their files.
 HELP
 }
 
@@ -17203,7 +17407,7 @@ plak_snapshot_create() {
     mkdir -p "$snapshot_dir" || return 1
 
     local site_type="wordpress"
-    plak_snapshot_site_is_wordpress "$site_dir" || site_type="plain"
+    plak_snapshot_site_is_wordpress "$site_dir" || site_type="static"
 
     if ! tar -czf "$snapshot_dir/files.tar.gz" -C "$site_dir/public" . 2>/dev/null; then
         rm -rf "$snapshot_dir"

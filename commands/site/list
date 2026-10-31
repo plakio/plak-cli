@@ -62,7 +62,7 @@ plak_site_list() {
                 $sites[] = [
                     "name" => str_replace(".localhost", "", $item),
                     "domain" => "https://" . $item . $port_suffix,
-                    "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Plain",
+                    "type" => file_exists($site_path . "/public/wp-config.php") ? "WordPress" : "Static",
                     "size" => $size,
                     "agent_ready" => file_exists($site_path . "/agent-ready"),
                     "multisite_mode" => is_file($site_path . "/.multisite-mode") ? trim(file_get_contents($site_path . "/.multisite-mode")) : null,

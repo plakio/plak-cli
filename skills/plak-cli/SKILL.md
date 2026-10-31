@@ -1,13 +1,13 @@
 ---
 name: plak-cli
-description: "Use when working with Plak CLI: managing local WordPress/plain sites, the https://plak.localhost dashboard, Plak install/status/service workflows, database backups, pull/push migrations, /etc/hosts entries, SSH remotes with site bindings, SSH keys, or Plak release/Homebrew maintenance."
+description: "Use when working with Plak CLI: managing local WordPress/static sites, the https://plak.localhost dashboard, Plak install/status/service workflows, database backups, pull/push migrations, /etc/hosts entries, SSH remotes with site bindings, SSH keys, or Plak release/Homebrew maintenance."
 ---
 
 # Plak CLI
 
 Use Plak for local developer workflows around:
 
-- Local WordPress and plain static sites served by FrankenPHP/Caddy.
+- Local WordPress and static sites served by FrankenPHP/Caddy.
 - The Plak dashboard at `https://plak.localhost`.
 - Adminer at `https://db.plak.localhost` and Mailpit at `https://mail.plak.localhost`.
 - SSH remotes (with optional site bindings for push/pull), `/etc/hosts` entries, and SSH keys.
@@ -85,7 +85,7 @@ plak --quiet version       # suppress output for scripts
 ## Sites
 
 ```bash
-plak add <name> [--plain] [--agent] [--no-reload]
+plak add <name> [--static] [--agent] [--no-reload]
 plak delete <name> [--force|--yes] [--no-reload]
 plak rename <old-name> <new-name>
 plak list [--totals] [--json]
@@ -96,6 +96,9 @@ plak url <site>
 plak log [site] [-f]
 ```
 
+`--static` creates a static site with the default HTML starter at
+`public/index.html`. It has no database and no WordPress files.
+
 Use `plak wp <site> plugin list --format=json` or
 `plak wp <site> option get siteurl` from any directory. New WordPress sites are
 marked `WP_ENVIRONMENT_TYPE=local`; failed provisioning removes only resources
@@ -104,7 +107,7 @@ created by that attempt. A reload-only failure keeps the completed site for retr
 ## Agent-ready sites (WP-MCP)
 
 **When you create a WordPress site for yourself, always pass `--agent`** unless
-the user explicitly asked for a plain WordPress site:
+the user explicitly asked for a WordPress site without agent preparation:
 
 ```bash
 plak add mysite --agent
@@ -115,7 +118,7 @@ plak add mysite --agent
 abilities (locked to the site's host) so its REST API works, mints a scoped
 WordPress Application Password, registers the site with `wp-mcp-cli` under a
 profile named after the site, and verifies that WP-MCP abilities are discoverable.
-It cannot be combined with `--plain`.
+It cannot be combined with `--static`.
 
 Once ready, drive the site through wp-mcp instead of guessing at REST calls:
 

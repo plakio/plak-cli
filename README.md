@@ -5,7 +5,7 @@ Plak CLI is a Bash + [gum](https://github.com/charmbracelet/gum) tool for everyd
 - SSH server aliases in `~/.ssh/config`
 - Local domain entries in `/etc/hosts`
 - SSH keys in `~/.ssh`
-- Local WordPress and plain static sites served through Caddy/FrankenPHP
+- Local WordPress and static HTML sites served through Caddy/FrankenPHP
 
 It follows a modular structure: source files are compiled into a single distributable `plak.sh` script.
 
@@ -205,8 +205,8 @@ on every mutating request. The Host header is never treated as authentication.
 ### Sites
 
 ```bash
-plak add <name> [--plain] [--agent|--no-agent]
-plak import <name> <backup.zip> [--yes]
+plak add <name> [--static] [--agent|--no-agent]
+plak import <name> <backup.zip> [--static] [--yes]
 plak delete <name> [--force]
 plak rename <old-name> <new-name>
 plak list [--totals]
@@ -217,6 +217,9 @@ plak path <name>
 plak url <name>
 plak log [site] [-f]
 ```
+
+`plak add <name> --static` creates a static site with the default HTML starter at
+`public/index.html`. It has no database and no WordPress files.
 
 Run WP-CLI from any directory using the site's FrankenPHP runtime:
 
@@ -259,10 +262,10 @@ WordPress Application Password, registers the site with `wp-mcp-cli` under a
 profile named after the site, and verifies that WP-MCP abilities are
 discoverable. `plak import` and `plak clone` prepare WordPress sites the same way
 (or tell you how), and `plak list` shows which sites are agent-ready. Agent
-preparation requires WordPress and cannot be combined with `--plain`. The plugins are downloaded with the
+preparation requires WordPress and cannot be combined with `--static`. The plugins are downloaded with the
 `PlakCLI/<version>` User-Agent, so the downloads host can allow Plak through its
 firewall without opening the archives to the world. `--agent` requires WordPress
-and cannot be combined with `--plain`.
+and cannot be combined with `--static`.
 
 `plak install` installs `wp-mcp-cli` and its `jq` dependency alongside Plak, and
 `plak skill install` also installs the official wp-mcp skill for the selected

@@ -82,7 +82,7 @@ Commands:
   connect     Connect this machine to your Plak panel account
   disconnect  Forget the local panel credential
   panel       List your own panel sites and servers (read-only)
-  add         Create a WordPress or plain local site
+  add         Create a WordPress or static local site
   import      Create a local site from a backup ZIP or TAR
   clone       Duplicate a local site into an independent copy
   delete      Delete a local site
@@ -220,7 +220,7 @@ HELP
             echo "  and only applies them when asked. 'http2' probes protocol negotiation."
             ;;
         add)
-            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--plain] [--agent|--no-agent] [--no-reload]"
+            echo "Usage: plak add <name> [--wp-version latest|nightly|<version>] [--multisite subdomains|subdirectories] [--static] [--agent|--no-agent] [--no-reload]"
             echo ""
             echo "  --agent     Force agent preparation (WP-MCP and HTML Editor, then"
             echo "              register the site with wp-mcp-cli). WordPress only."

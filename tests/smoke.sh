@@ -51,7 +51,7 @@ source ./plak.sh >/dev/null
 migration_sites="$tmpdir/sites"
 migration_log="$tmpdir/wp.log"
 fake_wp="$tmpdir/wp"
-mkdir -p "$migration_sites/site.localhost/public" "$migration_sites/plain.localhost/public"
+mkdir -p "$migration_sites/site.localhost/public" "$migration_sites/static.localhost/public"
 touch "$migration_sites/site.localhost/public/wp-config.php"
 
 cat > "$fake_wp" <<'FAKE_WP'
@@ -79,8 +79,8 @@ gum() {
 migration_output=$(update_wp_site_urls_for_port_change 8453 443)
 grep -q 'https://site.localhost:8453 https://site.localhost ' "$migration_log"
 grep -q 'site.localhost: replaced 3 occurrence(s)' <<<"$migration_output"
-if grep -q 'plain.localhost' "$migration_log"; then
-    echo "plain site was unexpectedly migrated" >&2
+if grep -q 'static.localhost' "$migration_log"; then
+    echo "static site was unexpectedly migrated" >&2
     exit 1
 fi
 

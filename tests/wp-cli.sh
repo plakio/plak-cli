@@ -134,8 +134,8 @@ expected+=(--version)
 printf '%s\0' "${expected[@]}" > "$tmpdir/expected"
 cmp "$tmpdir/expected" "$WP_ARGV_LOG" || fail 'global flags leaked into WP-CLI'
 ./plak.sh wp --help | grep -q 'Usage: plak wp' || fail 'missing wrapper help'
-for site in ../demo missing plain; do
-    mkdir -p "$HOME/Plak/Sites/plain.localhost/public"
+for site in ../demo missing static; do
+    mkdir -p "$HOME/Plak/Sites/static.localhost/public"
     if ./plak.sh wp "$site" --info >"$tmpdir/out" 2>"$tmpdir/err"; then fail "accepted invalid site $site"; fi
 done
 if ./plak.sh wp >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted missing site'; fi
@@ -228,8 +228,14 @@ grep -q -- '--dbhost=127.0.0.2:3317' "$SITES_DIR/new.localhost/public/.config-ar
 test -s "$SITES_DIR/new.localhost/public/wp-content/mu-plugins/plak-cli-helper.php" || fail 'missing helper'
 test -d "$TEST_DATABASES/$db_name" || fail 'cleaned successful database'
 grep -q 'created successfully' "$tmpdir/out" || fail 'no success after valid install'
-./plak.sh add landing --plain --no-reload >"$tmpdir/out" 2>"$tmpdir/err"
-test -s "$SITES_DIR/landing.localhost/public/index.php" || fail 'static creation regressed'
+./plak.sh add landing --static --no-reload >"$tmpdir/out" 2>"$tmpdir/err"
+test -s "$SITES_DIR/landing.localhost/public/index.html" || fail 'static starter missing'
+test ! -e "$SITES_DIR/landing.localhost/public/index.php" || fail 'static site got index.php'
+grep -q 'landing.localhost' "$SITES_DIR/landing.localhost/public/index.html" || fail 'starter missing site host'
+grep -q '~/Plak/Sites/landing.localhost/public' "$SITES_DIR/landing.localhost/public/index.html" || fail 'starter missing site path'
+grep -q 'plak.localhost' "$SITES_DIR/landing.localhost/public/index.html" || fail 'starter missing dashboard'
+if ./plak.sh add removed --plain --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted removed --plain'; fi
+[ ! -e "$SITES_DIR/removed.localhost" ] || fail 'created resources with removed --plain'
 for version in latest 6.8.1 nightly; do
     name="version-${version//./-}"
     ./plak.sh add "$name" --wp-version "$version" --no-reload >"$tmpdir/out" 2>"$tmpdir/err"
@@ -239,7 +245,7 @@ for version in nope ../6.8 --force; do
     if ./plak.sh add invalid --wp-version "$version" --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted invalid version'; fi
     [ ! -e "$SITES_DIR/invalid.localhost" ] || fail 'created invalid-version resources'
 done
-if ./plak.sh add invalid --plain --wp-version nightly --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted WP version with plain'; fi
+if ./plak.sh add invalid --static --wp-version nightly --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted WP version with static'; fi
 for mode in subdomains subdirectories; do
     ./plak.sh add "network-$mode" --multisite "$mode" --no-agent --no-reload >"$tmpdir/out" 2>"$tmpdir/err"
     [ "$(cat "$SITES_DIR/network-$mode.localhost/.multisite-mode")" = "$mode" ] || fail 'lost network routing mode'
@@ -251,7 +257,7 @@ if ./plak.sh add network-fail --multisite subdomains --no-agent --no-reload >"$t
 [ ! -e "$SITES_DIR/network-fail.localhost" ] || fail 'left files after failed network conversion'
 [ ! -e "$TEST_DATABASES/plak_site_network_fail_" ] || fail 'left database after failed network conversion'
 unset FAIL_STAGE
-if ./plak.sh add invalid --multisite subdomains --plain --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted plain multisite'; fi
+if ./plak.sh add invalid --multisite subdomains --static --no-reload >"$tmpdir/out" 2>"$tmpdir/err"; then fail 'accepted static multisite'; fi
 
 # Failure after a completed install must keep the valid site for reload retry.
 regenerate_caddyfile() { return 19; }

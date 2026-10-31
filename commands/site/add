@@ -30,7 +30,7 @@ plak_site_add() (
             --wp-version)
                 [ "$#" -ge 2 ] || { echo 'Error: --wp-version requires latest, nightly or a release number.' >&2; exit 1; }
                 wp_version="$2"; version_flag=true; shift ;;
-            --plain) site_type="plain" ;;
+            --static) site_type="static" ;;
             --no-reload) no_reload_flag=true ;;
             --agent) agent_mode=true agent_flag="true" ;;
             --no-agent) agent_mode=false agent_flag="false" ;;
@@ -46,20 +46,20 @@ plak_site_add() (
         esac
         shift
     done
-    if [ -n "$multisite" ] && [ "$site_type" = plain ]; then
-        echo 'Error: --multisite cannot be combined with --plain.' >&2; exit 1
+    if [ -n "$multisite" ] && [ "$site_type" = static ]; then
+        echo 'Error: --multisite cannot be combined with --static.' >&2; exit 1
     fi
     if [ -n "$multisite" ]; then
         if [ "$agent_flag" = true ]; then echo 'Error: automatic agent preparation has no multisite scope; use explicit network/subsite WP-CLI commands.' >&2; exit 1; fi
         agent_flag=false; agent_mode=false
     fi
     plak_core_version_valid "$wp_version" || { echo "Error: invalid WordPress version '$wp_version'; use latest, nightly or a release such as 6.8.1." >&2; exit 1; }
-    if [ "$version_flag" = true ] && [ "$site_type" = plain ]; then
-        echo 'Error: --wp-version applies only to WordPress sites; omit it with --plain.' >&2
+    if [ "$version_flag" = true ] && [ "$site_type" = static ]; then
+        echo 'Error: --wp-version applies only to WordPress sites; omit it with --static.' >&2
         exit 1
     fi
-    if [ "$agent_flag" = "true" ] && [ "$site_type" = plain ]; then
-        echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --plain." >&2
+    if [ "$agent_flag" = "true" ] && [ "$site_type" = static ]; then
+        echo "Error: --agent prepares a WordPress site for WP-MCP and cannot be combined with --static." >&2
         exit 1
     fi
     # Default: a new WordPress site becomes agent-ready when wp-mcp-cli is
@@ -117,8 +117,8 @@ plak_site_add() (
     mkdir "$site_dir/public" "$site_dir/logs" || exit 1
     echo "➕ Creating $site_type site: $full_hostname"
 
-    if [ "$site_type" = plain ]; then
-        write_plain_site_landing "$site_dir/public" || exit 1
+    if [ "$site_type" = static ]; then
+        write_html_site_starter "$site_dir/public" "$site_name" || exit 1
     else
         echo "🗄️ Creating database: $db_name"
         if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
@@ -205,5 +205,8 @@ PHP
         local admin_url
         admin_url="$(url_for "$full_hostname")/wp-admin"
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "✅ WordPress Installed" "URL: $(plak_terminal_link "$admin_url")" "User: $admin_user" "Pass: $admin_pass" "One-time login URL: $(plak_terminal_link "$one_time_login_url")"
+    elif [ "$site_type" = static ]; then
+        echo "   URL: $(url_for "$full_hostname")/"
+        echo "   Starter: $SITES_DIR/$full_hostname/public/index.html"
     fi
 )

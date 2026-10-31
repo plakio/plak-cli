@@ -1,7 +1,7 @@
 plak_site_import_usage() {
     cat <<'HELP'
 Usage:
-  plak import <name> <backup.zip> [--plain] [--yes] [--no-reload]
+  plak import <name> <backup.zip> [--static] [--yes] [--no-reload]
 
 Create a local site from a WordPress backup ZIP or TAR. Accepts Plak exports,
 Local exports, and hosting backups that contain a single-site WordPress tree
@@ -86,7 +86,7 @@ plak_site_import() {
     local site_name="" archive="" site_type="wordpress" yes=0 no_reload=false arg
     for arg in "$@"; do
         case "$arg" in
-            --plain) site_type="plain" ;;
+            --static) site_type="static" ;;
             --yes|-y) yes=1 ;;
             --no-reload) no_reload=true ;;
             --help|-h) plak_site_import_usage; return 0 ;;
@@ -133,7 +133,7 @@ plak_site_import() {
     fi
 
     echo "Creating site '$site_name.localhost'..."
-    "$PLAK_SITE_CMD" add "$site_name" --plain --no-reload || {
+    "$PLAK_SITE_CMD" add "$site_name" --static --no-reload || {
         echo "Error: could not create the destination site." >&2
         return 1
     }
@@ -171,7 +171,7 @@ plak_site_import() {
     fi
 
     # Reinstall the local helper plugin and referenced site configuration.
-    if [ "$site_type" != plain ]; then
+    if [ "$site_type" != static ]; then
         inject_mu_plugin "$SITES_DIR/$site_name.localhost/public" || true
     fi
 
@@ -184,7 +184,7 @@ plak_site_import() {
 
     # An imported WordPress site should be usable by agents too; prepare it when
     # possible and otherwise say how, without failing the import.
-    if [ "$site_type" != plain ]; then
+    if [ "$site_type" != static ]; then
         plak_agent_maybe_prepare "$site_name"
     fi
 

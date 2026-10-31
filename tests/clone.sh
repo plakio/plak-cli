@@ -122,11 +122,11 @@ grep -q 'plak_agent_maybe_prepare "\$destination"' commands/site/clone \
 [ -f "$src/.remote" ] || fail "clone removed the source remote binding"
 
 # --- Static source uses files only ---
-plain_src="$SITES_DIR/plain.localhost"
-mkdir -p "$plain_src/public"
-echo "<h1>plain</h1>" > "$plain_src/public/index.php"
-plak_site_clone plain plaincopy --yes
-[ -f "$SITES_DIR/plaincopy.localhost/public/index.php" ] || fail "clone failed for a static site"
+static_src="$SITES_DIR/static.localhost"
+mkdir -p "$static_src/public"
+echo "<h1>static</h1>" > "$static_src/public/index.html"
+plak_site_clone static staticcopy --yes
+[ -f "$SITES_DIR/staticcopy.localhost/public/index.html" ] || fail "clone failed for a static site"
 
 # --- Existing destination is rejected before any work ---
 if plak_site_clone src dest --yes 2>/dev/null; then

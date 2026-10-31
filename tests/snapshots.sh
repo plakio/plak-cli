@@ -20,9 +20,9 @@ source ./plak.sh >/dev/null
 SITES_DIR="$tmpdir/sites"
 export SITES_DIR
 mkdir -p "$SITES_DIR/wp.localhost/public/wp-content/uploads" "$SITES_DIR/wp.localhost/private"
-mkdir -p "$SITES_DIR/plain.localhost/public"
+mkdir -p "$SITES_DIR/static.localhost/public"
 echo "original" > "$SITES_DIR/wp.localhost/public/wp-content/uploads/file.txt"
-echo "original" > "$SITES_DIR/plain.localhost/public/index.php"
+echo "original" > "$SITES_DIR/static.localhost/public/index.html"
 touch "$SITES_DIR/wp.localhost/public/wp-config.php"
 
 wp_log="$tmpdir/wp.log"
@@ -72,11 +72,11 @@ list_json=$(plak_snapshot_list wp --json)
 grep -q "\"id\":\"$id\"" <<<"$list_json" || fail "list omitted the created snapshot"
 grep -q "\"id\":\"$second_id\"" <<<"$list_json" || fail "list omitted the second snapshot"
 
-# Plain sites capture files only, never a database.
-plain_json=$(plak_snapshot_create plain --json)
-plain_id=$(printf '%s' "$plain_json" | sed -E 's/.*"id":"([^"]+)".*/\1/')
-[ ! -f "$SITES_DIR/plain.localhost/private/snapshots/$plain_id/database.sql" ] || fail "plain snapshot included a database"
-grep -q '"type":"plain"' <<<"$plain_json" || fail "plain snapshot was not typed as plain"
+# Static sites capture files only, never a database.
+static_json=$(plak_snapshot_create static --json)
+static_id=$(printf '%s' "$static_json" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+[ ! -f "$SITES_DIR/static.localhost/private/snapshots/$static_id/database.sql" ] || fail "static snapshot included a database"
+grep -q '"type":"static"' <<<"$static_json" || fail "static snapshot was not typed as static"
 
 # --- export ---
 export_out="$tmpdir/export.zip"

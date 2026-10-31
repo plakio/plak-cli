@@ -539,6 +539,9 @@ add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost
 grep -q '"success":true' <<< "$add_out" || fail 'manual creation failed'
 grep -q -- '--no-agent' "$WP_CALLS" || fail 'omitted agent option inherited the CLI agent default'
 grep -q "agent: false" "$GUI_DIR/index.php" || fail 'agent preparation is enabled by default in manual form'
+grep -q 'static (no WordPress)' "$GUI_DIR/index.php" || fail 'static site option is missing from the add form'
+grep -q 'x-model="newSite.isStatic"' "$GUI_DIR/index.php" || fail 'static site option is not wired'
+grep -q 'is_static: isStatic' "$GUI_DIR/index.php" || fail 'dashboard add does not send is_static'
 grep -q 'x-text="newSite.output"' "$GUI_DIR/index.php" || fail 'creation error details are hidden from users'
 add_out=$(curl -fsS -X POST -H "$host_header" -H 'Origin: https://plak.localhost' \
     -H 'Content-Type: application/json' --data "{\"action\":\"add_site\",\"site_name\":\"dashfail\",\"agent\":false,\"csrf\":\"$token\"}" "$base/api.php")

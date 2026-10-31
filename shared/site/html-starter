@@ -1,0 +1,333 @@
+# Write the default starter for a new static site.
+# The starter is a static index.html so the local HTML editor can edit it later.
+write_html_site_starter() {
+    local public_dir="$1" site_name="$2"
+    if [ -z "$public_dir" ] || [ ! -d "$public_dir" ] || [ -z "$site_name" ]; then
+        return 1
+    fi
+
+    local site_url site_host display_path dashboard_url template
+    site_url=$(url_for "$site_name.localhost") || return 1
+    site_host="${site_url#https://}"
+    display_path="$public_dir"
+    if [ -n "${HOME:-}" ] && [[ "$display_path" == "$HOME/"* ]]; then
+        display_path="~${display_path#"$HOME"}"
+    fi
+    dashboard_url="$(url_for "plak.localhost")/"
+
+    read -r -d '' template <<'HTML_STARTER_EOF' || true
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="Your new local HTML site, ready to edit.">
+<title>__SITE_HOST__ · Plak CLI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f5f5f1;
+    --ink: #10110f;
+    --muted: #62665f;
+    --acid: #b7fa45;
+    --blue: #344aff;
+    --dark: #111511;
+    --shell: #0e110f;
+    --shelltxt: #d6e9d3;
+    --line: #10110f;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Space Grotesk", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .grid-bg {
+    background-image:
+      linear-gradient(rgba(16, 17, 15, .055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(16, 17, 15, .055) 1px, transparent 1px);
+    background-size: 58px 58px;
+  }
+  .wrap {
+    width: min(100% - 4rem, 1120px);
+    margin: 0 auto;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.75rem 0;
+    border-bottom: 1px solid var(--ink);
+  }
+  .brand,
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: .55rem;
+    font: 500 13px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .brand .mark { color: var(--blue); font-weight: 700; }
+  .status { color: var(--muted); }
+  .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--ink);
+    border-radius: 50%;
+    background: var(--acid);
+    flex: none;
+  }
+  .hero { padding: clamp(4rem, 9vw, 6.5rem) 0 clamp(4rem, 8vw, 5.5rem); }
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    margin: 0 0 1.4rem;
+    color: var(--muted);
+    font: 500 13px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  h1 {
+    margin: 0 0 1.5rem;
+    font-size: clamp(4.5rem, 13vw, 9.5rem);
+    font-weight: 700;
+    letter-spacing: -.075em;
+    line-height: .88;
+  }
+  h1 .blue { color: var(--blue); }
+  .host {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin: 0 0 1.75rem;
+  }
+  .host-label {
+    padding: .38rem .55rem;
+    background: var(--ink);
+    color: #fff;
+    font: 500 11px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .host-name {
+    font: 500 clamp(1.1rem, 2vw, 1.5rem) "DM Mono", ui-monospace, monospace;
+    letter-spacing: -.02em;
+  }
+  .tag {
+    padding: .32rem .5rem;
+    border: 1px solid var(--ink);
+    font: 500 11px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .lead {
+    max-width: 40rem;
+    margin: 0 0 1.75rem;
+    color: var(--muted);
+    font-size: clamp(1.1rem, 2vw, 1.35rem);
+    line-height: 1.55;
+  }
+  .terminal {
+    max-width: 48rem;
+    margin: 0 0 2.1rem;
+    border: 1px solid #000;
+    background: var(--shell);
+    color: var(--shelltxt);
+    box-shadow: 12px 12px 0 var(--ink);
+  }
+  .terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 40px;
+    padding: 0 15px;
+    border-bottom: 1px solid #373f38;
+    background: #1b1f1b;
+  }
+  .terminal-bar i {
+    display: block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #5b625a;
+  }
+  .terminal-bar i:nth-child(1) { background: #ff5f57; }
+  .terminal-bar i:nth-child(2) { background: #febc2e; }
+  .terminal-bar i:nth-child(3) { background: #28c840; }
+  .terminal-title {
+    margin-left: auto;
+    color: #b8bfb4;
+    font: 12px "DM Mono", ui-monospace, monospace;
+  }
+  .terminal pre {
+    margin: 0;
+    padding: 1.35rem 1.55rem;
+    font: 14px/1.9 "DM Mono", ui-monospace, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .terminal .prompt { color: var(--acid); }
+  .terminal .cmd { color: #fff; }
+  .terminal .path { color: #97aaff; }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .8rem;
+    margin: 0 0 1.5rem;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    min-height: 48px;
+    padding: .95rem 1.2rem;
+    border: 1px solid var(--ink);
+    background: transparent;
+    color: var(--ink);
+    font: 500 14px "DM Mono", ui-monospace, monospace;
+    letter-spacing: -.01em;
+    text-transform: uppercase;
+    text-decoration: none;
+    transition: transform .15s, box-shadow .15s;
+  }
+  .btn.primary {
+    background: var(--ink);
+    color: #fff;
+    box-shadow: 4px 4px 0 #787c74;
+  }
+  .btn:hover {
+    transform: translate(3px, 3px);
+    box-shadow: none;
+  }
+  .btn:focus-visible,
+  a:focus-visible {
+    outline: 3px solid var(--blue);
+    outline-offset: 4px;
+  }
+  .hint {
+    margin: 0;
+    color: var(--muted);
+    font: 500 12px "DM Mono", ui-monospace, monospace;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .hint strong { color: var(--ink); }
+  .ticker {
+    border-block: 1px solid var(--ink);
+    background: var(--acid);
+    overflow: hidden;
+  }
+  .ticker-in {
+    display: flex;
+    justify-content: center;
+    gap: 3.75rem;
+    padding: 1.1rem 0;
+    font: 500 14px "DM Mono", ui-monospace, monospace;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .footer {
+    background: var(--ink);
+    color: #fff;
+    padding: 2.2rem 0;
+    font: 13px "DM Mono", ui-monospace, monospace;
+  }
+  .footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+  }
+  .footer a { color: #fff; }
+  @media (max-width: 680px) {
+    .wrap { width: min(100% - 2.5rem, 1120px); }
+    .hero { padding-top: 3.5rem; }
+    h1 { font-size: clamp(4rem, 20vw, 6.5rem); }
+    .terminal { box-shadow: 8px 8px 0 var(--ink); }
+    .actions .btn { width: 100%; }
+    .ticker-in {
+      justify-content: flex-start;
+      gap: 1.9rem;
+      padding-inline: 1.25rem;
+      font-size: 12px;
+    }
+    .footer-inner { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<main class="grid-bg">
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true">&gt;</span> PLAK CLI</div>
+      <div class="status"><span class="dot" aria-hidden="true"></span> LOCAL SITE</div>
+    </header>
+
+    <section class="hero">
+      <p class="eyebrow"><span class="dot" aria-hidden="true"></span> A NEW SITE / READY TO EDIT</p>
+      <h1>Hello<span class="blue">.</span></h1>
+
+      <div class="host">
+        <span class="host-label">Site</span>
+        <span class="host-name">__SITE_HOST__</span>
+        <span class="tag">HTTPS</span>
+      </div>
+
+      <p class="lead">Your site is ready. Start building by editing the files in:</p>
+
+      <div class="terminal">
+        <div class="terminal-bar" aria-hidden="true">
+          <i></i><i></i><i></i>
+          <span class="terminal-title">plak — __SITE_HOST__</span>
+        </div>
+        <pre><span class="prompt">❯</span> <span class="cmd">cd</span> <span class="path">__SITE_PATH__</span></pre>
+      </div>
+
+      <div class="actions">
+        <a class="btn primary" href="__DASHBOARD_URL__">PLAK DASHBOARD <span aria-hidden="true">↗</span></a>
+        <a class="btn" href="https://plak.sh/">PLAK.SH <span aria-hidden="true">↗</span></a>
+      </div>
+
+      <p class="hint">Click <strong>Edit</strong> on this page to change the text, images and links.</p>
+    </section>
+  </div>
+
+  <div class="ticker">
+    <div class="ticker-in">
+      <span>LOCAL HTTPS</span><span>✳</span>
+      <span>EDITABLE HTML</span><span>✳</span>
+      <span>NO BUILD STEP</span>
+    </div>
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <span>SERVED BY <a href="https://plak.sh/">PLAK</a></span>
+    <span>__SITE_HOST__ · LOCAL ONLY</span>
+  </div>
+</footer>
+</body>
+</html>
+HTML_STARTER_EOF
+
+    template=${template//__SITE_HOST__/$site_host}
+    template=${template//__SITE_PATH__/$display_path}
+    template=${template//__DASHBOARD_URL__/$dashboard_url}
+
+    printf '%s\n' "$template" > "$public_dir/index.html" || return 1
+    echo "   - ✅ Wrote static HTML starter."
+}

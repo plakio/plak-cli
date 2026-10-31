@@ -298,7 +298,7 @@ WPMCP
 chmod +x "$HOME/.local/bin/wp-mcp"
 
 # --- router tests -----------------------------------------------------------
-if ./plak.sh add bad --agent --plain >/dev/null 2>&1; then fail 'accepted --agent with --plain'; fi
+if ./plak.sh add bad --agent --static >/dev/null 2>&1; then fail 'accepted --agent with --static'; fi
 
 ./plak.sh add agentlive --agent --no-reload >"$tmpdir/add.out" 2>"$tmpdir/add.err" || fail "add --agent failed: $(cat "$tmpdir/add.err")"
 [ -f "$TEST_PLUGINS/wp-mcp" ] || fail 'add --agent did not install wp-mcp'

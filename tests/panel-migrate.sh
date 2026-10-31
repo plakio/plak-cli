@@ -96,8 +96,8 @@ out=$(plak_panel_revalidate_link myshop) || fail "valid link stopped"
 grep -q "shop.example" <<<"$out" || fail "destination not shown"
 
 # --- 2. manual site (no link) proceeds silently ---
-mkdir -p "$SITES_DIR/plain.localhost"
-[ -z "$(plak_panel_revalidate_link plain)" ] || fail "manual flow noisy"
+mkdir -p "$SITES_DIR/static.localhost"
+[ -z "$(plak_panel_revalidate_link static)" ] || fail "manual flow noisy"
 
 # --- 3. account change stops ---
 python3 - "$tmpdir" <<'PY'

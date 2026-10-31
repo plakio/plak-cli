@@ -8,7 +8,7 @@ Usage:
   plak snapshot <site> export <id> [--output <path>]
 
 Snapshots are local recovery points of a site's files and database. Static
-(plain) sites include only their files.
+Static sites include only their files.
 HELP
 }
 
@@ -67,7 +67,7 @@ plak_snapshot_create() {
     mkdir -p "$snapshot_dir" || return 1
 
     local site_type="wordpress"
-    plak_snapshot_site_is_wordpress "$site_dir" || site_type="plain"
+    plak_snapshot_site_is_wordpress "$site_dir" || site_type="static"
 
     if ! tar -czf "$snapshot_dir/files.tar.gz" -C "$site_dir/public" . 2>/dev/null; then
         rm -rf "$snapshot_dir"
