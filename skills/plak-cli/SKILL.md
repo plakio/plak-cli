@@ -104,8 +104,10 @@ Use `--static` for a new static HTML site. `--plain` and `--html` are not valid
 flags.
 
 Static sites show a local **Edit** launcher on the page; `plak edit <site>`
-opens it directly. The editor lives in Plak's app directory, not in `public/`,
-and is never part of the published site.
+opens it directly. The editor edits text inline, images (URL, alt or upload to
+`public/uploads/`), links (href and target) and raw HTML, with SHA conflict
+checks and backups. It lives in Plak's app directory, not in `public/`, and is
+never part of the published site.
 
 Use `plak wp <site> plugin list --format=json` or
 `plak wp <site> option get siteurl` from any directory. New WordPress sites are

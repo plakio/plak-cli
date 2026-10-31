@@ -144,6 +144,33 @@ status=$(curl -sS -o /dev/null -w '%{http_code}' -H "X-Plak-CSRF: $token" \
     "http://127.0.0.1:$editor_port/api.php?action=read&site=foo&file=../../etc/passwd")
 [ "$status" = "404" ] || fail "path traversal was not rejected"
 
+# Image upload writes under public/uploads and returns a site-relative URL.
+php -r 'file_put_contents($argv[1], base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl9sAAAAASUVORK5CYII="));' \
+    "$tmpdir/pixel.png"
+upload=$(curl -fsS -H "X-Plak-CSRF: $token" -H "Origin: http://127.0.0.1:$editor_port" \
+    -F "file=@$tmpdir/pixel.png;type=image/png" \
+    "http://127.0.0.1:$editor_port/api.php?action=upload&site=foo") \
+    || fail "image upload failed"
+grep -q '"url":"/uploads/' <<<"$upload" || fail "upload response lacks a URL"
+upload_path=$(printf '%s' "$upload" | php -r '$d=json_decode(stream_get_contents(STDIN),true); echo $d["path"] ?? "";')
+[ -n "$upload_path" ] || fail "upload response lacks a path"
+[ -f "$HOME/Plak/Sites/foo.localhost/public/$upload_path" ] || fail "uploaded image is missing"
+
+traversal=$(curl -fsS -H "X-Plak-CSRF: $token" -H "Origin: http://127.0.0.1:$editor_port" \
+    -F "file=@$tmpdir/pixel.png;type=image/png;filename=../../evil.png" \
+    "http://127.0.0.1:$editor_port/api.php?action=upload&site=foo") \
+    || fail "upload with a traversal filename failed"
+grep -q '"path":"uploads/' <<<"$traversal" || fail "traversal filename escaped uploads"
+[ ! -e "$HOME/Plak/Sites/evil.png" ] || fail "traversal filename wrote outside the site"
+
+printf 'not an image\n' > "$tmpdir/not-image.txt"
+status=$(curl -sS -o "$tmpdir/not-image.json" -w '%{http_code}' \
+    -H "X-Plak-CSRF: $token" -H "Origin: http://127.0.0.1:$editor_port" \
+    -F "file=@$tmpdir/not-image.txt;type=text/plain" \
+    "http://127.0.0.1:$editor_port/api.php?action=upload&site=foo")
+[ "$status" = "415" ] || fail "non-image upload was not rejected"
+grep -q 'valid image' "$tmpdir/not-image.json" || fail "non-image rejection is not explicit"
+
 router_html=""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
     if router_html=$(curl -fsS --max-time 1 -H 'Host: foo.localhost' "http://127.0.0.1:$router_port/?plak_site=foo&plak_path=/" 2>/dev/null); then

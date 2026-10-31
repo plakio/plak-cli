@@ -70,6 +70,55 @@ header('Referrer-Policy: no-referrer');
   <textarea id="code" spellcheck="false" hidden></textarea>
 </main>
 
+<div class="modal" id="image-modal" hidden>
+  <div class="modal-backdrop" data-modal-close="image"></div>
+  <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="image-modal-title">
+    <header>
+      <h2 id="image-modal-title">Image</h2>
+      <button type="button" class="modal-x" data-modal-close="image" aria-label="Close image editor">×</button>
+    </header>
+    <label class="field">Image URL
+      <input id="image-url" type="text" placeholder="https://… or /uploads/…" autocomplete="off">
+    </label>
+    <div class="field">Upload from computer
+      <div class="field-row">
+        <input id="image-file" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif" hidden>
+        <button type="button" id="image-upload">Choose image…</button>
+        <span id="image-upload-status" class="muted"></span>
+      </div>
+    </div>
+    <label class="field">Alt text
+      <input id="image-alt" type="text" autocomplete="off">
+    </label>
+    <div class="image-preview"><img id="image-preview" alt=""></div>
+    <footer class="modal-actions">
+      <button type="button" data-modal-close="image">Cancel</button>
+      <button type="button" id="image-apply" class="primary">Apply</button>
+    </footer>
+  </section>
+</div>
+
+<div class="modal" id="link-modal" hidden>
+  <div class="modal-backdrop" data-modal-close="link"></div>
+  <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="link-modal-title">
+    <header>
+      <h2 id="link-modal-title">Link</h2>
+      <button type="button" class="modal-x" data-modal-close="link" aria-label="Close link editor">×</button>
+    </header>
+    <label class="field">Link URL
+      <input id="link-href" type="text" placeholder="https://…, /page.html or #section" autocomplete="off">
+    </label>
+    <label class="check">
+      <input id="link-target" type="checkbox">
+      Open in a new tab
+    </label>
+    <footer class="modal-actions">
+      <button type="button" data-modal-close="link">Cancel</button>
+      <button type="button" id="link-apply" class="primary">Apply</button>
+    </footer>
+  </section>
+</div>
+
 <script src="editor.js?v=<?= $jsVersion ?>" defer></script>
 </body>
 </html>

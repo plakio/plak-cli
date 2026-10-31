@@ -20072,6 +20072,64 @@ if ($method === 'GET' && $action === 'read') {
     ]);
 }
 
+if ($method === 'POST' && $action === 'upload') {
+    $file = $_FILES['file'] ?? null;
+    if (!is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        plak_editor_error('No image was uploaded.');
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size <= 0 || $size > 10 * 1024 * 1024) {
+        plak_editor_error('Images must be between 1 byte and 10 MB.', 413);
+    }
+    $tmp = (string) ($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        plak_editor_error('Invalid image upload.', 400);
+    }
+    $mime = function_exists('finfo_open')
+        ? (string) (new finfo(FILEINFO_MIME_TYPE))->file($tmp)
+        : (string) mime_content_type($tmp);
+    $extensions = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+        'image/avif' => 'avif',
+    ];
+    if (!isset($extensions[$mime])) {
+        plak_editor_error('Upload a valid image: JPEG, PNG, GIF, WebP or AVIF.', 415);
+    }
+
+    $uploads = $public . '/uploads';
+    if (!is_dir($uploads) && !@mkdir($uploads, 0755, true) && !is_dir($uploads)) {
+        plak_editor_error('Could not create the uploads folder.', 500);
+    }
+    $realUploads = realpath($uploads);
+    if ($realUploads === false || !str_starts_with($realUploads, $public . DIRECTORY_SEPARATOR)) {
+        plak_editor_error('Invalid uploads folder.', 500);
+    }
+
+    $original = (string) ($file['name'] ?? '');
+    $base = strtolower((string) pathinfo($original, PATHINFO_FILENAME));
+    $base = trim((string) preg_replace('/[^a-z0-9]+/', '-', $base), '-');
+    if ($base === '') {
+        $base = 'image';
+    }
+    $name = substr($base, 0, 60) . '-' . bin2hex(random_bytes(4)) . '.' . $extensions[$mime];
+    $target = $realUploads . '/' . $name;
+    if (!@move_uploaded_file($tmp, $target)) {
+        plak_editor_error('Could not store the uploaded image.', 500);
+    }
+    @chmod($target, 0644);
+
+    plak_editor_json([
+        'success' => true,
+        'url' => '/uploads/' . $name,
+        'path' => 'uploads/' . $name,
+        'bytes' => $size,
+        'mime' => $mime,
+    ]);
+}
+
 if ($method === 'POST' && $action === 'save') {
     $raw = file_get_contents('php://input');
     $input = json_decode((string) $raw, true);
@@ -20333,6 +20391,130 @@ a { color: inherit; }
   tab-size: 2;
 }
 #code[hidden], #preview[hidden] { display: none; }
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+.modal[hidden] { display: none; }
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 14, .55);
+  backdrop-filter: blur(2px);
+}
+.modal-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  width: min(100%, 480px);
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .28);
+}
+.modal-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.modal-card h2 { margin: 0; font-size: 1rem; }
+.modal-x {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.2rem;
+}
+.modal-x:hover { background: var(--panel-2); color: var(--ink); }
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 600;
+}
+.field input[type="text"] {
+  min-height: 36px;
+  padding: .45rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+}
+.field input[type="text"]:focus {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+.field-row button {
+  min-height: 32px;
+  padding: .35rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: .78rem;
+  font-weight: 600;
+}
+.field-row button:hover { border-color: var(--accent); color: var(--accent); }
+.field-row button:disabled { opacity: .5; cursor: default; }
+.muted { color: var(--muted); font-size: .74rem; font-weight: 400; }
+.check {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  font-size: .82rem;
+  font-weight: 550;
+}
+.check input { width: 16px; height: 16px; accent-color: var(--accent); }
+.image-preview {
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+  max-height: 240px;
+  padding: .5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.image-preview img { display: block; max-width: 100%; max-height: 220px; }
+.image-preview img[hidden] { display: none; }
+.modal-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.modal-actions button {
+  min-height: 34px;
+  padding: .4rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: .8rem;
+  font-weight: 600;
+}
+.modal-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.modal-actions button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.modal-actions button.primary:hover { filter: brightness(1.08); color: #fff; }
 body.embed #dashboard-link { display: none; }
 body.embed .site { max-width: 28rem; }
 @media (max-width: 760px) {
@@ -20361,6 +20543,16 @@ PLAK_EDITOR_ASSET_EOF
   const closeButton = document.getElementById('close');
   const status = document.getElementById('status');
   const banner = document.getElementById('banner');
+  const imageModal = document.getElementById('image-modal');
+  const imageUrl = document.getElementById('image-url');
+  const imageAlt = document.getElementById('image-alt');
+  const imageFile = document.getElementById('image-file');
+  const imageUpload = document.getElementById('image-upload');
+  const imageUploadStatus = document.getElementById('image-upload-status');
+  const imagePreview = document.getElementById('image-preview');
+  const linkModal = document.getElementById('link-modal');
+  const linkHref = document.getElementById('link-href');
+  const linkTarget = document.getElementById('link-target');
 
   const state = {
     files: [],
@@ -20374,6 +20566,8 @@ PLAK_EDITOR_ASSET_EOF
     initial: new WeakMap(),
     loading: false,
   };
+  const imageEditor = { index: -1 };
+  const linkEditor = { index: -1 };
 
   if (closeButton) closeButton.hidden = !embed;
 
@@ -20395,6 +20589,28 @@ PLAK_EDITOR_ASSET_EOF
       body: body ? JSON.stringify({ ...body, site, csrf }) : undefined,
     });
 
+    return parseResponse(response);
+  }
+
+  async function upload(file) {
+    const url = new URL('api.php', location.href);
+    url.searchParams.set('action', 'upload');
+    url.searchParams.set('site', site);
+    const form = new FormData();
+    form.append('file', file);
+    form.append('site', site);
+    form.append('csrf', csrf);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'X-Plak-CSRF': csrf },
+      body: form,
+    });
+    return parseResponse(response);
+  }
+
+  async function parseResponse(response) {
     let data;
     try {
       data = await response.json();
@@ -20423,6 +20639,66 @@ PLAK_EDITOR_ASSET_EOF
       .replaceAll('"', '&quot;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;');
+  }
+
+  function decodeAttr(value) {
+    return String(value)
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&#x27;', "'")
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&amp;', '&');
+  }
+
+  function getAttr(tag, name) {
+    const pattern = new RegExp(
+      `\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`,
+      'i',
+    );
+    const match = tag.match(pattern);
+    if (!match) return '';
+    return decodeAttr(match[1] ?? match[2] ?? match[3] ?? '');
+  }
+
+  function setAttr(tag, name, value, removeEmpty = true) {
+    const pattern = new RegExp(`\\s${name}\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s"'=<>]+)`, 'i');
+    const next = value === null || value === undefined ? '' : String(value);
+    if (removeEmpty && next === '') return tag.replace(pattern, '');
+    if (pattern.test(tag)) return tag.replace(pattern, ` ${name}="${escapeAttr(next)}"`);
+
+    const close = tag.match(/\/?>\s*$/);
+    if (!close) return tag;
+    const body = tag.slice(0, close.index).replace(/\s+$/, '');
+    return `${body} ${name}="${escapeAttr(next)}"${close[0]}`;
+  }
+
+  function findTag(source, name, index) {
+    let seen = 0;
+    for (const segment of tokenize(source)) {
+      if (segment.type !== 'tag') continue;
+      const info = tagInfo(segment.value);
+      if (!info || info.closing || info.name !== name) continue;
+      if (seen === index) return segment.value;
+      seen += 1;
+    }
+    return null;
+  }
+
+  function replaceTag(source, name, index, transform) {
+    const segments = tokenize(source);
+    let seen = 0;
+    for (const segment of segments) {
+      if (segment.type !== 'tag') continue;
+      const info = tagInfo(segment.value);
+      if (!info || info.closing || info.name !== name) continue;
+      if (seen === index) {
+        segment.value = transform(segment.value);
+        break;
+      }
+      seen += 1;
+    }
+    return segments.map((segment) => segment.value).join('');
   }
 
   const EDITABLE = new Set([
@@ -20552,12 +20828,36 @@ PLAK_EDITOR_ASSET_EOF
   function buildPreview(source) {
     const segments = tokenize(source);
     let textIndex = 0;
+    let imageIndex = 0;
+    let linkIndex = 0;
+    const openLinks = [];
     const body = segments.map((segment) => {
-      if (segment.type !== 'text') return segment.value;
-      if (!segment.editable || !segment.value.trim()) return segment.value;
-      const index = textIndex;
-      textIndex += 1;
-      return `<span data-plak-text-index="${index}" contenteditable="true" spellcheck="true">${segment.value}</span>`;
+      if (segment.type === 'text') {
+        if (!segment.editable || !segment.value.trim()) return segment.value;
+        const index = textIndex;
+        textIndex += 1;
+        return `<span data-plak-text-index="${index}" contenteditable="true" spellcheck="true">${segment.value}</span>`;
+      }
+
+      const info = tagInfo(segment.value);
+      if (!info) return segment.value;
+      if (info.name === 'img' && !info.closing) {
+        const index = imageIndex;
+        imageIndex += 1;
+        return setAttr(segment.value, 'data-plak-image-index', String(index), false);
+      }
+      if (info.name === 'a' && !info.closing) {
+        const index = linkIndex;
+        linkIndex += 1;
+        openLinks.push(index);
+        return setAttr(segment.value, 'data-plak-link-index', String(index), false);
+      }
+      if (info.name === 'a' && info.closing) {
+        const index = openLinks.pop();
+        if (index === undefined) return segment.value;
+        return `<span class="plak-link-edit" data-plak-link-edit="${index}" contenteditable="false">Edit link</span>${segment.value}`;
+      }
+      return segment.value;
     }).join('');
 
     const head = `
@@ -20567,6 +20867,22 @@ PLAK_EDITOR_ASSET_EOF
         [data-plak-text-index] { cursor: text; outline: 1px dashed transparent !important; outline-offset: 2px !important; }
         [data-plak-text-index]:hover { outline-color: rgba(47, 54, 250, .55) !important; background: rgba(47, 54, 250, .06) !important; }
         [data-plak-text-index]:focus { outline: 2px solid #2f36fa !important; background: rgba(47, 54, 250, .08) !important; }
+        img[data-plak-image-index] { cursor: pointer; }
+        img[data-plak-image-index]:hover { outline: 3px solid #2f36fa; outline-offset: -3px; }
+        .plak-link-edit {
+          display: none;
+          margin-left: .35rem;
+          padding: 1px 5px;
+          border-radius: 4px;
+          background: #2f36fa;
+          color: #fff !important;
+          font: 600 10px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+          text-decoration: none !important;
+          vertical-align: middle;
+          cursor: pointer;
+        }
+        a[data-plak-link-index]:hover .plak-link-edit,
+        a[data-plak-link-index]:focus-within .plak-link-edit { display: inline-block; }
       </style>`;
 
     let documentHtml = body
@@ -20649,6 +20965,12 @@ PLAK_EDITOR_ASSET_EOF
     // waiting for the editable element to lose focus.
     doc.addEventListener('input', () => commitAll());
     doc.addEventListener('blur', () => commitAll(), true);
+    doc.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        requestClose();
+      }
+    });
 
     doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
       state.initial.set(element, element.textContent || '');
@@ -20657,6 +20979,22 @@ PLAK_EDITOR_ASSET_EOF
           event.preventDefault();
           element.blur();
         }
+      });
+    });
+
+    doc.querySelectorAll('[data-plak-image-index]').forEach((element) => {
+      element.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImageModal(Number(element.dataset.plakImageIndex));
+      });
+    });
+
+    doc.querySelectorAll('[data-plak-link-edit]').forEach((element) => {
+      element.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openLinkModal(Number(element.dataset.plakLinkEdit));
       });
     });
   }
@@ -20700,6 +21038,110 @@ PLAK_EDITOR_ASSET_EOF
     codeToggle.textContent = 'Code';
     preview.onload = attachPreview;
     preview.srcdoc = buildPreview(state.source);
+  }
+
+  function resolveUrl(value) {
+    if (!value) return '';
+    try {
+      return new URL(value, baseHref()).href;
+    } catch {
+      return '';
+    }
+  }
+
+  function updateImagePreview() {
+    const url = resolveUrl(imageUrl.value.trim());
+    if (!url) {
+      imagePreview.hidden = true;
+      imagePreview.removeAttribute('src');
+      return;
+    }
+    imagePreview.hidden = false;
+    imagePreview.src = url;
+  }
+
+  function closeImageModal() {
+    imageModal.hidden = true;
+    imageEditor.index = -1;
+    preview.focus();
+  }
+
+  function openImageModal(index) {
+    const tag = findTag(state.source, 'img', index);
+    if (tag === null) return;
+    imageEditor.index = index;
+    imageUrl.value = getAttr(tag, 'src');
+    imageAlt.value = getAttr(tag, 'alt');
+    imageFile.value = '';
+    imageUploadStatus.textContent = '';
+    updateImagePreview();
+    imageModal.hidden = false;
+    imageUrl.focus();
+    imageUrl.select();
+  }
+
+  function applyImage() {
+    if (imageEditor.index < 0) return;
+    const url = imageUrl.value.trim();
+    if (url === '') {
+      imageUploadStatus.textContent = 'Enter an image URL or upload a file.';
+      imageUrl.focus();
+      return;
+    }
+    commitAll();
+    state.source = replaceTag(state.source, 'img', imageEditor.index, (tag) => {
+      const withSrc = setAttr(tag, 'src', url);
+      return setAttr(withSrc, 'alt', imageAlt.value.trim(), false);
+    });
+    state.dirty = state.source !== state.saved;
+    renderPreview();
+    updateChrome();
+    closeImageModal();
+  }
+
+  function closeLinkModal() {
+    linkModal.hidden = true;
+    linkEditor.index = -1;
+    preview.focus();
+  }
+
+  function openLinkModal(index) {
+    const tag = findTag(state.source, 'a', index);
+    if (tag === null) return;
+    linkEditor.index = index;
+    linkHref.value = getAttr(tag, 'href');
+    linkTarget.checked = getAttr(tag, 'target').toLowerCase() === '_blank';
+    linkModal.hidden = false;
+    linkHref.focus();
+    linkHref.select();
+  }
+
+  function applyLink() {
+    if (linkEditor.index < 0) return;
+    commitAll();
+    state.source = replaceTag(state.source, 'a', linkEditor.index, (tag) => {
+      const withHref = setAttr(tag, 'href', linkHref.value.trim());
+      return setAttr(withHref, 'target', linkTarget.checked ? '_blank' : '');
+    });
+    state.dirty = state.source !== state.saved;
+    renderPreview();
+    updateChrome();
+    closeLinkModal();
+  }
+
+  async function uploadImage(file) {
+    imageUploadStatus.textContent = 'Uploading…';
+    imageUpload.disabled = true;
+    try {
+      const data = await upload(file);
+      imageUrl.value = data.url;
+      updateImagePreview();
+      imageUploadStatus.textContent = `Uploaded ${data.path}`;
+    } catch (error) {
+      imageUploadStatus.textContent = error.message;
+    } finally {
+      imageUpload.disabled = false;
+    }
   }
 
   async function loadFile(file, force = false) {
@@ -20816,6 +21258,21 @@ PLAK_EDITOR_ASSET_EOF
 
   saveButton.addEventListener('click', () => save().catch((error) => showBanner(error.message)));
 
+  document.querySelectorAll('[data-modal-close]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.dataset.modalClose === 'image') closeImageModal();
+      else closeLinkModal();
+    });
+  });
+  imageUrl.addEventListener('input', updateImagePreview);
+  imageUpload.addEventListener('click', () => imageFile.click());
+  imageFile.addEventListener('change', () => {
+    const file = imageFile.files?.[0];
+    if (file) uploadImage(file);
+  });
+  document.getElementById('image-apply').addEventListener('click', applyImage);
+  document.getElementById('link-apply').addEventListener('click', applyLink);
+
   function requestClose() {
     if (!embed || window.parent === window) return;
     if (state.dirty && !confirm('Discard your unsaved changes?')) return;
@@ -20826,10 +21283,17 @@ PLAK_EDITOR_ASSET_EOF
   // Focus lives inside this iframe while editing, so the parent cannot hear
   // Escape; close from here instead.
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      requestClose();
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    if (!imageModal.hidden) {
+      closeImageModal();
+      return;
     }
+    if (!linkModal.hidden) {
+      closeLinkModal();
+      return;
+    }
+    requestClose();
   });
 
   window.addEventListener('beforeunload', (event) => {
@@ -20916,6 +21380,55 @@ header('Referrer-Policy: no-referrer');
   <iframe id="preview" title="Site preview" sandbox="allow-same-origin"></iframe>
   <textarea id="code" spellcheck="false" hidden></textarea>
 </main>
+
+<div class="modal" id="image-modal" hidden>
+  <div class="modal-backdrop" data-modal-close="image"></div>
+  <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="image-modal-title">
+    <header>
+      <h2 id="image-modal-title">Image</h2>
+      <button type="button" class="modal-x" data-modal-close="image" aria-label="Close image editor">×</button>
+    </header>
+    <label class="field">Image URL
+      <input id="image-url" type="text" placeholder="https://… or /uploads/…" autocomplete="off">
+    </label>
+    <div class="field">Upload from computer
+      <div class="field-row">
+        <input id="image-file" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif" hidden>
+        <button type="button" id="image-upload">Choose image…</button>
+        <span id="image-upload-status" class="muted"></span>
+      </div>
+    </div>
+    <label class="field">Alt text
+      <input id="image-alt" type="text" autocomplete="off">
+    </label>
+    <div class="image-preview"><img id="image-preview" alt=""></div>
+    <footer class="modal-actions">
+      <button type="button" data-modal-close="image">Cancel</button>
+      <button type="button" id="image-apply" class="primary">Apply</button>
+    </footer>
+  </section>
+</div>
+
+<div class="modal" id="link-modal" hidden>
+  <div class="modal-backdrop" data-modal-close="link"></div>
+  <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="link-modal-title">
+    <header>
+      <h2 id="link-modal-title">Link</h2>
+      <button type="button" class="modal-x" data-modal-close="link" aria-label="Close link editor">×</button>
+    </header>
+    <label class="field">Link URL
+      <input id="link-href" type="text" placeholder="https://…, /page.html or #section" autocomplete="off">
+    </label>
+    <label class="check">
+      <input id="link-target" type="checkbox">
+      Open in a new tab
+    </label>
+    <footer class="modal-actions">
+      <button type="button" data-modal-close="link">Cancel</button>
+      <button type="button" id="link-apply" class="primary">Apply</button>
+    </footer>
+  </section>
+</div>
 
 <script src="editor.js?v=<?= $jsVersion ?>" defer></script>
 </body>

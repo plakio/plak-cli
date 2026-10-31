@@ -186,6 +186,130 @@ a { color: inherit; }
   tab-size: 2;
 }
 #code[hidden], #preview[hidden] { display: none; }
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+.modal[hidden] { display: none; }
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 14, .55);
+  backdrop-filter: blur(2px);
+}
+.modal-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  width: min(100%, 480px);
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .28);
+}
+.modal-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.modal-card h2 { margin: 0; font-size: 1rem; }
+.modal-x {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.2rem;
+}
+.modal-x:hover { background: var(--panel-2); color: var(--ink); }
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 600;
+}
+.field input[type="text"] {
+  min-height: 36px;
+  padding: .45rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+}
+.field input[type="text"]:focus {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+.field-row button {
+  min-height: 32px;
+  padding: .35rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: .78rem;
+  font-weight: 600;
+}
+.field-row button:hover { border-color: var(--accent); color: var(--accent); }
+.field-row button:disabled { opacity: .5; cursor: default; }
+.muted { color: var(--muted); font-size: .74rem; font-weight: 400; }
+.check {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  font-size: .82rem;
+  font-weight: 550;
+}
+.check input { width: 16px; height: 16px; accent-color: var(--accent); }
+.image-preview {
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+  max-height: 240px;
+  padding: .5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.image-preview img { display: block; max-width: 100%; max-height: 220px; }
+.image-preview img[hidden] { display: none; }
+.modal-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.modal-actions button {
+  min-height: 34px;
+  padding: .4rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: .8rem;
+  font-weight: 600;
+}
+.modal-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.modal-actions button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.modal-actions button.primary:hover { filter: brightness(1.08); color: #fff; }
 body.embed #dashboard-link { display: none; }
 body.embed .site { max-width: 28rem; }
 @media (max-width: 760px) {

@@ -14,6 +14,16 @@
   const closeButton = document.getElementById('close');
   const status = document.getElementById('status');
   const banner = document.getElementById('banner');
+  const imageModal = document.getElementById('image-modal');
+  const imageUrl = document.getElementById('image-url');
+  const imageAlt = document.getElementById('image-alt');
+  const imageFile = document.getElementById('image-file');
+  const imageUpload = document.getElementById('image-upload');
+  const imageUploadStatus = document.getElementById('image-upload-status');
+  const imagePreview = document.getElementById('image-preview');
+  const linkModal = document.getElementById('link-modal');
+  const linkHref = document.getElementById('link-href');
+  const linkTarget = document.getElementById('link-target');
 
   const state = {
     files: [],
@@ -27,6 +37,8 @@
     initial: new WeakMap(),
     loading: false,
   };
+  const imageEditor = { index: -1 };
+  const linkEditor = { index: -1 };
 
   if (closeButton) closeButton.hidden = !embed;
 
@@ -48,6 +60,28 @@
       body: body ? JSON.stringify({ ...body, site, csrf }) : undefined,
     });
 
+    return parseResponse(response);
+  }
+
+  async function upload(file) {
+    const url = new URL('api.php', location.href);
+    url.searchParams.set('action', 'upload');
+    url.searchParams.set('site', site);
+    const form = new FormData();
+    form.append('file', file);
+    form.append('site', site);
+    form.append('csrf', csrf);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'X-Plak-CSRF': csrf },
+      body: form,
+    });
+    return parseResponse(response);
+  }
+
+  async function parseResponse(response) {
     let data;
     try {
       data = await response.json();
@@ -76,6 +110,66 @@
       .replaceAll('"', '&quot;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;');
+  }
+
+  function decodeAttr(value) {
+    return String(value)
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&#x27;', "'")
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&amp;', '&');
+  }
+
+  function getAttr(tag, name) {
+    const pattern = new RegExp(
+      `\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`,
+      'i',
+    );
+    const match = tag.match(pattern);
+    if (!match) return '';
+    return decodeAttr(match[1] ?? match[2] ?? match[3] ?? '');
+  }
+
+  function setAttr(tag, name, value, removeEmpty = true) {
+    const pattern = new RegExp(`\\s${name}\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s"'=<>]+)`, 'i');
+    const next = value === null || value === undefined ? '' : String(value);
+    if (removeEmpty && next === '') return tag.replace(pattern, '');
+    if (pattern.test(tag)) return tag.replace(pattern, ` ${name}="${escapeAttr(next)}"`);
+
+    const close = tag.match(/\/?>\s*$/);
+    if (!close) return tag;
+    const body = tag.slice(0, close.index).replace(/\s+$/, '');
+    return `${body} ${name}="${escapeAttr(next)}"${close[0]}`;
+  }
+
+  function findTag(source, name, index) {
+    let seen = 0;
+    for (const segment of tokenize(source)) {
+      if (segment.type !== 'tag') continue;
+      const info = tagInfo(segment.value);
+      if (!info || info.closing || info.name !== name) continue;
+      if (seen === index) return segment.value;
+      seen += 1;
+    }
+    return null;
+  }
+
+  function replaceTag(source, name, index, transform) {
+    const segments = tokenize(source);
+    let seen = 0;
+    for (const segment of segments) {
+      if (segment.type !== 'tag') continue;
+      const info = tagInfo(segment.value);
+      if (!info || info.closing || info.name !== name) continue;
+      if (seen === index) {
+        segment.value = transform(segment.value);
+        break;
+      }
+      seen += 1;
+    }
+    return segments.map((segment) => segment.value).join('');
   }
 
   const EDITABLE = new Set([
@@ -205,12 +299,36 @@
   function buildPreview(source) {
     const segments = tokenize(source);
     let textIndex = 0;
+    let imageIndex = 0;
+    let linkIndex = 0;
+    const openLinks = [];
     const body = segments.map((segment) => {
-      if (segment.type !== 'text') return segment.value;
-      if (!segment.editable || !segment.value.trim()) return segment.value;
-      const index = textIndex;
-      textIndex += 1;
-      return `<span data-plak-text-index="${index}" contenteditable="true" spellcheck="true">${segment.value}</span>`;
+      if (segment.type === 'text') {
+        if (!segment.editable || !segment.value.trim()) return segment.value;
+        const index = textIndex;
+        textIndex += 1;
+        return `<span data-plak-text-index="${index}" contenteditable="true" spellcheck="true">${segment.value}</span>`;
+      }
+
+      const info = tagInfo(segment.value);
+      if (!info) return segment.value;
+      if (info.name === 'img' && !info.closing) {
+        const index = imageIndex;
+        imageIndex += 1;
+        return setAttr(segment.value, 'data-plak-image-index', String(index), false);
+      }
+      if (info.name === 'a' && !info.closing) {
+        const index = linkIndex;
+        linkIndex += 1;
+        openLinks.push(index);
+        return setAttr(segment.value, 'data-plak-link-index', String(index), false);
+      }
+      if (info.name === 'a' && info.closing) {
+        const index = openLinks.pop();
+        if (index === undefined) return segment.value;
+        return `<span class="plak-link-edit" data-plak-link-edit="${index}" contenteditable="false">Edit link</span>${segment.value}`;
+      }
+      return segment.value;
     }).join('');
 
     const head = `
@@ -220,6 +338,22 @@
         [data-plak-text-index] { cursor: text; outline: 1px dashed transparent !important; outline-offset: 2px !important; }
         [data-plak-text-index]:hover { outline-color: rgba(47, 54, 250, .55) !important; background: rgba(47, 54, 250, .06) !important; }
         [data-plak-text-index]:focus { outline: 2px solid #2f36fa !important; background: rgba(47, 54, 250, .08) !important; }
+        img[data-plak-image-index] { cursor: pointer; }
+        img[data-plak-image-index]:hover { outline: 3px solid #2f36fa; outline-offset: -3px; }
+        .plak-link-edit {
+          display: none;
+          margin-left: .35rem;
+          padding: 1px 5px;
+          border-radius: 4px;
+          background: #2f36fa;
+          color: #fff !important;
+          font: 600 10px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+          text-decoration: none !important;
+          vertical-align: middle;
+          cursor: pointer;
+        }
+        a[data-plak-link-index]:hover .plak-link-edit,
+        a[data-plak-link-index]:focus-within .plak-link-edit { display: inline-block; }
       </style>`;
 
     let documentHtml = body
@@ -302,6 +436,12 @@
     // waiting for the editable element to lose focus.
     doc.addEventListener('input', () => commitAll());
     doc.addEventListener('blur', () => commitAll(), true);
+    doc.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        requestClose();
+      }
+    });
 
     doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
       state.initial.set(element, element.textContent || '');
@@ -310,6 +450,22 @@
           event.preventDefault();
           element.blur();
         }
+      });
+    });
+
+    doc.querySelectorAll('[data-plak-image-index]').forEach((element) => {
+      element.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImageModal(Number(element.dataset.plakImageIndex));
+      });
+    });
+
+    doc.querySelectorAll('[data-plak-link-edit]').forEach((element) => {
+      element.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openLinkModal(Number(element.dataset.plakLinkEdit));
       });
     });
   }
@@ -353,6 +509,110 @@
     codeToggle.textContent = 'Code';
     preview.onload = attachPreview;
     preview.srcdoc = buildPreview(state.source);
+  }
+
+  function resolveUrl(value) {
+    if (!value) return '';
+    try {
+      return new URL(value, baseHref()).href;
+    } catch {
+      return '';
+    }
+  }
+
+  function updateImagePreview() {
+    const url = resolveUrl(imageUrl.value.trim());
+    if (!url) {
+      imagePreview.hidden = true;
+      imagePreview.removeAttribute('src');
+      return;
+    }
+    imagePreview.hidden = false;
+    imagePreview.src = url;
+  }
+
+  function closeImageModal() {
+    imageModal.hidden = true;
+    imageEditor.index = -1;
+    preview.focus();
+  }
+
+  function openImageModal(index) {
+    const tag = findTag(state.source, 'img', index);
+    if (tag === null) return;
+    imageEditor.index = index;
+    imageUrl.value = getAttr(tag, 'src');
+    imageAlt.value = getAttr(tag, 'alt');
+    imageFile.value = '';
+    imageUploadStatus.textContent = '';
+    updateImagePreview();
+    imageModal.hidden = false;
+    imageUrl.focus();
+    imageUrl.select();
+  }
+
+  function applyImage() {
+    if (imageEditor.index < 0) return;
+    const url = imageUrl.value.trim();
+    if (url === '') {
+      imageUploadStatus.textContent = 'Enter an image URL or upload a file.';
+      imageUrl.focus();
+      return;
+    }
+    commitAll();
+    state.source = replaceTag(state.source, 'img', imageEditor.index, (tag) => {
+      const withSrc = setAttr(tag, 'src', url);
+      return setAttr(withSrc, 'alt', imageAlt.value.trim(), false);
+    });
+    state.dirty = state.source !== state.saved;
+    renderPreview();
+    updateChrome();
+    closeImageModal();
+  }
+
+  function closeLinkModal() {
+    linkModal.hidden = true;
+    linkEditor.index = -1;
+    preview.focus();
+  }
+
+  function openLinkModal(index) {
+    const tag = findTag(state.source, 'a', index);
+    if (tag === null) return;
+    linkEditor.index = index;
+    linkHref.value = getAttr(tag, 'href');
+    linkTarget.checked = getAttr(tag, 'target').toLowerCase() === '_blank';
+    linkModal.hidden = false;
+    linkHref.focus();
+    linkHref.select();
+  }
+
+  function applyLink() {
+    if (linkEditor.index < 0) return;
+    commitAll();
+    state.source = replaceTag(state.source, 'a', linkEditor.index, (tag) => {
+      const withHref = setAttr(tag, 'href', linkHref.value.trim());
+      return setAttr(withHref, 'target', linkTarget.checked ? '_blank' : '');
+    });
+    state.dirty = state.source !== state.saved;
+    renderPreview();
+    updateChrome();
+    closeLinkModal();
+  }
+
+  async function uploadImage(file) {
+    imageUploadStatus.textContent = 'Uploading…';
+    imageUpload.disabled = true;
+    try {
+      const data = await upload(file);
+      imageUrl.value = data.url;
+      updateImagePreview();
+      imageUploadStatus.textContent = `Uploaded ${data.path}`;
+    } catch (error) {
+      imageUploadStatus.textContent = error.message;
+    } finally {
+      imageUpload.disabled = false;
+    }
   }
 
   async function loadFile(file, force = false) {
@@ -469,6 +729,21 @@
 
   saveButton.addEventListener('click', () => save().catch((error) => showBanner(error.message)));
 
+  document.querySelectorAll('[data-modal-close]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.dataset.modalClose === 'image') closeImageModal();
+      else closeLinkModal();
+    });
+  });
+  imageUrl.addEventListener('input', updateImagePreview);
+  imageUpload.addEventListener('click', () => imageFile.click());
+  imageFile.addEventListener('change', () => {
+    const file = imageFile.files?.[0];
+    if (file) uploadImage(file);
+  });
+  document.getElementById('image-apply').addEventListener('click', applyImage);
+  document.getElementById('link-apply').addEventListener('click', applyLink);
+
   function requestClose() {
     if (!embed || window.parent === window) return;
     if (state.dirty && !confirm('Discard your unsaved changes?')) return;
@@ -479,10 +754,17 @@
   // Focus lives inside this iframe while editing, so the parent cannot hear
   // Escape; close from here instead.
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      requestClose();
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    if (!imageModal.hidden) {
+      closeImageModal();
+      return;
     }
+    if (!linkModal.hidden) {
+      closeLinkModal();
+      return;
+    }
+    requestClose();
   });
 
   window.addEventListener('beforeunload', (event) => {

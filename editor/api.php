@@ -136,6 +136,64 @@ if ($method === 'GET' && $action === 'read') {
     ]);
 }
 
+if ($method === 'POST' && $action === 'upload') {
+    $file = $_FILES['file'] ?? null;
+    if (!is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        plak_editor_error('No image was uploaded.');
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size <= 0 || $size > 10 * 1024 * 1024) {
+        plak_editor_error('Images must be between 1 byte and 10 MB.', 413);
+    }
+    $tmp = (string) ($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        plak_editor_error('Invalid image upload.', 400);
+    }
+    $mime = function_exists('finfo_open')
+        ? (string) (new finfo(FILEINFO_MIME_TYPE))->file($tmp)
+        : (string) mime_content_type($tmp);
+    $extensions = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+        'image/avif' => 'avif',
+    ];
+    if (!isset($extensions[$mime])) {
+        plak_editor_error('Upload a valid image: JPEG, PNG, GIF, WebP or AVIF.', 415);
+    }
+
+    $uploads = $public . '/uploads';
+    if (!is_dir($uploads) && !@mkdir($uploads, 0755, true) && !is_dir($uploads)) {
+        plak_editor_error('Could not create the uploads folder.', 500);
+    }
+    $realUploads = realpath($uploads);
+    if ($realUploads === false || !str_starts_with($realUploads, $public . DIRECTORY_SEPARATOR)) {
+        plak_editor_error('Invalid uploads folder.', 500);
+    }
+
+    $original = (string) ($file['name'] ?? '');
+    $base = strtolower((string) pathinfo($original, PATHINFO_FILENAME));
+    $base = trim((string) preg_replace('/[^a-z0-9]+/', '-', $base), '-');
+    if ($base === '') {
+        $base = 'image';
+    }
+    $name = substr($base, 0, 60) . '-' . bin2hex(random_bytes(4)) . '.' . $extensions[$mime];
+    $target = $realUploads . '/' . $name;
+    if (!@move_uploaded_file($tmp, $target)) {
+        plak_editor_error('Could not store the uploaded image.', 500);
+    }
+    @chmod($target, 0644);
+
+    plak_editor_json([
+        'success' => true,
+        'url' => '/uploads/' . $name,
+        'path' => 'uploads/' . $name,
+        'bytes' => $size,
+        'mime' => $mime,
+    ]);
+}
+
 if ($method === 'POST' && $action === 'save') {
     $raw = file_get_contents('php://input');
     $input = json_decode((string) $raw, true);
