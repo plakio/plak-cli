@@ -63,9 +63,10 @@ fi
 grep -Fq 'tags:' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not trigger on tags"
 grep -Fq 'contents: write' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW lacks contents: write"
 grep -Fq 'gh release create' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not create a release"
-grep -Fq -- '--generate-notes' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not generate notes"
-grep -Fq -- '--notes-start-tag' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not anchor notes to the previous tag"
+grep -Fq 'releases/generate-notes' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not generate notes"
+grep -Fq 'git log --no-merges' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW has no commit fallback"
 grep -Fq 'gh release view' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW is not idempotent"
+grep -Fq 'gh release edit' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW cannot fill empty notes"
 # Both "0.4.70" and "v0.4.70" must normalize to exactly one leading v.
 grep -Fq 'TAG="${INPUT_TAG:-$REF_TAG}"' "$NOTES_WORKFLOW" \
     || fail "$NOTES_WORKFLOW does not read the tag input"

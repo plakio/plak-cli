@@ -43,19 +43,51 @@ jobs:
 
           git fetch --tags --force
 
-          # A manual or repeated run must not overwrite curated notes.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; leaving it unchanged."
-            exit 0
+          # Never overwrite curated notes. An existing release whose body is
+          # only the automatic changelog link is treated as empty and filled.
+          EXISTS=0
+          if BODY=$(gh release view "$TAG" --json body -q .body 2>/dev/null); then
+            if [[ -n "$(printf '%s\n' "$BODY" | grep -v '^\*\*Full Changelog\*\*' | tr -d '[:space:]')" ]]; then
+              echo "Release $TAG already has notes; leaving it unchanged."
+              exit 0
+            fi
+            echo "Release $TAG has no notes yet; filling them."
+            EXISTS=1
           fi
 
           if PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null); then
-            gh release create "$TAG" --verify-tag \
-              --title "Plak $TAG" \
-              --generate-notes \
-              --notes-start-tag "$PREV"
+            RANGE="$PREV..$TAG"
+          else
+            PREV=""
+            RANGE="$TAG"
+          fi
+
+          # GitHub's generated notes only list merged pull requests. Changes
+          # also land as direct commits on main, so use the commit list as a
+          # fallback when there is nothing else to show.
+          if [[ -n "$PREV" ]]; then
+            NOTES=$(gh api "repos/$GH_REPO/releases/generate-notes" \
+              -f tag_name="$TAG" -f previous_tag_name="$PREV" --jq .body)
+          else
+            NOTES=$(gh api "repos/$GH_REPO/releases/generate-notes" \
+              -f tag_name="$TAG" --jq .body)
+          fi
+
+          if [[ -z "$(printf '%s\n' "$NOTES" | grep -v '^\*\*Full Changelog\*\*' | tr -d '[:space:]')" ]]; then
+            # shellcheck disable=SC2016  # %h stays literal for git, not bash
+            NOTES=$(git log --no-merges --reverse --invert-grep \
+              --grep='^Release [0-9]' --pretty='- %s (`%h`)' "$RANGE")
+            if [[ -n "$PREV" ]]; then
+              NOTES+=$'\n\n'"**Full Changelog**: https://github.com/${GH_REPO}/compare/${PREV}...${TAG}"
+            else
+              NOTES+=$'\n\n'"**Full Changelog**: https://github.com/${GH_REPO}/commits/${TAG}"
+            fi
+          fi
+
+          if [[ "$EXISTS" == 1 ]]; then
+            gh release edit "$TAG" --title "Plak $TAG" --notes "$NOTES"
           else
             gh release create "$TAG" --verify-tag \
               --title "Plak $TAG" \
-              --generate-notes
+              --notes "$NOTES"
           fi
