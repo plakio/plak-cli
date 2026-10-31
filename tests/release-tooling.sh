@@ -66,6 +66,11 @@ grep -Fq 'gh release create' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not
 grep -Fq -- '--generate-notes' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not generate notes"
 grep -Fq -- '--notes-start-tag' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW does not anchor notes to the previous tag"
 grep -Fq 'gh release view' "$NOTES_WORKFLOW" || fail "$NOTES_WORKFLOW is not idempotent"
+# Both "0.4.70" and "v0.4.70" must normalize to exactly one leading v.
+grep -Fq 'TAG="${INPUT_TAG:-$REF_TAG}"' "$NOTES_WORKFLOW" \
+    || fail "$NOTES_WORKFLOW does not read the tag input"
+grep -Fq 'TAG="v${TAG#v}"' "$NOTES_WORKFLOW" \
+    || fail "$NOTES_WORKFLOW does not normalize the tag prefix"
 
 # The universal installer and plak upgrade use the stable tag channel, never
 # main or releases/latest. Both must resolve tags and stage atomically.
