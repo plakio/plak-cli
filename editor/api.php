@@ -38,7 +38,18 @@ if ($given === '' || !hash_equals($token, $given)) {
 $requestHost = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
 $source = (string) ($_SERVER['HTTP_ORIGIN'] ?? ($_SERVER['HTTP_REFERER'] ?? ''));
 $sourceHost = $source !== '' ? (string) parse_url($source, PHP_URL_HOST) : '';
-if ($requestHost === '' || $sourceHost === '' || strcasecmp($requestHost, $sourceHost) !== 0) {
+if ($requestHost === '') {
+    plak_editor_error('Invalid request host.', 403);
+}
+// Browsers omit Origin on same-origin GET and the editor page sets
+// Referrer-Policy: no-referrer, so an empty source is expected. The CSRF token
+// above is what proves the caller loaded the editor page. When the browser
+// does send a source, it must match the host serving the API.
+if ($sourceHost !== '' && strcasecmp($requestHost, $sourceHost) !== 0) {
+    plak_editor_error('Cross-origin request blocked.', 403);
+}
+$fetchSite = strtolower((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? ''));
+if ($sourceHost === '' && in_array($fetchSite, ['cross-site', 'same-site'], true)) {
     plak_editor_error('Cross-origin request blocked.', 403);
 }
 

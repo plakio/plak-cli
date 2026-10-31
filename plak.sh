@@ -19974,7 +19974,18 @@ if ($given === '' || !hash_equals($token, $given)) {
 $requestHost = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
 $source = (string) ($_SERVER['HTTP_ORIGIN'] ?? ($_SERVER['HTTP_REFERER'] ?? ''));
 $sourceHost = $source !== '' ? (string) parse_url($source, PHP_URL_HOST) : '';
-if ($requestHost === '' || $sourceHost === '' || strcasecmp($requestHost, $sourceHost) !== 0) {
+if ($requestHost === '') {
+    plak_editor_error('Invalid request host.', 403);
+}
+// Browsers omit Origin on same-origin GET and the editor page sets
+// Referrer-Policy: no-referrer, so an empty source is expected. The CSRF token
+// above is what proves the caller loaded the editor page. When the browser
+// does send a source, it must match the host serving the API.
+if ($sourceHost !== '' && strcasecmp($requestHost, $sourceHost) !== 0) {
+    plak_editor_error('Cross-origin request blocked.', 403);
+}
+$fetchSite = strtolower((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? ''));
+if ($sourceHost === '' && in_array($fetchSite, ['cross-site', 'same-site'], true)) {
     plak_editor_error('Cross-origin request blocked.', 403);
 }
 
@@ -20634,6 +20645,9 @@ PLAK_EDITOR_ASSET_EOF
       if (event.target.closest('a, button')) event.preventDefault();
     });
     doc.addEventListener('submit', (event) => event.preventDefault());
+    // Commit on input so Save enables as soon as the user types instead of
+    // waiting for the editable element to lose focus.
+    doc.addEventListener('input', () => commitAll());
     doc.addEventListener('blur', () => commitAll(), true);
 
     doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {
@@ -20842,6 +20856,9 @@ $initialFile = isset($_GET['file']) ? ltrim((string) $_GET['file'], '/') : 'inde
 $embed = isset($_GET['embed']) && (string) $_GET['embed'] === '1';
 $dashboard = plak_html_dashboard_base();
 $siteUrl = $domain . '/';
+// Cache-bust assets per deploy so an upgrade never reuses an old editor.
+$jsVersion = (string) (@filemtime(__DIR__ . '/editor.js') ?: 1);
+$cssVersion = (string) (@filemtime(__DIR__ . '/editor.css') ?: 1);
 
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
@@ -20858,7 +20875,7 @@ header('Referrer-Policy: no-referrer');
 <meta name="plak-file" content="<?= htmlspecialchars($initialFile, ENT_QUOTES, 'UTF-8') ?>">
 <meta name="plak-embed" content="<?= $embed ? '1' : '0' ?>">
 <title>Edit <?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?> · Plak</title>
-<link rel="stylesheet" href="editor.css">
+<link rel="stylesheet" href="editor.css?v=<?= $cssVersion ?>">
 </head>
 <body class="<?= $embed ? 'embed' : '' ?>">
 <header class="topbar">
@@ -20890,7 +20907,7 @@ header('Referrer-Policy: no-referrer');
   <textarea id="code" spellcheck="false" hidden></textarea>
 </main>
 
-<script src="editor.js" defer></script>
+<script src="editor.js?v=<?= $jsVersion ?>" defer></script>
 </body>
 </html>
 PLAK_EDITOR_ASSET_EOF
@@ -21227,8 +21244,10 @@ if (!in_array($hostname, $allowedHosts, true)) {
 }
 
 $editorBase = plak_html_dashboard_base();
+$loaderFile = dirname(__DIR__) . '/gui/editor/loader.js';
+$loaderVersion = (string) (@filemtime($loaderFile) ?: 1);
 $page = '/' . ltrim($rel, '/');
-$loader = '<script src="' . htmlspecialchars($editorBase . '/editor/loader.js?v=1', ENT_QUOTES, 'UTF-8') . '"'
+$loader = '<script src="' . htmlspecialchars($editorBase . '/editor/loader.js?v=' . $loaderVersion, ENT_QUOTES, 'UTF-8') . '"'
     . ' data-plak-site="' . htmlspecialchars($site, ENT_QUOTES, 'UTF-8') . '"'
     . ' data-plak-host="' . htmlspecialchars($hostname, ENT_QUOTES, 'UTF-8') . '"'
     . ' data-plak-page="' . htmlspecialchars($page, ENT_QUOTES, 'UTF-8') . '"></script>';

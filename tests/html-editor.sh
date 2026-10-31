@@ -73,6 +73,10 @@ for file in \
     "$APP_DIR/site-router/render.php"; do
     php -l "$file" >/dev/null || fail "invalid PHP: $file"
 done
+grep -q 'editor.js?v=' "$GUI_DIR/editor/index.php" || fail "editor.js is not cache-busted"
+grep -q 'editor.css?v=' "$GUI_DIR/editor/index.php" || fail "editor.css is not cache-busted"
+grep -q 'loader.js?v=' "$APP_DIR/site-router/render.php" || fail "loader.js is not cache-busted"
+grep -q "addEventListener('input'" "$GUI_DIR/editor/editor.js" || fail "editor does not commit on input"
 
 editor_port=$(free_port)
 router_port=$(free_port)
@@ -103,6 +107,18 @@ api() {
 
 files=$(api files)
 grep -q '"path":"index.html"' <<<"$files" || fail "files API omitted index.html"
+
+# Browsers omit Origin on same-origin GET, and the editor page sends no
+# Referer, so a same-origin GET must still work with only the CSRF token.
+same_origin=$(curl -fsS -H "X-Plak-CSRF: $token" \
+    "http://127.0.0.1:$editor_port/api.php?action=files&site=foo") \
+    || fail "same-origin GET without Origin/Referer was rejected"
+grep -q '"path":"index.html"' <<<"$same_origin" || fail "same-origin GET omitted index.html"
+
+status=$(curl -sS -o /dev/null -w '%{http_code}' -H "X-Plak-CSRF: $token" \
+    -H "Origin: http://evil.example" \
+    "http://127.0.0.1:$editor_port/api.php?action=files&site=foo")
+[ "$status" = "403" ] || fail "cross-origin Origin was not rejected"
 read_json=$(api read "file=index.html")
 base_sha=$(printf '%s' "$read_json" | php -r '$d=json_decode(stream_get_contents(STDIN),true); echo $d["sha256"] ?? "";')
 [ -n "$base_sha" ] || fail "read API omitted the sha256"

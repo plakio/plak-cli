@@ -298,6 +298,9 @@
       if (event.target.closest('a, button')) event.preventDefault();
     });
     doc.addEventListener('submit', (event) => event.preventDefault());
+    // Commit on input so Save enables as soon as the user types instead of
+    // waiting for the editable element to lose focus.
+    doc.addEventListener('input', () => commitAll());
     doc.addEventListener('blur', () => commitAll(), true);
 
     doc.querySelectorAll('[data-plak-text-index]').forEach((element) => {

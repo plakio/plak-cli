@@ -19,6 +19,9 @@ $initialFile = isset($_GET['file']) ? ltrim((string) $_GET['file'], '/') : 'inde
 $embed = isset($_GET['embed']) && (string) $_GET['embed'] === '1';
 $dashboard = plak_html_dashboard_base();
 $siteUrl = $domain . '/';
+// Cache-bust assets per deploy so an upgrade never reuses an old editor.
+$jsVersion = (string) (@filemtime(__DIR__ . '/editor.js') ?: 1);
+$cssVersion = (string) (@filemtime(__DIR__ . '/editor.css') ?: 1);
 
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
@@ -35,7 +38,7 @@ header('Referrer-Policy: no-referrer');
 <meta name="plak-file" content="<?= htmlspecialchars($initialFile, ENT_QUOTES, 'UTF-8') ?>">
 <meta name="plak-embed" content="<?= $embed ? '1' : '0' ?>">
 <title>Edit <?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?> · Plak</title>
-<link rel="stylesheet" href="editor.css">
+<link rel="stylesheet" href="editor.css?v=<?= $cssVersion ?>">
 </head>
 <body class="<?= $embed ? 'embed' : '' ?>">
 <header class="topbar">
@@ -67,6 +70,6 @@ header('Referrer-Policy: no-referrer');
   <textarea id="code" spellcheck="false" hidden></textarea>
 </main>
 
-<script src="editor.js" defer></script>
+<script src="editor.js?v=<?= $jsVersion ?>" defer></script>
 </body>
 </html>

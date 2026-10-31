@@ -54,8 +54,10 @@ if (!in_array($hostname, $allowedHosts, true)) {
 }
 
 $editorBase = plak_html_dashboard_base();
+$loaderFile = dirname(__DIR__) . '/gui/editor/loader.js';
+$loaderVersion = (string) (@filemtime($loaderFile) ?: 1);
 $page = '/' . ltrim($rel, '/');
-$loader = '<script src="' . htmlspecialchars($editorBase . '/editor/loader.js?v=1', ENT_QUOTES, 'UTF-8') . '"'
+$loader = '<script src="' . htmlspecialchars($editorBase . '/editor/loader.js?v=' . $loaderVersion, ENT_QUOTES, 'UTF-8') . '"'
     . ' data-plak-site="' . htmlspecialchars($site, ENT_QUOTES, 'UTF-8') . '"'
     . ' data-plak-host="' . htmlspecialchars($hostname, ENT_QUOTES, 'UTF-8') . '"'
     . ' data-plak-page="' . htmlspecialchars($page, ENT_QUOTES, 'UTF-8') . '"></script>';
