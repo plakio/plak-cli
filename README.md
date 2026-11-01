@@ -296,13 +296,19 @@ plak agent my-site --json
 ### Migration
 
 ```bash
-plak pull [--proxy-uploads]
-plak push
+plak pull [--proxy-uploads] [--dry-run]
+plak push [--dry-run]
 ```
 
-Pull and push ship a self-contained Plak engine to the remote over SSH and run
-it there, so the remote needs neither internet access nor a publicly reachable
-backup URL. The backup itself travels over SSH. Before touching the remote
+Static sites transfer only `public/`: HTML, CSS, JS, images and fonts. No
+database, `private/`, `logs/`, `cache/`, backups or editor files are sent.
+`--dry-run` lists the transfer without changing either side. Static pull
+mirrors the remote public tree into an existing static site after a local
+backup; static push keeps remote-only files and creates a remote backup first.
+
+For WordPress, pull and push ship a self-contained Plak engine to the remote
+over SSH and run it there, so the remote needs neither internet access nor a
+publicly reachable backup URL. Static transfers use `tar` over SSH. The backup itself travels over SSH. Before touching the remote
 database, Plak checks which archive and database tools are available
 (`plak.sh/go diagnose` reports the same set) and cancels with an actionable
 message when a required tool is missing. The helper and backup are removed on
@@ -380,7 +386,7 @@ plak remote attach <remote> <site>
 plak remote detach <site>
 ```
 
-`remote add` records an SSH host in `~/.ssh/config` and stores the remote WordPress path as `# plak-remote-path: <path>` in the same block. Once `remote attach` binds a remote to a site, `plak push` and `plak pull` skip their interactive prompts.
+`remote add` records an SSH host in `~/.ssh/config` and stores the remote site root (WordPress root or static web root) as `# plak-remote-path: <path>` in the same block. Once `remote attach` binds a remote to a site, `plak push` and `plak pull` skip their interactive prompts.
 
 ### Hosts
 

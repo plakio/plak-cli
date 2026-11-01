@@ -116,6 +116,7 @@ bash ./tests/panel-server.sh
 bash ./tests/panel-infra.sh
 bash ./tests/import.sh
 bash ./tests/clone.sh
+bash ./tests/static-transfer.sh
 bash ./tests/dashboard.sh
 bash ./tests/html-editor.sh
 bash ./tests/install-db-port.sh

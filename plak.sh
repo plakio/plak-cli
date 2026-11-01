@@ -96,8 +96,8 @@ Commands:
   db          Manage local site databases
   snapshot    Create, list, restore, export or delete site snapshots
   history     Save component history, compare files and selectively roll back
-  pull        Pull a remote WordPress site into Plak
-  push        Push a local Plak site to a remote WordPress site
+  pull        Pull a remote site into Plak (WordPress or static)
+  push        Push a local site to a remote server (WordPress or static)
   enable      Start local site services
   disable     Stop local site services
   reload      Regenerate and reload the local site server
@@ -13539,10 +13539,12 @@ HELP
             plak_site_clone_usage
             ;;
         pull)
-            echo "Usage: plak pull [<site>] [--yes] [--proxy-uploads]"
+            echo "Usage: plak pull [<site>] [--yes] [--dry-run] [--proxy-uploads]"
+            echo "Static sites pull only public/ into an existing static site; --proxy-uploads is WordPress-only."
             ;;
         push)
-            echo "Usage: plak push [<site>] [--yes]"
+            echo "Usage: plak push [<site>] [--yes] [--dry-run]"
+            echo "Static sites push only public/; WordPress sites keep the existing files and database flow."
             ;;
         reload)
             echo "Usage: plak reload"
@@ -16315,6 +16317,106 @@ plak_site_pull_cleanup() {
     plak_remote_transfer_cleanup
 }
 
+# Pull a static site into an existing local static site. The remote tree
+# replaces public/ after a local tar backup, so the local copy mirrors remote.
+plak_site_pull_static() {
+    local site_name="$1" dest_path="$2" remote_ssh="$3" remote_path="$4" ssh_opts="$5" yes="$6" dry_run="$7"
+    local remote_path_q
+    remote_path_q=$(shell_quote "$remote_path")
+
+    if [ ! -d "$dest_path" ]; then
+        log_error "Static site '$site_name' has no public directory."
+    fi
+    if ! ssh $ssh_opts "$remote_ssh" "command -v tar >/dev/null 2>&1"; then
+        log_error "The remote has no tar; static pull cancelled before changing anything."
+    fi
+    if ssh $ssh_opts "$remote_ssh" "test -f $remote_path_q/wp-config.php" 2>/dev/null; then
+        log_error "Remote path looks like a WordPress site. Use WordPress pull or choose another path."
+    fi
+
+    log_step "Static site: $site_name"
+    if [ "$dry_run" -eq 1 ]; then
+        log_step "Dry run: no files will be transferred"
+        echo "Remote: $remote_ssh:$remote_path"
+        echo "Local:  $dest_path"
+        ssh $ssh_opts "$remote_ssh" "cd $remote_path_q && find . -type f | sed 's|^\\./||' | sort | head -200"
+        return 0
+    fi
+
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Pull static content from '$remote_ssh:$remote_path' into '$site_name'? The local public directory will be replaced; a local backup is created first."; then
+                echo "🚫 Pull cancelled."
+                exit 0
+            fi
+        else
+            log_error "Refusing to pull without --yes in non-interactive mode."
+        fi
+    fi
+
+    if [ -z "${PLAK_PULL_TMP_DIR:-}" ]; then
+        PLAK_PULL_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/plak-pull-XXXXXXXX")
+    fi
+    PLAK_RT_SSH_OPTS="$ssh_opts"
+    PLAK_RT_REMOTE="$remote_ssh"
+
+    local remote_archive remote_archive_q
+    remote_archive=$(ssh $ssh_opts "$remote_ssh" 'mktemp /tmp/plak-static-pull-XXXXXX' 2>/dev/null) \
+        || log_error "Could not create a temporary file on the remote."
+    remote_archive_q=$(shell_quote "$remote_archive")
+    plak_remote_track_file "$remote_archive_q"
+
+    log_step "Packaging the remote public content..."
+    if ! ssh $ssh_opts "$remote_ssh" "tar -czf $remote_archive_q -C $remote_path_q ."; then
+        log_error "Could not package the remote public content; the local site was not changed."
+    fi
+
+    local local_archive="$PLAK_PULL_TMP_DIR/static-pull.tar.gz"
+    log_step "Downloading the static site..."
+    if ! ssh $ssh_opts "$remote_ssh" "cat $remote_archive_q" > "$local_archive" || [ ! -s "$local_archive" ]; then
+        log_error "Could not download the remote archive; the local site was not changed."
+    fi
+    if ! tar -tzf "$local_archive" >/dev/null 2>&1; then
+        log_error "The downloaded archive is not a valid tar file; the local site was not changed."
+    fi
+    if tar -tzf "$local_archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+        log_error "The remote archive contains unsafe paths; the local site was not changed."
+    fi
+    if tar -tvzf "$local_archive" | grep -q '^l'; then
+        log_error "The remote archive contains symlinks; the local site was not changed."
+    fi
+
+    local new_public="$PLAK_PULL_TMP_DIR/new-public"
+    mkdir -p "$new_public"
+    if ! tar -xzf "$local_archive" -C "$new_public"; then
+        log_error "Could not extract the remote archive; the local site was not changed."
+    fi
+
+    local backup_dir="$HOME/Plak/cache/static-pull/$site_name"
+    local backup_path="$backup_dir/$(date +%Y%m%d-%H%M%S)-$$.tar.gz"
+    if ! mkdir -p "$backup_dir"; then
+        log_error "Could not create the local backup folder; the local site was not changed."
+    fi
+    log_step "Backing up the local public directory..."
+    if ! tar -czf "$backup_path" -C "$dest_path" .; then
+        log_error "Could not back up the local public directory; the local site was not changed."
+    fi
+    log_success "Local backup: $backup_path"
+
+    local old_public="$dest_path.plak-old.$$"
+    if ! mv "$dest_path" "$old_public"; then
+        log_error "Could not move the local public directory; nothing was replaced."
+    fi
+    if ! mv "$new_public" "$dest_path"; then
+        mv "$old_public" "$dest_path" 2>/dev/null || true
+        log_error "Could not install the pulled site. Local backup: $backup_path"
+    fi
+    rm -rf "$old_public"
+
+    log_success "Static site pulled to $dest_path"
+    log_success "Local backup: $backup_path"
+}
+
 plak_site_pull() {
     source_config
 
@@ -16332,11 +16434,12 @@ plak_site_pull() {
     }
 
     # --- Argument Parsing ---
-    local site_name="" yes=0 proxy_uploads=false
+    local site_name="" yes=0 proxy_uploads=false dry_run=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes|-y) yes=1; shift 1 ;;
             --proxy-uploads) proxy_uploads=true; shift 1 ;;
+            --dry-run) dry_run=1; shift 1 ;;
             -*) echo "Unknown flag: $1" >&2; exit 1 ;;
             *) site_name="$1"; shift 1 ;;
         esac
@@ -16360,7 +16463,7 @@ plak_site_pull() {
     # own via ControlPersist.
     trap plak_site_pull_cleanup EXIT
 
-    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pulling a remote WordPress site into Plak."
+    gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "This tool will guide you through pulling a remote site into Plak."
 
     # --- 0. Resolve site_name and remote binding ---
     # Three paths lead to a (site_name, remote_ssh, remote_path) tuple:
@@ -16368,7 +16471,13 @@ plak_site_pull() {
     #   (b) site arg given + no binding         → ask for remote info (interactive)
     #   (c) no site arg, bound sites exist      → pre-step picker (interactive)
     #   (d) no site arg, no bound sites         → ask for everything (interactive)
-    local remote_ssh remote_path remote_path_q binding
+    local remote_ssh remote_path remote_path_q binding remote_root_name
+    remote_root_name="Path to WordPress Root"
+    if [ -n "$site_name" ] \
+        && [ -d "$SITES_DIR/$site_name.localhost/public" ] \
+        && [ ! -f "$SITES_DIR/$site_name.localhost/public/wp-config.php" ]; then
+        remote_root_name="Path to Web Root"
+    fi
 
     if [ -n "$site_name" ]; then
         # Validate site exists
@@ -16397,7 +16506,7 @@ plak_site_pull() {
             remote_ssh=$(plak_remote_choose_ssh)
             if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
 
-            remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
+            remote_path=$(gum input --width 0 --value "public/" --prompt "$remote_root_name: ")
             if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
         fi
     else
@@ -16458,12 +16567,30 @@ plak_site_pull() {
             remote_ssh=$(plak_remote_choose_ssh)
             if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
 
-            remote_path=$(gum input --width 0 --value "public/" --prompt "Path to WordPress Root: ")
+            remote_path=$(gum input --width 0 --value "public/" --prompt "$remote_root_name: ")
             if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
         fi
         # If site_name given but no binding, the prompt block above already ran
     fi
     remote_path_q=$(shell_quote "$remote_path")
+
+    local static_site=0
+    if [ -n "$site_name" ] \
+        && [ -d "$SITES_DIR/$site_name.localhost/public" ] \
+        && [ ! -f "$SITES_DIR/$site_name.localhost/public/wp-config.php" ]; then
+        static_site=1
+    fi
+    if [ "$static_site" -eq 1 ]; then
+        if [ "$proxy_uploads" = true ]; then
+            log_error "--proxy-uploads only applies to WordPress sites."
+        fi
+        plak_site_pull_static "$site_name" "$SITES_DIR/$site_name.localhost/public" \
+            "$remote_ssh" "$remote_path" "$ssh_opts" "$yes" "$dry_run"
+        return 0
+    fi
+    if [ "$dry_run" -eq 1 ]; then
+        log_error "--dry-run is only available for static sites."
+    fi
 
     # --- 2. Validate Remote Site and capture source URLs ---
     log_step "Validating remote WordPress site..."
@@ -16693,12 +16820,100 @@ plak_site_push_cleanup() {
     plak_remote_transfer_cleanup
 }
 
+# Push only the public tree of a static site. The remote backup lives outside
+# the web root so it is never served, and remote-only files are kept by default.
+plak_site_push_static() {
+    local site_name="$1" local_path="$2" remote_ssh="$3" remote_path="$4" ssh_opts="$5" yes="$6" dry_run="$7"
+    local remote_path_q
+    remote_path_q=$(shell_quote "$remote_path")
+
+    local file_count size
+    file_count=$(cd "$local_path" && find . -type f | wc -l | tr -d '[:space:]')
+    size=$(du -sh "$local_path" | awk '{print $1}')
+    log_step "Static site: $site_name ($file_count files, $size)"
+
+    if [ "$dry_run" -eq 1 ]; then
+        log_step "Dry run: no files will be transferred"
+        echo "Local:  $local_path"
+        echo "Remote: $remote_ssh:$remote_path"
+        (cd "$local_path" && find . -type f | sed 's|^\./||' | sort | head -200)
+        if [ "$file_count" -gt 200 ]; then
+            echo "... and $((file_count - 200)) more files"
+        fi
+        return 0
+    fi
+
+    if ! ssh $ssh_opts "$remote_ssh" "command -v tar >/dev/null 2>&1"; then
+        log_error "The remote has no tar; static push cancelled before changing anything."
+    fi
+    if ssh $ssh_opts "$remote_ssh" "test -f $remote_path_q/wp-config.php" 2>/dev/null; then
+        log_error "Remote path looks like a WordPress site. Use WordPress push or choose another path."
+    fi
+
+    if [ "$yes" -eq 0 ]; then
+        if [ -t 0 ] && plak_command_exists gum; then
+            if ! gum confirm "Push '$site_name' to '$remote_ssh:$remote_path'? Matching files are overwritten, remote-only files are kept, and a backup is created first."; then
+                echo "🚫 Push cancelled."
+                exit 0
+            fi
+        else
+            log_error "Refusing to push without --yes in non-interactive mode."
+        fi
+    fi
+
+    if [ -z "${PLAK_PUSH_TMP_DIR:-}" ]; then
+        PLAK_PUSH_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/plak-push-XXXXXXXX")
+    fi
+    local archive="$PLAK_PUSH_TMP_DIR/static-push.tar.gz"
+    log_step "Packaging public content..."
+    tar -czf "$archive" -C "$local_path" . || log_error "Could not package the static site."
+
+    local remote_archive remote_archive_q
+    remote_archive=$(ssh $ssh_opts "$remote_ssh" 'mktemp /tmp/plak-static-push-XXXXXX' 2>/dev/null) \
+        || log_error "Could not create a temporary file on the remote."
+    remote_archive_q=$(shell_quote "$remote_archive")
+    PLAK_RT_SSH_OPTS="$ssh_opts"
+    PLAK_RT_REMOTE="$remote_ssh"
+    plak_remote_track_file "$remote_archive_q"
+
+    local backup_dir backup_path backup_path_q
+    backup_dir=$(ssh $ssh_opts "$remote_ssh" \
+        'mkdir -p "$HOME/.plak/backups" && mktemp -d "$HOME/.plak/backups/static-push-XXXXXX"' 2>/dev/null) \
+        || log_error "Could not create a remote backup folder."
+    backup_path="$backup_dir/public.tar.gz"
+    backup_path_q=$(shell_quote "$backup_path")
+    log_step "Backing up the remote web root..."
+    if ! ssh $ssh_opts "$remote_ssh" "mkdir -p $remote_path_q && tar -czf $backup_path_q -C $remote_path_q ." 2>/dev/null; then
+        log_error "Could not back up the remote web root; nothing was changed."
+    fi
+    log_success "Remote backup: $backup_path"
+
+    log_step "Uploading static site..."
+    if ! cat "$archive" | ssh $ssh_opts "$remote_ssh" "cat > $remote_archive_q"; then
+        log_error "Could not upload the static site; remote files were not changed."
+    fi
+    log_step "Extracting on the remote..."
+    if ! ssh $ssh_opts "$remote_ssh" "tar -xzf $remote_archive_q -C $remote_path_q"; then
+        log_step "Restoring the remote backup..."
+        if ssh $ssh_opts "$remote_ssh" "tar -xzf $backup_path_q -C $remote_path_q"; then
+            log_error "Extraction failed; the remote backup was restored."
+        fi
+        log_error "Extraction failed and the backup could not be restored. Backup: $backup_path"
+    fi
+
+    ssh $ssh_opts "$remote_ssh" "rm -f $remote_archive_q" 2>/dev/null || true
+    log_success "Static site pushed to $remote_ssh:$remote_path"
+    log_success "Remote backup: $backup_path"
+    log_success "Remote-only files were kept."
+}
+
 plak_site_push() {
     # --- Argument Parsing ---
-    local site_name="" yes=0
+    local site_name="" yes=0 dry_run=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes|-y) yes=1; shift 1 ;;
+            --dry-run) dry_run=1; shift 1 ;;
             -*) echo "Unknown flag: $1" >&2; exit 1 ;;
             *) site_name="$1"; shift 1 ;;
         esac
@@ -16736,40 +16951,47 @@ plak_site_push() {
     if [ -z "$site_name" ]; then
         plak_require_gum
         log_step "Choose a local site to push"
-        local wp_sites=()
+        local sites=()
         for site_dir in "$SITES_DIR"/*.localhost; do
-            if [ -f "$site_dir/public/wp-config.php" ]; then
-                wp_sites+=("$(basename "$site_dir" .localhost)")
+            if [ -d "$site_dir/public" ]; then
+                sites+=("$(basename "$site_dir" .localhost)")
             fi
         done
 
-        if [ ${#wp_sites[@]} -eq 0 ]; then
-            log_error "No local WordPress sites found to push."
+        if [ ${#sites[@]} -eq 0 ]; then
+            log_error "No local sites found to push."
         fi
 
-        site_name=$(printf "%s\n" "${wp_sites[@]}" | gum filter --placeholder "Choose local site to push")
+        site_name=$(printf "%s\n" "${sites[@]}" | gum filter --placeholder "Choose local site to push")
         if [ -z "$site_name" ]; then log_error "No site selected."; fi
     else
         if [ ! -d "$SITES_DIR/$site_name.localhost" ]; then
             log_error "Site '$site_name' does not exist under $SITES_DIR."
         fi
-        if [ ! -f "$SITES_DIR/$site_name.localhost/public/wp-config.php" ]; then
-            log_error "Site '$site_name' is not a WordPress site (no wp-config.php found)."
-        fi
     fi
 
     local local_path="$SITES_DIR/$site_name.localhost/public"
+    if [ ! -d "$local_path" ]; then
+        log_error "Site '$site_name' has no public directory."
+    fi
     plak_multisite_require_single "$local_path" 'Push' || return 1
+    local is_static=0
+    [ -f "$local_path/wp-config.php" ] || is_static=1
+
     local local_home local_siteurl wp_cmd
-    wp_cmd=$(get_wp_cmd)
-    local_home=$( (cd "$local_path" && $wp_cmd option get home --skip-plugins --skip-themes 2>/dev/null) || true)
-    local_siteurl=$( (cd "$local_path" && $wp_cmd option get siteurl --skip-plugins --skip-themes 2>/dev/null) || true)
-    if [[ "$local_home" != http* ]] || [[ "$local_siteurl" != http* ]]; then
-        log_error "Could not read valid home and siteurl values from the local WordPress site."
+    if [ "$is_static" -eq 0 ]; then
+        wp_cmd=$(get_wp_cmd)
+        local_home=$( (cd "$local_path" && $wp_cmd option get home --skip-plugins --skip-themes 2>/dev/null) || true)
+        local_siteurl=$( (cd "$local_path" && $wp_cmd option get siteurl --skip-plugins --skip-themes 2>/dev/null) || true)
+        if [[ "$local_home" != http* ]] || [[ "$local_siteurl" != http* ]]; then
+            log_error "Could not read valid home and siteurl values from the local WordPress site."
+        fi
     fi
 
     # --- 2. Gather Remote Info ---
-    local remote_ssh remote_path remote_path_q binding
+    local remote_ssh remote_path remote_path_q binding remote_root_name
+    remote_root_name="Path to Remote WordPress Root"
+    [ "$is_static" -eq 1 ] && remote_root_name="Path to Remote Web Root"
     binding=$(plak_remote_get_binding "$site_name" 2>/dev/null)
     local binding_rc=$?
 
@@ -16787,12 +17009,20 @@ plak_site_push() {
                remote_ssh=$(plak_remote_choose_ssh)
                if [ -z "$remote_ssh" ]; then log_error "SSH connection cannot be empty."; fi
 
-               remote_path=$(gum input --width 0 --value "public/" --prompt "Path to Remote WordPress Root: ")
+               remote_path=$(gum input --width 0 --value "public/" --prompt "$remote_root_name: ")
                if [ -z "$remote_path" ]; then log_error "Remote path cannot be empty."; fi
                ;;
         esac
     fi
     remote_path_q=$(shell_quote "$remote_path")
+
+    if [ "$is_static" -eq 1 ]; then
+        plak_site_push_static "$site_name" "$local_path" "$remote_ssh" "$remote_path" "$ssh_opts" "$yes" "$dry_run"
+        return 0
+    fi
+    if [ "$dry_run" -eq 1 ]; then
+        log_error "--dry-run is only available for static sites."
+    fi
 
     # --- 3. Validate Remote Site and capture destination URLs ---
     log_step "Validating remote WordPress site..."

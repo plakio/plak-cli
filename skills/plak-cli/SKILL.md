@@ -188,11 +188,17 @@ plak agent mysite --json   # single JSON envelope on stdout
 ```bash
 plak db backup
 plak db list [--json]
-plak pull [<site>] [--yes] [--proxy-uploads]
-plak push [<site>] [--yes]
+plak pull [<site>] [--yes] [--dry-run] [--proxy-uploads]
+plak push [<site>] [--yes] [--dry-run]
 ```
 
 `plak push <site>` and `plak pull <site>` skip their interactive path prompt when the site has a remote binding (see **Remotes** below). Use `<site>` to skip the site picker and `--yes` to skip the overwrite confirmation.
+
+Static sites transfer only `public/` and never a database. Static push keeps
+remote-only files by default and creates a remote backup; static pull requires
+an existing static site, mirrors the remote public tree, and keeps a local
+backup. `--dry-run` previews either direction. `--proxy-uploads` is
+WordPress-only.
 
 ## Network and config
 
@@ -272,7 +278,7 @@ theme/plugin `activate|deactivate|update|install|delete`,
 **Panel site infra (Fase D)**: `db-*|cron-*|cert-*|redirect-*|alias-*|dns-*|
 authuser-*|cache-*|app-*` (`sites:write` for mutations).
 
-**Remote → site bindings**: `plak remote attach <remote> <site>` writes the remote name to `~/Plak/Sites/<site>.localhost/.remote`. The `remote_path` (WordPress root) is stored in `~/.ssh/config` inside the `Host` block as `# plak-remote-path: <path>`. With a binding, `plak push <site>` and `plak pull <site>` resolve the remote automatically without prompting.
+**Remote → site bindings**: `plak remote attach <remote> <site>` writes the remote name to `~/Plak/Sites/<site>.localhost/.remote`. The `remote_path` (WordPress root or static web root) is stored in `~/.ssh/config` inside the `Host` block as `# plak-remote-path: <path>`. With a binding, `plak push <site>` and `plak pull <site>` resolve the remote automatically without prompting.
 
 ## Typical agent workflow
 
