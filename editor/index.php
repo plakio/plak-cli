@@ -38,12 +38,26 @@ header('Referrer-Policy: no-referrer');
 <meta name="plak-file" content="<?= htmlspecialchars($initialFile, ENT_QUOTES, 'UTF-8') ?>">
 <meta name="plak-embed" content="<?= $embed ? '1' : '0' ?>">
 <title>Edit <?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?> · Plak</title>
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('plak-editor-theme');
+    var theme = (saved === 'dark' || saved === 'light') ? saved : 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+  } catch (event) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="editor.css?v=<?= $cssVersion ?>">
 </head>
 <body class="<?= $embed ? 'embed' : '' ?>">
 <header class="topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">&gt;</span>
+    <span class="brand-mark" aria-hidden="true">P</span>
     <span>Plak <span class="brand-sub">HTML editor</span></span>
   </div>
   <div class="site">
@@ -57,6 +71,7 @@ header('Referrer-Policy: no-referrer');
   <div class="actions">
     <button type="button" id="undo" class="icon" disabled title="Undo" aria-label="Undo">↶</button>
     <button type="button" id="redo" class="icon" disabled title="Redo" aria-label="Redo">↷</button>
+    <button type="button" id="theme-toggle" class="icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
     <button type="button" id="code-toggle">Code</button>
     <button type="button" id="save" class="primary" disabled title="Save (⌘S)">Save</button>
     <span id="status" class="status">Loading…</span>

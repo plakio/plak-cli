@@ -972,7 +972,7 @@ function adminer_object() {
             // applies so the saved choice (or system preference) is honored
             // without a theme flash on load.
             $nonce = \Adminer\nonce();
-            $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
+            $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:'dark';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
             echo "<script{$nonce}>{$init}</script>\n";
             $v = @filemtime(__DIR__ . '/adminer.js') ?: 1;
             echo "<script src='adminer.js?v={$v}'{$nonce}></script>\n";
@@ -2764,7 +2764,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
     <meta name="color-scheme" content="dark light">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plak CLI — sites</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%232f36fa'/><text x='32' y='46' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='white'>P</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='8' fill='%23b7fa45'/><text x='32' y='46' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='%2310110f'>P</text></svg>">
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
         // theme's background is used from the very first frame (no FOUC).
@@ -2773,22 +2773,20 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         (function () {
             try {
                 var s = localStorage.getItem('theme');
-                var t = (s === 'dark' || s === 'light')
-                    ? s
-                    : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+                var t = (s === 'dark' || s === 'light') ? s : 'dark';
                 document.documentElement.setAttribute('data-theme', t);
             } catch (e) {}
         })();
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..600&family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="//unpkg.com/alpinejs" defer></script>
     <style>
         *, *::before, *::after { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; }
-        html { background: #0f1210; }
-        html[data-theme="light"] { background: #fbfaf7; }
+        html { background: #0e110f; }
+        html[data-theme="light"] { background: #f5f5f1; }
 
         :root {
             --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
@@ -3171,17 +3169,183 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         .import-form { display: flex; flex-direction: column; gap: 0.7rem; }
         .import-file { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.8rem; }
         .import-form .modal-foot { margin-top: 0.2rem; }
+
+        /* ============================================
+           Console theme
+           ============================================ */
+        html[data-theme="dark"] {
+            --bg: #0e110f;
+            --bg-sunk: #0b0e0c;
+            --panel: #151a16;
+            --panel-hover: #1b211b;
+            --panel-border: #2a352a;
+            --text: #d6e9d3;
+            --text-dim: #8a9b86;
+            --text-faint: #5f735c;
+            --accent: #b7fa45;
+            --accent-fg: #10110f;
+            --pill-bg: #1b211b;
+            --pill-wp-bg: rgba(183, 250, 69, .14);
+            --pill-wp-fg: #b7fa45;
+            --pill-static-bg: #1b211b;
+            --pill-static-fg: #9aad95;
+            --input-bg: #0b0e0c;
+            --danger: #ff8a80;
+            --shadow-lg: none;
+            --action-bg: #b7fa45;
+            --action-fg: #10110f;
+            --action-border: #b7fa45;
+            --action-shadow: none;
+            --card-shadow: none;
+            --radius-lg: 4px;
+            --radius-md: 3px;
+            --radius-pill: 3px;
+        }
+        html[data-theme="light"] {
+            --bg: #f5f5f1;
+            --bg-sunk: #efece4;
+            --panel: #ffffff;
+            --panel-hover: #f7f5ee;
+            --panel-border: #10110f;
+            --text: #10110f;
+            --text-dim: #62665f;
+            --text-faint: #8a8d84;
+            --accent: #344aff;
+            --accent-fg: #ffffff;
+            --pill-bg: #f1ede5;
+            --pill-wp-bg: rgba(183, 250, 69, .32);
+            --pill-wp-fg: #10110f;
+            --pill-static-bg: #f1ede5;
+            --pill-static-fg: #62665f;
+            --input-bg: #ffffff;
+            --danger: #b42318;
+            --shadow-lg: 4px 4px 0 #10110f;
+            --action-bg: #b7fa45;
+            --action-fg: #10110f;
+            --action-border: #10110f;
+            --action-shadow: 4px 4px 0 #10110f;
+            --card-shadow: 4px 4px 0 #10110f;
+            --radius-lg: 0px;
+            --radius-md: 0px;
+            --radius-pill: 0px;
+        }
+        :root {
+            --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            --font-serif: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        }
+        body {
+            font-family: var(--font-sans);
+            background-image: radial-gradient(circle at 84% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 32%);
+        }
+        .wrap { max-width: 1040px; }
+        .nav { margin-bottom: 1.4rem; }
+        .logo { gap: 9px; font-family: var(--font-sans); font-size: 1.08rem; font-weight: 700; letter-spacing: -.03em; }
+        .logo-mark {
+            width: 28px;
+            height: 28px;
+            display: inline-grid;
+            place-items: center;
+            background: var(--action-bg);
+            color: var(--action-fg);
+            border: 1px solid var(--action-border);
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: 15px;
+            font-weight: 600;
+            flex: none;
+        }
+        .logo-tag {
+            border: 1px solid var(--panel-border);
+            padding: 2px 5px;
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+            font-size: 8px;
+            font-weight: 400;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+        .theme-btn { border-radius: 3px; }
+        .console-hero { padding: 0 0 1.4rem; }
+        .console-eyebrow {
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+        .console-eyebrow::before { content: "●"; color: var(--action-bg); margin-right: 7px; }
+        .console-hero h1 {
+            margin: .55rem 0 .45rem;
+            font-family: var(--font-sans);
+            font-size: clamp(2.4rem, 5vw, 3.8rem);
+            font-weight: 800;
+            line-height: .95;
+            letter-spacing: -.055em;
+        }
+        .console-hero h1 span {
+            background: var(--action-bg);
+            color: var(--action-fg);
+            padding: 0 .08em;
+        }
+        .console-hero p { margin: 0; max-width: 62ch; color: var(--text-dim); font-size: .9rem; line-height: 1.5; }
+        .card { border-radius: var(--radius-lg); box-shadow: var(--card-shadow); }
+        .card-title { font-family: var(--font-sans); font-style: normal; font-weight: 700; font-size: 1.55rem; letter-spacing: -.035em; }
+        .card-head { border-bottom-color: var(--panel-border); }
+        .pill { border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: .72rem; }
+        .pill.primary {
+            background: var(--action-bg);
+            border-color: var(--action-border);
+            color: var(--action-fg);
+            box-shadow: var(--action-shadow);
+        }
+        .pill.primary:hover {
+            background: color-mix(in srgb, var(--action-bg) 88%, white);
+            border-color: var(--action-border);
+            color: var(--action-fg);
+        }
+        .filter-row { border-bottom-color: var(--panel-border); }
+        .add-row { border-bottom-color: var(--panel-border); }
+        .add-row input[type="text"] { border-radius: 0; }
+        .site-row { border-bottom-color: var(--panel-border); }
+        .site-domain { font-family: var(--font-mono); }
+        .site-type { border-radius: 0; letter-spacing: .06em; }
+        .site-type.wp { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .site-type.static { background: var(--pill-static-bg); color: var(--pill-static-fg); }
+        .site-action-btn { border-radius: 0; }
+        .card-foot { border-top-color: var(--panel-border); }
+        .dot::before { background: var(--action-bg); box-shadow: none; }
+        .modal { border-radius: 0; }
+        .modal .modal-foot { border-top-color: var(--panel-border); }
+        .snackbar {
+            background: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--action-bg);
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: .78rem;
+        }
+        .snackbar.error { background: var(--danger); border-color: var(--danger); color: #fff; }
+        @media (max-width: 620px) {
+            .console-hero h1 { font-size: clamp(2rem, 11vw, 3rem); }
+        }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
     <div class="wrap">
         <nav class="nav">
-            <a class="logo" href="/">Plak CLI</a>
+            <a class="logo" href="/"><span class="logo-mark">P</span><span>plak</span><span class="logo-tag">CLI</span></a>
             <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
                 <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
                 <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
             </button>
         </nav>
+
+        <section class="console-hero">
+            <div class="console-eyebrow">Local dashboard / <span x-text="sites.length"></span> sites</div>
+            <h1>Your local <span>sites.</span></h1>
+            <p>WordPress and static projects, all running locally with HTTPS, one dashboard and zero config.</p>
+        </section>
 
         <section class="card">
             <header class="card-head">
@@ -3791,7 +3955,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         document.addEventListener('alpine:init', () => {
             Alpine.data('dashboard', () => ({
                 // Respect the OS theme preference on first visit, dark otherwise.
-                theme: localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
+                theme: localStorage.getItem('theme') || 'dark',
                 sites: [],
                 isLoading: true,
                 adding: false,

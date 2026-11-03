@@ -3721,7 +3721,7 @@ function adminer_object() {
             // applies so the saved choice (or system preference) is honored
             // without a theme flash on load.
             $nonce = \Adminer\nonce();
-            $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
+            $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:'dark';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
             echo "<script{$nonce}>{$init}</script>\n";
             $v = @filemtime(__DIR__ . '/adminer.js') ?: 1;
             echo "<script src='adminer.js?v={$v}'{$nonce}></script>\n";
@@ -5513,7 +5513,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
     <meta name="color-scheme" content="dark light">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plak CLI — sites</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%232f36fa'/><text x='32' y='46' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='white'>P</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='8' fill='%23b7fa45'/><text x='32' y='46' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='%2310110f'>P</text></svg>">
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
         // theme's background is used from the very first frame (no FOUC).
@@ -5522,22 +5522,20 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         (function () {
             try {
                 var s = localStorage.getItem('theme');
-                var t = (s === 'dark' || s === 'light')
-                    ? s
-                    : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+                var t = (s === 'dark' || s === 'light') ? s : 'dark';
                 document.documentElement.setAttribute('data-theme', t);
             } catch (e) {}
         })();
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..600&family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="//unpkg.com/alpinejs" defer></script>
     <style>
         *, *::before, *::after { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; }
-        html { background: #0f1210; }
-        html[data-theme="light"] { background: #fbfaf7; }
+        html { background: #0e110f; }
+        html[data-theme="light"] { background: #f5f5f1; }
 
         :root {
             --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
@@ -5920,17 +5918,183 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         .import-form { display: flex; flex-direction: column; gap: 0.7rem; }
         .import-file { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.8rem; }
         .import-form .modal-foot { margin-top: 0.2rem; }
+
+        /* ============================================
+           Console theme
+           ============================================ */
+        html[data-theme="dark"] {
+            --bg: #0e110f;
+            --bg-sunk: #0b0e0c;
+            --panel: #151a16;
+            --panel-hover: #1b211b;
+            --panel-border: #2a352a;
+            --text: #d6e9d3;
+            --text-dim: #8a9b86;
+            --text-faint: #5f735c;
+            --accent: #b7fa45;
+            --accent-fg: #10110f;
+            --pill-bg: #1b211b;
+            --pill-wp-bg: rgba(183, 250, 69, .14);
+            --pill-wp-fg: #b7fa45;
+            --pill-static-bg: #1b211b;
+            --pill-static-fg: #9aad95;
+            --input-bg: #0b0e0c;
+            --danger: #ff8a80;
+            --shadow-lg: none;
+            --action-bg: #b7fa45;
+            --action-fg: #10110f;
+            --action-border: #b7fa45;
+            --action-shadow: none;
+            --card-shadow: none;
+            --radius-lg: 4px;
+            --radius-md: 3px;
+            --radius-pill: 3px;
+        }
+        html[data-theme="light"] {
+            --bg: #f5f5f1;
+            --bg-sunk: #efece4;
+            --panel: #ffffff;
+            --panel-hover: #f7f5ee;
+            --panel-border: #10110f;
+            --text: #10110f;
+            --text-dim: #62665f;
+            --text-faint: #8a8d84;
+            --accent: #344aff;
+            --accent-fg: #ffffff;
+            --pill-bg: #f1ede5;
+            --pill-wp-bg: rgba(183, 250, 69, .32);
+            --pill-wp-fg: #10110f;
+            --pill-static-bg: #f1ede5;
+            --pill-static-fg: #62665f;
+            --input-bg: #ffffff;
+            --danger: #b42318;
+            --shadow-lg: 4px 4px 0 #10110f;
+            --action-bg: #b7fa45;
+            --action-fg: #10110f;
+            --action-border: #10110f;
+            --action-shadow: 4px 4px 0 #10110f;
+            --card-shadow: 4px 4px 0 #10110f;
+            --radius-lg: 0px;
+            --radius-md: 0px;
+            --radius-pill: 0px;
+        }
+        :root {
+            --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            --font-serif: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        }
+        body {
+            font-family: var(--font-sans);
+            background-image: radial-gradient(circle at 84% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 32%);
+        }
+        .wrap { max-width: 1040px; }
+        .nav { margin-bottom: 1.4rem; }
+        .logo { gap: 9px; font-family: var(--font-sans); font-size: 1.08rem; font-weight: 700; letter-spacing: -.03em; }
+        .logo-mark {
+            width: 28px;
+            height: 28px;
+            display: inline-grid;
+            place-items: center;
+            background: var(--action-bg);
+            color: var(--action-fg);
+            border: 1px solid var(--action-border);
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: 15px;
+            font-weight: 600;
+            flex: none;
+        }
+        .logo-tag {
+            border: 1px solid var(--panel-border);
+            padding: 2px 5px;
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+            font-size: 8px;
+            font-weight: 400;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+        .theme-btn { border-radius: 3px; }
+        .console-hero { padding: 0 0 1.4rem; }
+        .console-eyebrow {
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+        .console-eyebrow::before { content: "●"; color: var(--action-bg); margin-right: 7px; }
+        .console-hero h1 {
+            margin: .55rem 0 .45rem;
+            font-family: var(--font-sans);
+            font-size: clamp(2.4rem, 5vw, 3.8rem);
+            font-weight: 800;
+            line-height: .95;
+            letter-spacing: -.055em;
+        }
+        .console-hero h1 span {
+            background: var(--action-bg);
+            color: var(--action-fg);
+            padding: 0 .08em;
+        }
+        .console-hero p { margin: 0; max-width: 62ch; color: var(--text-dim); font-size: .9rem; line-height: 1.5; }
+        .card { border-radius: var(--radius-lg); box-shadow: var(--card-shadow); }
+        .card-title { font-family: var(--font-sans); font-style: normal; font-weight: 700; font-size: 1.55rem; letter-spacing: -.035em; }
+        .card-head { border-bottom-color: var(--panel-border); }
+        .pill { border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: .72rem; }
+        .pill.primary {
+            background: var(--action-bg);
+            border-color: var(--action-border);
+            color: var(--action-fg);
+            box-shadow: var(--action-shadow);
+        }
+        .pill.primary:hover {
+            background: color-mix(in srgb, var(--action-bg) 88%, white);
+            border-color: var(--action-border);
+            color: var(--action-fg);
+        }
+        .filter-row { border-bottom-color: var(--panel-border); }
+        .add-row { border-bottom-color: var(--panel-border); }
+        .add-row input[type="text"] { border-radius: 0; }
+        .site-row { border-bottom-color: var(--panel-border); }
+        .site-domain { font-family: var(--font-mono); }
+        .site-type { border-radius: 0; letter-spacing: .06em; }
+        .site-type.wp { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .site-type.static { background: var(--pill-static-bg); color: var(--pill-static-fg); }
+        .site-action-btn { border-radius: 0; }
+        .card-foot { border-top-color: var(--panel-border); }
+        .dot::before { background: var(--action-bg); box-shadow: none; }
+        .modal { border-radius: 0; }
+        .modal .modal-foot { border-top-color: var(--panel-border); }
+        .snackbar {
+            background: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--action-bg);
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: .78rem;
+        }
+        .snackbar.error { background: var(--danger); border-color: var(--danger); color: #fff; }
+        @media (max-width: 620px) {
+            .console-hero h1 { font-size: clamp(2rem, 11vw, 3rem); }
+        }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
     <div class="wrap">
         <nav class="nav">
-            <a class="logo" href="/">Plak CLI</a>
+            <a class="logo" href="/"><span class="logo-mark">P</span><span>plak</span><span class="logo-tag">CLI</span></a>
             <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
                 <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
                 <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
             </button>
         </nav>
+
+        <section class="console-hero">
+            <div class="console-eyebrow">Local dashboard / <span x-text="sites.length"></span> sites</div>
+            <h1>Your local <span>sites.</span></h1>
+            <p>WordPress and static projects, all running locally with HTTPS, one dashboard and zero config.</p>
+        </section>
 
         <section class="card">
             <header class="card-head">
@@ -6540,7 +6704,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         document.addEventListener('alpine:init', () => {
             Alpine.data('dashboard', () => ({
                 // Respect the OS theme preference on first visit, dark otherwise.
-                theme: localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
+                theme: localStorage.getItem('theme') || 'dark',
                 sites: [],
                 isLoading: true,
                 adding: false,
@@ -20434,30 +20598,41 @@ plak_editor_error('Unsupported action.', 405);
 PLAK_EDITOR_ASSET_EOF
     cat > "$editor_dir/editor.css" <<'PLAK_EDITOR_ASSET_EOF'
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --bg: #f5f5f1;
   --panel: #ffffff;
-  --panel-2: #eeece5;
+  --panel-2: #efece4;
   --ink: #10110f;
   --muted: #62665f;
-  --border: #d9d6cc;
-  --accent: #2f36fa;
-  --acid: #b7fa45;
+  --border: #10110f;
+  --soft: #d6d3c9;
+  --input: #ffffff;
+  --action-bg: #b7fa45;
+  --action-fg: #10110f;
+  --action-border: #10110f;
+  --action-shadow: 4px 4px 0 #10110f;
+  --accent: #344aff;
   --danger: #b42318;
-  --radius: 10px;
+  --radius: 3px;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #101210;
-    --panel: #171a16;
-    --panel-2: #1f231e;
-    --ink: #eef0e9;
-    --muted: #9aa095;
-    --border: #2a2f28;
-    --accent: #8f9bff;
-    --acid: #b7fa45;
-    --danger: #ff8a80;
-  }
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e110f;
+  --panel: #151a16;
+  --panel-2: #101510;
+  --ink: #d6e9d3;
+  --muted: #8a9b86;
+  --border: #2a352a;
+  --soft: #202920;
+  --input: #0b0e0c;
+  --action-bg: #b7fa45;
+  --action-fg: #10110f;
+  --action-border: #b7fa45;
+  --action-shadow: none;
+  --accent: #b7fa45;
+  --danger: #ff8a80;
 }
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -20467,18 +20642,20 @@ body {
   flex-direction: column;
   background: var(--bg);
   color: var(--ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
 button, select, textarea { font: inherit; }
 button { cursor: pointer; }
 a { color: inherit; }
+
 .topbar {
   display: flex;
   align-items: center;
   gap: 1rem;
   flex-wrap: wrap;
-  padding: .7rem 1rem;
+  padding: .65rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   z-index: 5;
@@ -20488,7 +20665,7 @@ a { color: inherit; }
   align-items: center;
   gap: .5rem;
   font-weight: 700;
-  letter-spacing: -.02em;
+  letter-spacing: -.03em;
   white-space: nowrap;
 }
 .brand-mark {
@@ -20496,16 +20673,20 @@ a { color: inherit; }
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid var(--action-border);
+  border-radius: var(--radius);
+  background: var(--action-bg);
+  color: var(--action-fg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
 }
 .brand-sub {
   color: var(--muted);
-  font-size: .78rem;
-  font-weight: 500;
-  letter-spacing: .04em;
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  font-weight: 400;
+  letter-spacing: .1em;
   text-transform: uppercase;
 }
 .site {
@@ -20521,11 +20702,14 @@ a { color: inherit; }
   max-width: 22rem;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: .9rem;
+  font-family: var(--font-mono);
+  font-size: .76rem;
+  font-weight: 500;
 }
 .site a {
   color: var(--muted);
-  font-size: .74rem;
+  font-family: var(--font-mono);
+  font-size: .62rem;
   text-decoration: none;
 }
 .site a:hover { color: var(--accent); }
@@ -20534,21 +20718,25 @@ a { color: inherit; }
   align-items: center;
   gap: .45rem;
   color: var(--muted);
-  font-size: .78rem;
+  font-family: var(--font-mono);
+  font-size: .66rem;
+  letter-spacing: .04em;
 }
 .file-picker select {
   max-width: 18rem;
-  min-height: 34px;
-  padding: .35rem .5rem;
+  min-height: 32px;
+  padding: .3rem .5rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: var(--radius);
+  background: var(--input);
   color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: .68rem;
 }
 .actions {
   display: flex;
   align-items: center;
-  gap: .45rem;
+  gap: .35rem;
   margin-left: auto;
   flex-wrap: wrap;
 }
@@ -20557,14 +20745,15 @@ a { color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
-  padding: .4rem .68rem;
+  min-height: 32px;
+  padding: .35rem .62rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--ink);
-  font-size: .8rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  font-weight: 500;
   text-decoration: none;
 }
 .actions button:hover,
@@ -20573,43 +20762,62 @@ a { color: inherit; }
   color: var(--accent);
 }
 .actions button.icon {
-  width: 34px;
+  width: 32px;
   padding: 0;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1;
 }
+.actions button:disabled { opacity: .38; cursor: default; }
 .actions button.primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  border-color: var(--action-border);
+  background: var(--action-bg);
+  color: var(--action-fg);
+  box-shadow: var(--action-shadow);
 }
-.actions button.primary:hover { filter: brightness(1.08); color: #fff; }
-.actions button:disabled { opacity: .45; cursor: default; }
+.actions button.primary:hover {
+  background: color-mix(in srgb, var(--action-bg) 88%, white);
+  border-color: var(--action-border);
+  color: var(--action-fg);
+}
 .status {
   min-width: 6rem;
-  color: var(--muted);
-  font-size: .74rem;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: .66rem;
+  letter-spacing: .02em;
   text-align: right;
 }
+.status::before { content: "●"; margin-right: 5px; }
+html[data-theme="light"] .status { color: #3d4a00; }
 .banner {
-  padding: .7rem 1rem;
+  padding: .65rem 1rem;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--danger) 10%, var(--panel));
   color: var(--danger);
-  font-size: .84rem;
-  font-weight: 550;
+  font-size: .8rem;
+  font-weight: 500;
+}
+.banner button {
+  margin-left: .6rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  padding: .2rem .5rem;
+  font-size: .72rem;
 }
 .canvas {
   position: relative;
   flex: 1;
   min-height: 0;
-  background: var(--panel-2);
+  padding: 14px;
+  background: var(--bg);
 }
 #preview {
   display: block;
   width: 100%;
   height: 100%;
-  border: 0;
+  border: 1px solid var(--border);
   background: #fff;
 }
 #code {
@@ -20618,15 +20826,16 @@ a { color: inherit; }
   height: 100%;
   margin: 0;
   padding: 1.1rem 1.2rem;
-  border: 0;
+  border: 1px solid var(--border);
   outline: 0;
   resize: none;
   background: var(--panel);
   color: var(--ink);
-  font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 12px/1.65 var(--font-mono);
   tab-size: 2;
 }
 #code[hidden], #preview[hidden] { display: none; }
+
 .modal {
   position: fixed;
   inset: 0;
@@ -20639,20 +20848,21 @@ a { color: inherit; }
 .modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(8, 10, 14, .55);
-  backdrop-filter: blur(2px);
+  background: rgba(0, 0, 0, .58);
+  backdrop-filter: blur(3px);
 }
 .modal-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: .75rem;
-  width: min(100%, 480px);
+  gap: .7rem;
+  width: min(100%, 460px);
   padding: 1rem;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: var(--panel);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, .28);
+  box-shadow: var(--action-shadow);
+  color: var(--ink);
 }
 .modal-card header {
   display: flex;
@@ -20660,38 +20870,46 @@ a { color: inherit; }
   justify-content: space-between;
   gap: 1rem;
 }
-.modal-card h2 { margin: 0; font-size: 1rem; }
+.modal-card h2 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -.03em;
+}
 .modal-x {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--muted);
-  font-size: 1.2rem;
+  font-size: 1.1rem;
 }
 .modal-x:hover { background: var(--panel-2); color: var(--ink); }
 .field {
   display: flex;
   flex-direction: column;
-  gap: .3rem;
+  gap: .28rem;
   color: var(--muted);
-  font-size: .78rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: .64rem;
+  letter-spacing: .04em;
 }
 .field input[type="text"] {
-  min-height: 36px;
-  padding: .45rem .6rem;
+  min-height: 34px;
+  padding: .42rem .58rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: var(--radius);
+  background: var(--input);
   color: var(--ink);
-  font: inherit;
+  font-family: var(--font-mono);
+  font-size: .7rem;
   font-weight: 400;
 }
 .field input[type="text"]:focus {
   border-color: var(--accent);
-  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .field-row {
   display: flex;
@@ -20700,57 +20918,63 @@ a { color: inherit; }
   flex-wrap: wrap;
 }
 .field-row button {
-  min-height: 32px;
-  padding: .35rem .6rem;
+  min-height: 30px;
+  padding: .3rem .55rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--ink);
-  font-size: .78rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: .66rem;
 }
 .field-row button:hover { border-color: var(--accent); color: var(--accent); }
 .field-row button:disabled { opacity: .5; cursor: default; }
-.muted { color: var(--muted); font-size: .74rem; font-weight: 400; }
+.muted { color: var(--muted); font-size: .64rem; font-weight: 400; }
 .check {
   display: flex;
   align-items: center;
   gap: .45rem;
-  font-size: .82rem;
-  font-weight: 550;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: .68rem;
 }
-.check input { width: 16px; height: 16px; accent-color: var(--accent); }
+.check input { width: 15px; height: 15px; accent-color: var(--action-bg); }
 .image-preview {
   display: grid;
   place-items: center;
   min-height: 72px;
-  max-height: 240px;
+  max-height: 230px;
   padding: .5rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--panel-2);
   overflow: hidden;
 }
-.image-preview img { display: block; max-width: 100%; max-height: 220px; }
+.image-preview img { display: block; max-width: 100%; max-height: 215px; }
 .image-preview img[hidden] { display: none; }
-.modal-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.modal-actions { display: flex; justify-content: flex-end; gap: .4rem; }
 .modal-actions button {
-  min-height: 34px;
-  padding: .4rem .75rem;
+  min-height: 32px;
+  padding: .35rem .7rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--ink);
-  font-size: .8rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  font-weight: 500;
 }
 .modal-actions button:hover { border-color: var(--accent); color: var(--accent); }
 .modal-actions button.primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  border-color: var(--action-border);
+  background: var(--action-bg);
+  color: var(--action-fg);
+  box-shadow: var(--action-shadow);
 }
-.modal-actions button.primary:hover { filter: brightness(1.08); color: #fff; }
+.modal-actions button.primary:hover {
+  background: color-mix(in srgb, var(--action-bg) 88%, white);
+  color: var(--action-fg);
+}
 body.embed #dashboard-link { display: none; }
 body.embed .site { max-width: 28rem; }
 @media (max-width: 760px) {
@@ -20760,6 +20984,7 @@ body.embed .site { max-width: 28rem; }
   .file-picker select { width: 100%; max-width: none; }
   .actions { margin-left: 0; width: 100%; }
   .actions .status { margin-left: auto; }
+  .canvas { padding: 8px; }
 }
 PLAK_EDITOR_ASSET_EOF
     cat > "$editor_dir/editor.js" <<'PLAK_EDITOR_ASSET_EOF'
@@ -20778,6 +21003,7 @@ PLAK_EDITOR_ASSET_EOF
   const codeToggle = document.getElementById('code-toggle');
   const undoButton = document.getElementById('undo');
   const redoButton = document.getElementById('redo');
+  const themeToggle = document.getElementById('theme-toggle');
   const closeButton = document.getElementById('close');
   const status = document.getElementById('status');
   const banner = document.getElementById('banner');
@@ -20808,6 +21034,24 @@ PLAK_EDITOR_ASSET_EOF
   const linkEditor = { index: -1 };
 
   if (closeButton) closeButton.hidden = !embed;
+
+  function updateThemeToggle() {
+    if (!themeToggle) return;
+    const dark = document.documentElement.dataset.theme === 'dark';
+    const label = dark ? 'Switch to light mode' : 'Switch to dark mode';
+    themeToggle.title = label;
+    themeToggle.setAttribute('aria-label', label);
+  }
+
+  if (themeToggle) {
+    themeToggle.addEventListener('click', () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('plak-editor-theme', next); } catch (event) {}
+      updateThemeToggle();
+    });
+    updateThemeToggle();
+  }
 
   async function request(action, { method = 'GET', params = {}, body = null } = {}) {
     const url = new URL('api.php', location.href);
@@ -21118,12 +21362,12 @@ PLAK_EDITOR_ASSET_EOF
       <base href="${escapeAttr(baseHref())}">
       <style data-plak-editor-styles>
         [data-plak-text-index] { cursor: text; outline: 1px dashed transparent !important; outline-offset: 2px !important; }
-        [data-plak-text-index]:hover { outline-color: rgba(47, 54, 250, .55) !important; background: rgba(47, 54, 250, .06) !important; }
-        [data-plak-text-index]:focus { outline: 2px solid #2f36fa !important; background: rgba(47, 54, 250, .08) !important; }
+        [data-plak-text-index]:hover { outline-color: rgba(183, 250, 69, .9) !important; background: rgba(183, 250, 69, .12) !important; }
+        [data-plak-text-index]:focus { outline: 2px solid #b7fa45 !important; background: rgba(183, 250, 69, .16) !important; }
         img[data-plak-image-index] { cursor: pointer; }
-        img[data-plak-image-index]:hover { outline: 3px solid #2f36fa; outline-offset: -3px; }
+        img[data-plak-image-index]:hover { outline: 3px solid #b7fa45; outline-offset: -3px; }
         img[data-plak-image-index].plak-image-drop {
-          outline: 3px dashed #2f36fa !important;
+          outline: 3px dashed #b7fa45 !important;
           outline-offset: -3px !important;
           opacity: .72;
           cursor: copy;
@@ -21133,9 +21377,9 @@ PLAK_EDITOR_ASSET_EOF
           margin-left: .35rem;
           padding: 1px 5px;
           border-radius: 4px;
-          background: #2f36fa;
-          color: #fff !important;
-          font: 600 10px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+          background: #b7fa45;
+          color: #10110f !important;
+          font: 600 10px/1.6 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
           text-decoration: none !important;
           vertical-align: middle;
           cursor: pointer;
@@ -21154,7 +21398,7 @@ PLAK_EDITOR_ASSET_EOF
           border-radius: 8px;
           background: rgba(16, 17, 15, .92);
           box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
-          font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+          font: 600 12px/1 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         }
         .plak-format-bar button {
           all: unset;
@@ -21844,12 +22088,26 @@ header('Referrer-Policy: no-referrer');
 <meta name="plak-file" content="<?= htmlspecialchars($initialFile, ENT_QUOTES, 'UTF-8') ?>">
 <meta name="plak-embed" content="<?= $embed ? '1' : '0' ?>">
 <title>Edit <?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?> · Plak</title>
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('plak-editor-theme');
+    var theme = (saved === 'dark' || saved === 'light') ? saved : 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+  } catch (event) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="editor.css?v=<?= $cssVersion ?>">
 </head>
 <body class="<?= $embed ? 'embed' : '' ?>">
 <header class="topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">&gt;</span>
+    <span class="brand-mark" aria-hidden="true">P</span>
     <span>Plak <span class="brand-sub">HTML editor</span></span>
   </div>
   <div class="site">
@@ -21863,6 +22121,7 @@ header('Referrer-Policy: no-referrer');
   <div class="actions">
     <button type="button" id="undo" class="icon" disabled title="Undo" aria-label="Undo">↶</button>
     <button type="button" id="redo" class="icon" disabled title="Redo" aria-label="Redo">↷</button>
+    <button type="button" id="theme-toggle" class="icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
     <button type="button" id="code-toggle">Code</button>
     <button type="button" id="save" class="primary" disabled title="Save (⌘S)">Save</button>
     <span id="status" class="status">Loading…</span>
@@ -22075,29 +22334,30 @@ PLAK_EDITOR_ASSET_EOF
         align-items: center;
         gap: 8px;
         min-height: 40px;
-        padding: .55rem .9rem;
-        border: 1px solid #2f36fa;
-        border-radius: 8px;
-        background: #2f36fa;
-        color: #fff;
-        box-shadow: 0 6px 20px rgba(16, 17, 15, .22);
+        padding: .55rem .85rem;
+        border: 1px solid #10110f;
+        border-radius: 3px;
+        background: #b7fa45;
+        color: #10110f;
+        box-shadow: 4px 4px 0 #10110f;
         cursor: pointer;
-        font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        letter-spacing: .01em;
+        font: 600 12px/1 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: .02em;
       }
-      .launcher:hover { filter: brightness(1.08); }
-      .launcher:focus-visible { outline: 3px solid rgba(47, 54, 250, .45); outline-offset: 3px; }
+      .launcher span { opacity: .85; }
+      .launcher:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #10110f; }
+      .launcher:focus-visible { outline: 3px solid #344aff; outline-offset: 3px; }
       .overlay {
         position: fixed;
         inset: 0;
         z-index: 3;
-        background: #fff;
+        background: #0e110f;
       }
       .overlay[hidden] { display: none; }
       .frame-wrap {
         width: 100%;
         height: 100%;
-        background: #fff;
+        background: #0e110f;
         overflow: hidden;
       }
       iframe {
@@ -22105,13 +22365,13 @@ PLAK_EDITOR_ASSET_EOF
         width: 100%;
         height: 100%;
         border: 0;
-        background: #fff;
+        background: #0e110f;
       }
       @media (max-width: 700px) {
         .launcher { right: 14px; bottom: 14px; }
       }
     </style>
-    <button type="button" class="launcher" id="plak-edit-launcher">Edit</button>
+    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&gt;_</span> Edit</button>
     <div class="overlay" id="plak-edit-overlay" hidden>
       <div class="frame-wrap">
         <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>

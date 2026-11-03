@@ -30,29 +30,30 @@
         align-items: center;
         gap: 8px;
         min-height: 40px;
-        padding: .55rem .9rem;
-        border: 1px solid #2f36fa;
-        border-radius: 8px;
-        background: #2f36fa;
-        color: #fff;
-        box-shadow: 0 6px 20px rgba(16, 17, 15, .22);
+        padding: .55rem .85rem;
+        border: 1px solid #10110f;
+        border-radius: 3px;
+        background: #b7fa45;
+        color: #10110f;
+        box-shadow: 4px 4px 0 #10110f;
         cursor: pointer;
-        font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        letter-spacing: .01em;
+        font: 600 12px/1 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: .02em;
       }
-      .launcher:hover { filter: brightness(1.08); }
-      .launcher:focus-visible { outline: 3px solid rgba(47, 54, 250, .45); outline-offset: 3px; }
+      .launcher span { opacity: .85; }
+      .launcher:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #10110f; }
+      .launcher:focus-visible { outline: 3px solid #344aff; outline-offset: 3px; }
       .overlay {
         position: fixed;
         inset: 0;
         z-index: 3;
-        background: #fff;
+        background: #0e110f;
       }
       .overlay[hidden] { display: none; }
       .frame-wrap {
         width: 100%;
         height: 100%;
-        background: #fff;
+        background: #0e110f;
         overflow: hidden;
       }
       iframe {
@@ -60,13 +61,13 @@
         width: 100%;
         height: 100%;
         border: 0;
-        background: #fff;
+        background: #0e110f;
       }
       @media (max-width: 700px) {
         .launcher { right: 14px; bottom: 14px; }
       }
     </style>
-    <button type="button" class="launcher" id="plak-edit-launcher">Edit</button>
+    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&gt;_</span> Edit</button>
     <div class="overlay" id="plak-edit-overlay" hidden>
       <div class="frame-wrap">
         <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>

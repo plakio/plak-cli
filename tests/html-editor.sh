@@ -81,6 +81,8 @@ grep -q 'data-plak-format="bold"' "$GUI_DIR/editor/editor.js" || fail "editor la
 grep -q 'plak-image-drop' "$GUI_DIR/editor/editor.js" || fail "editor lacks the image drop target"
 grep -q 'id="undo"' "$GUI_DIR/editor/index.php" || fail "editor lacks the undo control"
 grep -q 'id="redo"' "$GUI_DIR/editor/index.php" || fail "editor lacks the redo control"
+grep -q 'id="theme-toggle"' "$GUI_DIR/editor/index.php" || fail "editor lacks the theme control"
+grep -q 'plak-editor-theme' "$GUI_DIR/editor/index.php" || fail "editor theme is not persisted"
 
 editor_port=$(free_port)
 router_port=$(free_port)

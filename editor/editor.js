@@ -13,6 +13,7 @@
   const codeToggle = document.getElementById('code-toggle');
   const undoButton = document.getElementById('undo');
   const redoButton = document.getElementById('redo');
+  const themeToggle = document.getElementById('theme-toggle');
   const closeButton = document.getElementById('close');
   const status = document.getElementById('status');
   const banner = document.getElementById('banner');
@@ -43,6 +44,24 @@
   const linkEditor = { index: -1 };
 
   if (closeButton) closeButton.hidden = !embed;
+
+  function updateThemeToggle() {
+    if (!themeToggle) return;
+    const dark = document.documentElement.dataset.theme === 'dark';
+    const label = dark ? 'Switch to light mode' : 'Switch to dark mode';
+    themeToggle.title = label;
+    themeToggle.setAttribute('aria-label', label);
+  }
+
+  if (themeToggle) {
+    themeToggle.addEventListener('click', () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('plak-editor-theme', next); } catch (event) {}
+      updateThemeToggle();
+    });
+    updateThemeToggle();
+  }
 
   async function request(action, { method = 'GET', params = {}, body = null } = {}) {
     const url = new URL('api.php', location.href);
@@ -353,12 +372,12 @@
       <base href="${escapeAttr(baseHref())}">
       <style data-plak-editor-styles>
         [data-plak-text-index] { cursor: text; outline: 1px dashed transparent !important; outline-offset: 2px !important; }
-        [data-plak-text-index]:hover { outline-color: rgba(47, 54, 250, .55) !important; background: rgba(47, 54, 250, .06) !important; }
-        [data-plak-text-index]:focus { outline: 2px solid #2f36fa !important; background: rgba(47, 54, 250, .08) !important; }
+        [data-plak-text-index]:hover { outline-color: rgba(183, 250, 69, .9) !important; background: rgba(183, 250, 69, .12) !important; }
+        [data-plak-text-index]:focus { outline: 2px solid #b7fa45 !important; background: rgba(183, 250, 69, .16) !important; }
         img[data-plak-image-index] { cursor: pointer; }
-        img[data-plak-image-index]:hover { outline: 3px solid #2f36fa; outline-offset: -3px; }
+        img[data-plak-image-index]:hover { outline: 3px solid #b7fa45; outline-offset: -3px; }
         img[data-plak-image-index].plak-image-drop {
-          outline: 3px dashed #2f36fa !important;
+          outline: 3px dashed #b7fa45 !important;
           outline-offset: -3px !important;
           opacity: .72;
           cursor: copy;
@@ -368,9 +387,9 @@
           margin-left: .35rem;
           padding: 1px 5px;
           border-radius: 4px;
-          background: #2f36fa;
-          color: #fff !important;
-          font: 600 10px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+          background: #b7fa45;
+          color: #10110f !important;
+          font: 600 10px/1.6 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
           text-decoration: none !important;
           vertical-align: middle;
           cursor: pointer;
@@ -389,7 +408,7 @@
           border-radius: 8px;
           background: rgba(16, 17, 15, .92);
           box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
-          font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+          font: 600 12px/1 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         }
         .plak-format-bar button {
           all: unset;

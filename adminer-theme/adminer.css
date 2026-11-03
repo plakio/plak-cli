@@ -5,6 +5,7 @@
  * Light/dark via prefers-color-scheme. Design tokens mirror
  * the Plak WordPress theme so the two UIs feel native together.
  */
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
 
 /* ============================================
    Design tokens — Plak (light)
@@ -1613,4 +1614,151 @@ img {
 td img {
     max-width: 200px;
     max-height: 200px;
+}
+
+/* ============================================
+   Console theme
+   ============================================ */
+html {
+    --font-sans: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-serif: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --bg: #f5f5f1;
+    --bg-elev: #ffffff;
+    --bg-sunk: #efece4;
+    --bg-card: #ffffff;
+    --border: #10110f;
+    --border-soft: #d6d3c9;
+    --border-strong: #10110f;
+    --text: #10110f;
+    --text-soft: #2b2d27;
+    --muted: #62665f;
+    --dim: #8a8d84;
+
+    --accent: #344aff;
+    --accent-soft: rgba(52, 74, 255, 0.1);
+    --accent-ink: #344aff;
+    --accent-bright: #465cff;
+    --action-bg: #b7fa45;
+    --action-fg: #10110f;
+    --action-border: #10110f;
+    --action-hover: #c8ff62;
+
+    --radius-sm: 3px;
+    --radius: 3px;
+    --radius-lg: 4px;
+}
+@media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]) {
+        --bg: #0e110f;
+        --bg-elev: #151a16;
+        --bg-sunk: #0b0e0c;
+        --bg-card: #151a16;
+        --border: #2a352a;
+        --border-soft: #202920;
+        --border-strong: #3a453a;
+        --text: #d6e9d3;
+        --text-soft: #b9c9b4;
+        --muted: #8a9b86;
+        --dim: #5f735c;
+
+        --accent: #b7fa45;
+        --accent-soft: rgba(183, 250, 69, 0.14);
+        --accent-ink: #b7fa45;
+        --accent-bright: #c8ff62;
+        --action-bg: #b7fa45;
+        --action-fg: #10110f;
+        --action-border: #b7fa45;
+        --action-hover: #c8ff62;
+    }
+}
+html[data-theme="dark"] {
+    --bg: #0e110f;
+    --bg-elev: #151a16;
+    --bg-sunk: #0b0e0c;
+    --bg-card: #151a16;
+    --border: #2a352a;
+    --border-soft: #202920;
+    --border-strong: #3a453a;
+    --text: #d6e9d3;
+    --text-soft: #b9c9b4;
+    --muted: #8a9b86;
+    --dim: #5f735c;
+
+    --accent: #b7fa45;
+    --accent-soft: rgba(183, 250, 69, 0.14);
+    --accent-ink: #b7fa45;
+    --accent-bright: #c8ff62;
+    --action-bg: #b7fa45;
+    --action-fg: #10110f;
+    --action-border: #b7fa45;
+    --action-hover: #c8ff62;
+}
+
+body { background: var(--bg); color: var(--text); }
+#menu { background: var(--bg-elev); border-right: 1px solid var(--border); }
+#menu h1 { font-family: var(--font-sans); font-weight: 700; letter-spacing: -.03em; }
+#menu h1 a { color: var(--text); }
+#content { background: var(--bg); }
+#breadcrumb { border-bottom: 1px solid var(--border); }
+#breadcrumb a { color: var(--muted); }
+#breadcrumb a:hover { color: var(--accent); }
+#content h2 { font-family: var(--font-sans); font-weight: 700; letter-spacing: -.03em; }
+input, select, textarea { border-radius: var(--radius-sm); border-color: var(--border-soft); background: var(--bg-elev); color: var(--text); }
+input:focus, select:focus, textarea:focus { border-color: var(--action-bg); }
+input[type="submit"], input[type="button"], input[type="reset"], button {
+    background: var(--action-bg);
+    border-color: var(--action-border);
+    color: var(--action-fg);
+    border-radius: var(--radius-sm);
+    box-shadow: none;
+}
+input[type="submit"]:hover, input[type="button"]:hover, button:hover {
+    background: var(--action-hover);
+    border-color: var(--action-border);
+    color: var(--action-fg);
+}
+input[type="reset"], input[type="submit"][value="Cancel"] {
+    background: var(--bg-elev);
+    color: var(--text-soft);
+    border-color: var(--border);
+}
+#menu a { border-radius: var(--radius-sm); }
+#menu a:hover { color: var(--accent); }
+#menu a.active, #menu .active > a, #tables a.active {
+    background: var(--action-bg) !important;
+    color: var(--action-fg) !important;
+}
+.links a { border-radius: var(--radius-sm); }
+.links a.active {
+    background: var(--action-bg);
+    border-color: var(--action-border);
+    color: var(--action-fg);
+}
+.plak-theme-toggle { border-radius: var(--radius-sm); }
+.plak-theme-toggle:hover {
+    background: var(--action-bg);
+    border-color: var(--action-border);
+    color: var(--action-fg);
+}
+thead th { background: var(--bg-sunk); border-bottom-color: var(--border); }
+td, th { border-color: var(--border-soft); }
+
+/* Console headings */
+#content h1,
+#content h2,
+#content h3,
+.login h1,
+.login h2 {
+    font-family: var(--font-sans);
+    font-style: normal;
+    letter-spacing: -.03em;
+}
+
+.plak-brand-mark {
+    background: var(--action-bg);
+    color: var(--action-fg);
+    border-radius: var(--radius-sm);
+    box-shadow: none;
 }

@@ -8,12 +8,12 @@
 
 ## About
 
-Dark and light themes, automatic or toggled:
+Dark and light themes, toggled from the top-right:
 
-- **Dark** — deep green-black (`#0f1210`), teal accents, matching Plak's local dashboard.
-- **Light** — warm cream (`#fbfaf7`), teal accents.
+- **Dark** — shell green-black (`#0e110f`), panels (`#151a16`), acid actions (`#b7fa45`).
+- **Light** — paper (`#f5f5f1`), ink borders, acid actions.
 
-Typography uses Geist, Geist Mono, and Fraunces in the same roles as Plak's dashboard: quiet sans UI, mono metadata, and editorial headings. First-time visits follow `prefers-color-scheme`; the toggle in the top-right persists an explicit choice.
+Typography uses Outfit and JetBrains Mono in the same roles as Plak's Console dashboard: sans UI and mono metadata. First visits start in dark mode; the toggle persists an explicit choice in `localStorage`.
 
 ## Features
 
