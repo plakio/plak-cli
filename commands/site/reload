@@ -48,6 +48,12 @@ plak_site_reload() {
     # reliably when plak_site_reload is invoked via shell_exec(…&) from PHP.
     trap 'rm -f "$lock_file" 2>/dev/null; trap - EXIT INT TERM' EXIT INT TERM
 
+    # Keep Adminer on the same design as the dashboard/editor. Install/upgrade
+    # already do this, but reload is the command users run after a CLI update.
+    if ! deploy_adminer_theme; then
+        echo "⚠️  Could not refresh the Adminer theme; keeping the current files." >&2
+    fi
+
     while :; do
         rm -f "$pending"
         create_gui_file

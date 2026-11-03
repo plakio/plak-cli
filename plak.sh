@@ -3740,12 +3740,23 @@ ADMINER_INDEX_EOF
 
     if [ -f "$local_theme_dir/adminer.css" ] && [ -f "$local_theme_dir/adminer.js" ]; then
         echo "🎨 Installing local Plak Adminer theme..."
-        cp "$local_theme_dir/adminer.css" "$adminer_dir/adminer.css"
-        cp "$local_theme_dir/adminer.js" "$adminer_dir/adminer.js"
+        cp "$local_theme_dir/adminer.css" "$adminer_dir/adminer.css" || return 1
+        cp "$local_theme_dir/adminer.js" "$adminer_dir/adminer.js" || return 1
     else
         echo "🎨 Downloading Plak Adminer theme..."
-        curl -sL "https://raw.githubusercontent.com/plakio/plak-cli/main/adminer-theme/adminer.css" -o "$adminer_dir/adminer.css"
-        curl -sL "https://raw.githubusercontent.com/plakio/plak-cli/main/adminer-theme/adminer.js"  -o "$adminer_dir/adminer.js"
+        # Match the binary release tag; falling back to main would let an old
+        # binary receive a newer theme with incompatible markup.
+        local theme_base tmp_css tmp_js
+        theme_base="https://raw.githubusercontent.com/plakio/plak-cli/v${PLAK_VERSION}/adminer-theme"
+        tmp_css=$(mktemp "${TMPDIR:-/tmp}/plak-adminer-css.XXXXXX") || return 1
+        tmp_js=$(mktemp "${TMPDIR:-/tmp}/plak-adminer-js.XXXXXX") || { rm -f "$tmp_css"; return 1; }
+        if ! curl -fsSL "$theme_base/adminer.css" -o "$tmp_css" \
+            || ! curl -fsSL "$theme_base/adminer.js" -o "$tmp_js"; then
+            rm -f "$tmp_css" "$tmp_js"
+            return 1
+        fi
+        mv "$tmp_css" "$adminer_dir/adminer.css" || { rm -f "$tmp_css" "$tmp_js"; return 1; }
+        mv "$tmp_js" "$adminer_dir/adminer.js" || { rm -f "$tmp_js"; return 1; }
     fi
 }
 
@@ -17344,6 +17355,12 @@ plak_site_reload() {
     # happens at the function end since the trap was observed not firing
     # reliably when plak_site_reload is invoked via shell_exec(…&) from PHP.
     trap 'rm -f "$lock_file" 2>/dev/null; trap - EXIT INT TERM' EXIT INT TERM
+
+    # Keep Adminer on the same design as the dashboard/editor. Install/upgrade
+    # already do this, but reload is the command users run after a CLI update.
+    if ! deploy_adminer_theme; then
+        echo "⚠️  Could not refresh the Adminer theme; keeping the current files." >&2
+    fi
 
     while :; do
         rm -f "$pending"

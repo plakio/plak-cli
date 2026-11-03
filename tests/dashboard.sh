@@ -633,6 +633,7 @@ grep -q 'remote_ip 127.0.0.1 ::1' plak.sh || fail "Caddyfile generator lacks the
 grep -q 'This answers only on the machine running Plak' plak.sh || fail "admin hosts lack the 403 response"
 grep -q 'remote_ip private_ranges' plak.sh || fail "WSL private-range handling is missing"
 grep -q "remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1" plak.sh || fail "Tailscale admin guard is missing"
+grep -q 'deploy_adminer_theme' commands/site/reload || fail "reload does not refresh the Adminer theme"
 
 # Network mutations without an explicit scope are refused before execution.
 sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/deleted-cellar/plak';|" "$GUI_DIR/api.php"
