@@ -91,10 +91,10 @@ is:
 
 ```text
 Set up a new WordPress site locally with Plak. Fetch and follow:
-https://plak.sh/agent-setup.md
+https://plak.sh/agent-setup/prompt.md
 ```
 
-That URL serves [agent-setup.md](agent-setup.md), which contains
+That URL serves [agent-setup/prompt.md](agent-setup/prompt.md), which contains
 the exact install, verification, site-creation and safety steps for an agent.
 It can be served from `plak.sh` with a redirect to the raw file on `main`,
 like the existing `/install` redirect.
