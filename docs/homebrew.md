@@ -35,7 +35,7 @@ A download, API, or validation failure leaves the current executable untouched. 
 - Downloads and staging use `mktemp` with unique names. Downloads are mode 0600 and the installed script is mode 0755. Temporary files are removed on success, error, and interruption; concurrent runs do not share paths.
 - `PLAK_INSTALL_URL` remains an explicit override for tests and advanced/offline use. It is not the stable channel and does not trigger an implicit fallback.
 
-The resolver and installer use Bash 3.2-compatible constructs and tools available on Linux and macOS. The default install location is unchanged: `/usr/local/bin` on Linux and `/opt/homebrew/bin` on macOS arm64, unless `PLAK_INSTALL_DIR` is set.
+The resolver and installer use Bash 3.2-compatible constructs and tools available on Linux and macOS. The default install location is `/usr/local/bin`, except on macOS arm64 when `/opt/homebrew/bin` is already on `PATH` (that is, Homebrew is set up for the current shell), in which case the Homebrew directory is used. Set `PLAK_INSTALL_DIR` to override the destination. If the chosen directory is not on `PATH`, the installer prints the exact `export PATH=...` line needed to make `plak` available.
 
 Homebrew and the universal channel deliver the same code for the same tag: Homebrew downloads the tag archive and runs `compile.sh`; the universal channel downloads the committed `plak.sh` from that tag. `scripts/release.sh` compiles and commits `plak.sh` before creating the tag, so both artifacts come from the same compiled source.
 

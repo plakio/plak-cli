@@ -209,11 +209,26 @@ for arg in "$@"; do
     esac
 done
 
-os_name=$(uname -s)
-install_dir="${PLAK_INSTALL_DIR:-/usr/local/bin}"
+plak_path_has_dir() {
+    case ":${PATH:-}:" in
+        *":$1:"*) return 0 ;;
+    esac
+    return 1
+}
 
-if [ -z "${PLAK_INSTALL_DIR:-}" ] && [ "$os_name" = "Darwin" ]; then
-    if [ "$(uname -m)" = "arm64" ]; then
+os_name=$(uname -s)
+install_dir="${PLAK_INSTALL_DIR:-}"
+
+if [ -z "$install_dir" ]; then
+    install_dir="/usr/local/bin"
+
+    # Apple Silicon Homebrew lives in /opt/homebrew/bin, but a Mac without
+    # Homebrew does not have that directory on PATH. Installing there anyway
+    # would leave `plak` unreachable, so only use it when the current shell
+    # can actually find it. /usr/local/bin is part of the default macOS PATH
+    # and is the right destination for Homebrew-less Apple Silicon Macs.
+    if [ "$os_name" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] &&
+        plak_path_has_dir "/opt/homebrew/bin"; then
         install_dir="/opt/homebrew/bin"
     fi
 fi
@@ -343,3 +358,11 @@ run_install_command mv -f "$staged_script" "$destination"
 staged_script=""
 
 echo "Installed Plak to $destination"
+
+if ! plak_path_has_dir "$install_dir"; then
+    echo "" >&2
+    echo "Warning: $install_dir is not in your PATH, so 'plak' will not be found in new shells." >&2
+    echo "Add it to your shell profile and restart the shell. For example:" >&2
+    echo "  export PATH=\"$install_dir:\$PATH\"" >&2
+    echo "You can also run it with its full path: $destination" >&2
+fi

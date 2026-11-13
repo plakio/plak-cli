@@ -311,6 +311,7 @@ FAKE_CURL_STAT_LOG="$stat_log" run_installer "$install_log" "$current_tags" "$cu
 cmp -s "$current_payload" "$tmpdir/install/plak" || fail "installer installed different bytes"
 assert_eq "755" "$(file_mode "$tmpdir/install/plak")" "installed executable mode"
 assert_contains "$tmpdir/install.out" "Installed Plak to" "installer success message"
+assert_contains "$tmpdir/install.out" "is not in your PATH" "installer PATH warning"
 assert_contains "$install_log" "raw.githubusercontent.com/plakio/plak-cli/${current_tag}/plak.sh" "installer tag URL"
 assert_no_main_fallback "$install_log" "installer"
 assert_no_temps "$tmpdir/install" "successful installer"
@@ -660,20 +661,40 @@ ln -s "$tmpdir/fakebin/curl" "$mac_bin/curl"
 
 mac_log="$tmpdir/mac.log"
 mac_install_out="$tmpdir/mac-install.out"
+mac_log_brew="$tmpdir/mac-brew.log"
+mac_install_out_brew="$tmpdir/mac-brew-install.out"
 : > "$mac_log"
+: > "$mac_log_brew"
 if unshare -rm true 2>/dev/null; then
     # shellcheck disable=SC2016
     if unshare -rm bash -c '
         set -e
         mount -t tmpfs tmpfs /opt
-        mkdir -p /opt/homebrew/bin
-        PATH="$1:$2:$PATH" PLAK_NO_PATH_PRELUDE=1 HOME="$3" TMPDIR="$4" \
-        FAKE_CURL_LOG="$5" FAKE_TAGS_JSON="$6" FAKE_PAYLOAD="$7" \
-            bash "$8/install.sh" > "$9" 2>&1
+        mount -t tmpfs tmpfs /usr/local
+        mkdir -p /opt/homebrew/bin /usr/local/bin
+
+        # Homebrew absent: /opt/homebrew/bin is not on PATH, so the installer
+        # must use /usr/local/bin instead of leaving plak unreachable.
+        PATH="$1:$2:/usr/local/bin:/usr/bin:/bin" PLAK_NO_PATH_PRELUDE=1 \
+        HOME="$3" TMPDIR="$4" FAKE_CURL_LOG="$5" FAKE_TAGS_JSON="$6" \
+        FAKE_PAYLOAD="$7" bash "$8/install.sh" > "$9" 2>&1
+        test -x /usr/local/bin/plak
+        /usr/local/bin/plak version
+
+        # Homebrew present on PATH: keep the Homebrew bin directory.
+        PATH="$1:$2:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+        PLAK_NO_PATH_PRELUDE=1 HOME="$3" TMPDIR="$4" FAKE_CURL_LOG="${10}" \
+        FAKE_TAGS_JSON="$6" FAKE_PAYLOAD="$7" \
+            bash "$8/install.sh" > "${11}" 2>&1
         test -x /opt/homebrew/bin/plak
         /opt/homebrew/bin/plak version
-    ' _ "$mac_bin" "$tmpdir/fakebin" "$tmpdir/home" "$tmpdir/tmp" "$mac_log" "$current_tags" "$current_payload" "$ROOT_DIR" "$mac_install_out" > "$tmpdir/mac.out" 2>&1; then
+    ' _ "$mac_bin" "$tmpdir/fakebin" "$tmpdir/home" "$tmpdir/tmp" "$mac_log" "$current_tags" "$current_payload" "$ROOT_DIR" "$mac_install_out" "$mac_log_brew" "$mac_install_out_brew" > "$tmpdir/mac.out" 2>&1; then
+        assert_contains "$mac_install_out" "Installed Plak to /usr/local/bin/plak" "macOS arm64 without Homebrew"
+        assert_contains "$mac_install_out_brew" "Installed Plak to /opt/homebrew/bin/plak" "macOS arm64 with Homebrew"
         assert_contains "$tmpdir/mac.out" "plak v${current_tag#v}" "macOS arm64 default path"
+        if grep -Fq 'is not in your PATH' "$mac_install_out"; then
+            fail "macOS arm64 without Homebrew warned about an unreachable default path"
+        fi
     else
         echo "release channel test: skipped macOS default-path check (mount namespace unavailable)" >&2
     fi

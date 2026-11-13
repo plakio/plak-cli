@@ -54,7 +54,7 @@ You can also install Plak directly with the installer script:
 curl -fsSL https://plak.sh/install | bash
 ```
 
-The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior.
+The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. On macOS arm64 the installer uses `/opt/homebrew/bin` only when that directory is already on `PATH`; otherwise it installs to `/usr/local/bin`. If the destination is not on `PATH`, it prints the line to add. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior.
 
 Install the Plak agent skill for Codex, Claude Code, OpenCode, Hermes, Pi, or the global agent skills directory:
 
