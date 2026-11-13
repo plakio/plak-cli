@@ -94,10 +94,15 @@ Set up a new WordPress site locally with Plak. Fetch and follow:
 https://plak.sh/agent-setup/prompt.md
 ```
 
-That URL serves [agent-setup/prompt.md](agent-setup/prompt.md), which contains
+That URL serves [agent-setup/cli/prompt.md](agent-setup/cli/prompt.md), which contains
 the exact install, verification, site-creation and safety steps for an agent.
 It can be served from `plak.sh` with a redirect to the raw file on `main`,
 like the existing `/install` redirect.
+
+The Plak.io/panel onboarding prompt lives at
+`https://plak.io/agent-setup/prompt.md` and maps to
+[agent-setup/panel/prompt.md](agent-setup/panel/prompt.md). It installs the
+CLI, connects the machine to the panel, and verifies the account.
 
 The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. On macOS arm64 the installer uses `/opt/homebrew/bin` only when that directory is already on `PATH`; otherwise it installs to `/usr/local/bin`. If the destination is not on `PATH`, it prints the line to add. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior.
 
