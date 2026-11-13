@@ -28,10 +28,16 @@ open https://plak.localhost
 ## Requirements
 
 - Bash 3.2 or newer (the macOS system Bash works)
+- Homebrew on macOS (used by `plak install` for `gum`, MariaDB and Mailpit)
 - `gum`
 - `ssh` and `ssh-keygen`
 - `frankenphp`, `mariadb`, `mailpit`, and `wp-cli` for local site management
 - `sudo` for writing to `/etc/hosts` when needed
+
+The universal installer installs the CLI and then offers to install the local
+stack with `plak install`. On macOS that step needs Homebrew, which the
+installer can install for you. For agents, CI and scripted machines the whole
+flow can run without prompts; see below.
 
 ## Installation
 
@@ -52,6 +58,32 @@ You can also install Plak directly with the installer script:
 
 ```bash
 curl -fsSL https://plak.sh/install | bash
+```
+
+By default the installer asks before installing Homebrew and the local stack.
+On macOS it resolves Homebrew first, places the CLI in Homebrew's bin
+directory, and then offers to run `plak install`. For agents, CI and other
+non-interactive machines:
+
+```bash
+# CLI + local stack, no prompts
+curl -fsSL https://plak.sh/install | PLAK_YES=1 bash
+
+# CLI only
+curl -fsSL https://plak.sh/install | PLAK_CLI_ONLY=1 bash
+```
+
+`PLAK_YES=1` installs Homebrew on macOS when it is needed for MariaDB, Mailpit
+or gum. The process may still ask for a sudo password; run it in a terminal or
+configure passwordless sudo for the agent. On Windows, run the command inside
+WSL with systemd enabled.
+
+Agent prompt:
+
+```text
+Install Plak CLI and its local stack with:
+curl -fsSL https://plak.sh/install | PLAK_YES=1 bash
+If sudo asks for a password, ask me to type it and do not store it.
 ```
 
 The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. On macOS arm64 the installer uses `/opt/homebrew/bin` only when that directory is already on `PATH`; otherwise it installs to `/usr/local/bin`. If the destination is not on `PATH`, it prints the line to add. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior.

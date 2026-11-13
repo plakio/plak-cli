@@ -314,7 +314,10 @@ main() {
     if [ "$PLAK_JSON" = "1" ] && [ "$wp_passthrough" = false ]; then
         new_args+=("--json")
     fi
-    set -- "${new_args[@]}"
+    # Bash 3.2 (macOS system Bash) treats "${array[@]}" as an unbound variable
+    # when the array is empty under `set -u`. The +expansion keeps both Bash 3.2
+    # and newer versions working, including the no-argument `plak` case.
+    set -- ${new_args[@]+"${new_args[@]}"}
 
     local command="${1:-help}"
     if [ "$#" -gt 0 ]; then
@@ -478,7 +481,8 @@ main() {
             plak_site_tailscale "$@"
             ;;
         status)
-            check_dependencies
+            # Status is diagnostic: it must run without the dependencies it
+            # reports on, including gum itself.
             plak_status "$@"
             ;;
         health)

@@ -69,7 +69,7 @@ plak_panel_srv_json_flag() {
     SRV_JSON=0
     local rest=()
     for a in "$@"; do case "$a" in --json) SRV_JSON=1 ;; *) rest+=("$a") ;; esac; done
-    SRV_ARGS=("${rest[@]}")
+    SRV_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_srv_read() {
@@ -102,7 +102,7 @@ plak_panel_srv_yes() {
     SRV_YES=0
     local rest=()
     for a in "$@"; do case "$a" in --yes|-y) SRV_YES=1 ;; *) rest+=("$a") ;; esac; done
-    SRV_ARGS=("${rest[@]}")
+    SRV_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_srv_service_op() {
@@ -245,9 +245,9 @@ plak_panel_server() {
     shift 2
     SRV_YES=0
     plak_panel_srv_args "$sel" "$@" || return 1
-    set -- "${SRV_ARGS[@]}"
+    set -- ${SRV_ARGS[@]+"${SRV_ARGS[@]}"}
     plak_panel_srv_json_flag "$@"
-    set -- "${SRV_ARGS[@]}"
+    set -- ${SRV_ARGS[@]+"${SRV_ARGS[@]}"}
     case "$sub" in
         service-list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/services" ;;
         service-restart) plak_panel_srv_service_op restart "$@" ;;
@@ -255,13 +255,13 @@ plak_panel_server() {
         wpcli-install) plak_panel_srv_wpcli_install "$@" ;;
         wpcli-uninstall) plak_panel_srv_yes "$@"; plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/wp-cli/uninstall" "" "$SRV_YES" "Uninstall WP-CLI on $SRV_SEL?" ;;
         php-info) plak_panel_srv_php info ;;
-        php-install) plak_panel_srv_yes "$@"; plak_panel_srv_php install "${SRV_ARGS[@]}" ;;
+        php-install) plak_panel_srv_yes "$@"; plak_panel_srv_php install ${SRV_ARGS[@]+"${SRV_ARGS[@]}"} ;;
         php-cli-set) plak_panel_srv_php cli-set "$@" ;;
         opcache-enable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache enable ;;
         opcache-disable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache disable ;;
         opcache-refresh) plak_panel_srv_yes "$@"; plak_panel_srv_opcache refresh ;;
         firewall-list) plak_panel_srv_firewall list ;;
-        firewall-add) plak_panel_srv_yes "$@"; plak_panel_srv_firewall add "${SRV_ARGS[@]}" ;;
+        firewall-add) plak_panel_srv_yes "$@"; plak_panel_srv_firewall add ${SRV_ARGS[@]+"${SRV_ARGS[@]}"} ;;
         firewall-del) plak_panel_srv_yes "$@"; plak_panel_srv_firewall del ;;
         users-list) plak_panel_srv_users list ;;
         users-add) plak_panel_srv_users add "$@" ;;

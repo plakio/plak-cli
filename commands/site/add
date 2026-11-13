@@ -154,7 +154,7 @@ PHP
             if [ -n "$multisite" ]; then
                 local network_flags=()
                 [ "$multisite" != subdomains ] || network_flags+=(--subdomains)
-                "${PLAK_WP_COMMAND[@]}" core multisite-convert "${network_flags[@]}" || exit 1
+                "${PLAK_WP_COMMAND[@]}" core multisite-convert ${network_flags[@]+"${network_flags[@]}"} || exit 1
                 printf '%s\n' "$multisite" > "$site_dir/.multisite-mode" || exit 1
             fi
             echo "   - Deleting default plugins (Hello Dolly, Akismet)..."

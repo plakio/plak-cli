@@ -27,12 +27,24 @@ Use Plak for local developer workflows around:
 If Plak CLI is not installed, use:
 
 ```bash
-# Via curl (macOS/Linux)
+# Via curl (macOS/Linux/WSL), interactive: asks before installing the stack
 curl -fsSL https://plak.sh/install | bash
+
+# Non-interactive (agents/CI): CLI + local stack, installs Homebrew on macOS
+curl -fsSL https://plak.sh/install | PLAK_YES=1 bash
+
+# CLI only, without the local stack
+curl -fsSL https://plak.sh/install | PLAK_CLI_ONLY=1 bash
 
 # Via Homebrew (macOS)
 brew install plakio/tap/plak-cli
 ```
+
+`PLAK_YES=1` installs Homebrew on macOS when needed and persists its
+`shellenv` for new shells. It may still need a sudo password. Run it in a
+terminal or configure passwordless sudo for the agent; do not store the
+password in the agent configuration. On Windows, run the command inside WSL
+with systemd enabled.
 
 Install this skill for supported agents:
 

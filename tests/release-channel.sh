@@ -318,6 +318,41 @@ assert_no_temps "$tmpdir/install" "successful installer"
 assert_no_temps "$tmpdir/tmp" "successful installer"
 grep -q '^600$' "$stat_log" || fail "downloaded script was not created with mode 0600"
 
+# A stale /opt/homebrew/bin/plak from older installers is removed when it is a
+# regular Plak script, but only outside the active destination.
+stale_dir="$tmpdir/stale-bin"
+stale_install="$tmpdir/stale-install"
+stale_uname="$tmpdir/stale-uname"
+mkdir -p "$stale_dir" "$stale_install" "$stale_uname"
+cp "$current_payload" "$stale_dir/plak"
+chmod 755 "$stale_dir/plak"
+cat > "$stale_uname/uname" <<'STALE_UNAME'
+#!/usr/bin/env bash
+case "${1:-}" in
+    -s) echo Darwin ;;
+    -m) echo arm64 ;;
+    *) echo Darwin ;;
+esac
+STALE_UNAME
+chmod +x "$stale_uname/uname"
+PATH="$stale_uname:$PATH" PLAK_CLI_ONLY=1 PLAK_INSTALL_DIR="$stale_install" \
+PLAK_STALE_PLAK_PATH="$stale_dir/plak" \
+FAKE_CURL_LOG="$tmpdir/stale.log" FAKE_TAGS_JSON="$current_tags" \
+FAKE_PAYLOAD="$current_payload" bash "$ROOT_DIR/install.sh" \
+    > "$tmpdir/stale.out" 2>&1 || fail "installer with a stale copy failed"
+[ ! -e "$stale_dir/plak" ] || fail "stale Plak script was not removed"
+assert_contains "$tmpdir/stale.out" "Removed the previous Plak installation" "stale copy removal message"
+
+# CLI-only mode installs the script and skips the dependency prompt.
+mkdir -p "$tmpdir/cli-only"
+PLAK_CLI_ONLY=1 PLAK_INSTALL_DIR="$tmpdir/cli-only" \
+FAKE_CURL_LOG="$tmpdir/cli-only.log" FAKE_TAGS_JSON="$current_tags" \
+FAKE_PAYLOAD="$current_payload" bash "$ROOT_DIR/install.sh" \
+    > "$tmpdir/cli-only.out" 2>&1 || fail "CLI-only installer failed"
+if grep -Fq 'local stack is not' "$tmpdir/cli-only.out"; then
+    fail "CLI-only installer mentioned the local stack"
+fi
+
 # Every API/download/validation failure leaves the previous executable intact.
 for case_name in api-403 api-401 api-network api-500 download-404 download-network download-partial download-truncated download-empty mismatch; do
     reset_install_prior
@@ -663,6 +698,14 @@ mac_log="$tmpdir/mac.log"
 mac_install_out="$tmpdir/mac-install.out"
 mac_log_brew="$tmpdir/mac-brew.log"
 mac_install_out_brew="$tmpdir/mac-brew-install.out"
+mac_brew_src="$tmpdir/mac-brew"
+cat > "$mac_brew_src" <<'MAC_BREW'
+#!/usr/bin/env bash
+if [ "${1:-}" = "shellenv" ]; then
+    echo 'export PATH="/opt/homebrew/bin:$PATH"'
+fi
+MAC_BREW
+chmod +x "$mac_brew_src"
 : > "$mac_log"
 : > "$mac_log_brew"
 if unshare -rm true 2>/dev/null; then
@@ -673,27 +716,32 @@ if unshare -rm true 2>/dev/null; then
         mount -t tmpfs tmpfs /usr/local
         mkdir -p /opt/homebrew/bin /usr/local/bin
 
-        # Homebrew absent: /opt/homebrew/bin is not on PATH, so the installer
-        # must use /usr/local/bin instead of leaving plak unreachable.
-        PATH="$1:$2:/usr/local/bin:/usr/bin:/bin" PLAK_NO_PATH_PRELUDE=1 \
-        HOME="$3" TMPDIR="$4" FAKE_CURL_LOG="$5" FAKE_TAGS_JSON="$6" \
-        FAKE_PAYLOAD="$7" bash "$8/install.sh" > "$9" 2>&1
+        # CLI-only without Homebrew: the installer must use /usr/local/bin
+        # instead of leaving plak unreachable.
+        PATH="$1:$2:/usr/local/bin:/usr/bin:/bin" PLAK_CLI_ONLY=1 \
+        PLAK_NO_PATH_PRELUDE=1 HOME="$3" TMPDIR="$4" FAKE_CURL_LOG="$5" \
+        FAKE_TAGS_JSON="$6" FAKE_PAYLOAD="$7" \
+            bash "$8/install.sh" > "$9" 2>&1
         test -x /usr/local/bin/plak
         /usr/local/bin/plak version
 
-        # Homebrew present on PATH: keep the Homebrew bin directory.
+        # Full install with Homebrew present: Homebrew is resolved before the
+        # CLI is placed, so the binary stays in the Homebrew bin directory.
+        cp "${12}" /opt/homebrew/bin/brew
+        chmod +x /opt/homebrew/bin/brew
         PATH="$1:$2:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-        PLAK_NO_PATH_PRELUDE=1 HOME="$3" TMPDIR="$4" FAKE_CURL_LOG="${10}" \
+        PLAK_NO_PATH_PRELUDE=1 PLAK_NO_SHELL_PROFILE=1 \
+        HOME="$3" TMPDIR="$4" FAKE_CURL_LOG="${10}" \
         FAKE_TAGS_JSON="$6" FAKE_PAYLOAD="$7" \
             bash "$8/install.sh" > "${11}" 2>&1
         test -x /opt/homebrew/bin/plak
         /opt/homebrew/bin/plak version
-    ' _ "$mac_bin" "$tmpdir/fakebin" "$tmpdir/home" "$tmpdir/tmp" "$mac_log" "$current_tags" "$current_payload" "$ROOT_DIR" "$mac_install_out" "$mac_log_brew" "$mac_install_out_brew" > "$tmpdir/mac.out" 2>&1; then
-        assert_contains "$mac_install_out" "Installed Plak to /usr/local/bin/plak" "macOS arm64 without Homebrew"
-        assert_contains "$mac_install_out_brew" "Installed Plak to /opt/homebrew/bin/plak" "macOS arm64 with Homebrew"
+    ' _ "$mac_bin" "$tmpdir/fakebin" "$tmpdir/home" "$tmpdir/tmp" "$mac_log" "$current_tags" "$current_payload" "$ROOT_DIR" "$mac_install_out" "$mac_log_brew" "$mac_install_out_brew" "$mac_brew_src" > "$tmpdir/mac.out" 2>&1; then
+        assert_contains "$mac_install_out" "Installed Plak to /usr/local/bin/plak" "macOS arm64 CLI-only without Homebrew"
+        assert_contains "$mac_install_out_brew" "Installed Plak to /opt/homebrew/bin/plak" "macOS arm64 full install with Homebrew"
         assert_contains "$tmpdir/mac.out" "plak v${current_tag#v}" "macOS arm64 default path"
         if grep -Fq 'is not in your PATH' "$mac_install_out"; then
-            fail "macOS arm64 without Homebrew warned about an unreachable default path"
+            fail "macOS arm64 CLI-only install warned about an unreachable default path"
         fi
     else
         echo "release channel test: skipped macOS default-path check (mount namespace unavailable)" >&2

@@ -22,6 +22,10 @@ The universal installer (`install.sh`, served by `https://plak.sh/install`) and 
 2. Download `https://raw.githubusercontent.com/plakio/plak-cli/<tag>/plak.sh` for that exact tag.
 3. Validate that the file is the compiled Bash script, that its embedded `PLAK_VERSION` matches the tag, and that it reports `plak v<version>`.
 4. Stage it on the destination filesystem and rename it into place only after validation.
+5. On macOS a full install resolves Homebrew before choosing the destination: it reuses an existing Homebrew even when it is not on `PATH`, asks before installing it when missing, and persists `brew shellenv` for new shells. The CLI then goes into Homebrew's bin directory. CLI-only installs skip this step.
+6. Optionally run `plak install` to install the local stack. The CLI is already in place at this point, so a stack failure never invalidates the installed executable.
+
+Non-interactive runs use `PLAK_YES=1` (or `--yes`). They install Homebrew on macOS when it is missing, pass `--yes` to `plak install`, and do not prompt. `PLAK_CLI_ONLY=1` (or `--cli-only`) keeps the CLI-only behavior.
 
 A download, API, or validation failure leaves the current executable untouched. There is deliberately **no fallback to `main` and no `releases/latest` lookup**.
 

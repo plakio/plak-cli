@@ -118,7 +118,7 @@ plak_core_one() (
     [[ "$multisite" = 0 || "$multisite" = 1 ]] || { plak_ui_error 'Could not determine single-site/network schema mode.'; return 1; }
     flags=()
     [[ "$multisite" != 1 && "$multisite" != true ]] || flags+=(--network)
-    "${PLAK_WP_COMMAND[@]}" core update-db "${flags[@]}" || return 1
+    "${PLAK_WP_COMMAND[@]}" core update-db ${flags[@]+"${flags[@]}"} || return 1
     effective=$("${PLAK_WP_COMMAND[@]}" core version) || return 1
     [ -n "$effective" ] || { plak_ui_error 'Effective version unavailable after update.'; return 1; }
     echo "$site.localhost: effective=$effective"

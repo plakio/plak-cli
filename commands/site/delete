@@ -74,7 +74,7 @@ plak_site_delete() {
     # --- Clean /etc/hosts entries ---
     local entries_exist=false
     local host
-    for host in "${hosts_to_remove[@]}"; do
+    for host in ${hosts_to_remove[@]+"${hosts_to_remove[@]}"}; do
         if grep -qE "^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$" /etc/hosts 2>/dev/null; then
             entries_exist=true
             break
@@ -84,7 +84,7 @@ plak_site_delete() {
     if $entries_exist; then
         echo "🧹 Removing /etc/hosts entries (requires sudo)..."
         local sed_args=()
-        for host in "${hosts_to_remove[@]}"; do
+        for host in ${hosts_to_remove[@]+"${hosts_to_remove[@]}"}; do
             sed_args+=(-e "/^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$/d")
         done
         # Use non-interactive sudo when we don't have a TTY (e.g., the dashboard's

@@ -314,7 +314,10 @@ main() {
     if [ "$PLAK_JSON" = "1" ] && [ "$wp_passthrough" = false ]; then
         new_args+=("--json")
     fi
-    set -- "${new_args[@]}"
+    # Bash 3.2 (macOS system Bash) treats "${array[@]}" as an unbound variable
+    # when the array is empty under `set -u`. The +expansion keeps both Bash 3.2
+    # and newer versions working, including the no-argument `plak` case.
+    set -- ${new_args[@]+"${new_args[@]}"}
 
     local command="${1:-help}"
     if [ "$#" -gt 0 ]; then
@@ -478,7 +481,8 @@ main() {
             plak_site_tailscale "$@"
             ;;
         status)
-            check_dependencies
+            # Status is diagnostic: it must run without the dependencies it
+            # reports on, including gum itself.
             plak_status "$@"
             ;;
         health)
@@ -3568,21 +3572,33 @@ source_config() {
 
 # Function to check for required dependencies
 check_dependencies() {
+    local pkg_cmd cmd
+    local -a missing=()
+
     # Check for Caddy/FrankenPHP
     if ! command -v "$CADDY_CMD" &> /dev/null && ! [ -x "$CADDY_CMD" ]; then
-        gum style --foreground red "❌ Caddy/FrankenPHP not found. Please run 'plak install'."
-        exit 1
+        missing+=("$CADDY_CMD")
     fi
 
     # Check for other dependencies
     for pkg_cmd in mariadb mailpit "wp:wp-cli" gum; do
-        local pkg=${pkg_cmd##*:}
-        local cmd=${pkg_cmd%%:*}
-        if ! command -v $cmd &> /dev/null; then
-            gum style --foreground red "❌ Dependency '$cmd' not found. Please run 'plak install'."
-            exit 1
+        cmd=${pkg_cmd%%:*}
+        if ! command -v "$cmd" &> /dev/null; then
+            missing+=("$cmd")
         fi
     done
+
+    [ "${#missing[@]}" -gt 0 ] || return 0
+
+    # Report without gum: gum may be one of the missing dependencies, and the
+    # old gum-only error path produced "gum: command not found" on a fresh Mac.
+    plak_ui_error "Missing dependencies: ${missing[*]}"
+    echo "Run 'plak install' to install them." >&2
+    if [ "$OS" = "macos" ] && ! plak_command_exists brew; then
+        echo "On macOS, 'plak install' needs Homebrew: https://brew.sh" >&2
+        echo "Or install it with the .pkg: https://github.com/Homebrew/brew/releases/latest" >&2
+    fi
+    exit 1
 }
 
 # --- Helper Functions ---
@@ -9573,14 +9589,14 @@ plak_panel_infra_json_flag() {
     INF_JSON=0
     local rest=()
     for a in "$@"; do case "$a" in --json) INF_JSON=1 ;; *) rest+=("$a") ;; esac; done
-    INF_ARGS=("${rest[@]}")
+    INF_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_infra_yes() {
     INF_YES=0
     local rest=()
     for a in "$@"; do case "$a" in --yes|-y) INF_YES=1 ;; *) rest+=("$a") ;; esac; done
-    INF_ARGS=("${rest[@]}")
+    INF_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_infra_read() {
@@ -9770,9 +9786,9 @@ plak_panel_infra() {
     shift 2
     INF_YES=0
     plak_panel_infra_args "$sel" "$@" || return 1
-    set -- "${INF_ARGS[@]}"
+    set -- ${INF_ARGS[@]+"${INF_ARGS[@]}"}
     plak_panel_infra_json_flag "$@"
-    set -- "${INF_ARGS[@]}"
+    set -- ${INF_ARGS[@]+"${INF_ARGS[@]}"}
     case "$sub" in
         db-list) plak_panel_infra_read "databases" ;;
         cron-list) plak_panel_infra_read "cronjobs" ;;
@@ -9782,13 +9798,13 @@ plak_panel_infra() {
         dns-list) plak_panel_infra_read "dns/records" ;;
         authuser-list) plak_panel_infra_read "auth-users" ;;
         db-add) plak_panel_infra_add databases "$@" ;;
-        db-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud databases del "${INF_ARGS[@]}" ;;
+        db-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud databases del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         cron-add) plak_panel_infra_add cronjobs "$@" ;;
-        cron-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud cronjobs del "${INF_ARGS[@]}" ;;
+        cron-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud cronjobs del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         cert-add) plak_panel_infra_add certificates "$@" ;;
-        cert-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud certificates del "${INF_ARGS[@]}" ;;
+        cert-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud certificates del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         redirect-add) plak_panel_infra_add redirects "$@" ;;
-        redirect-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud redirects del "${INF_ARGS[@]}" ;;
+        redirect-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud redirects del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         alias-add) plak_panel_infra_add aliases "$@" ;;
         alias-del)
             plak_panel_infra_yes "$@"
@@ -9807,16 +9823,16 @@ plak_panel_infra() {
             body=$(plak_panel_infra_dns_body "$@") || return 1
             plak_panel_infra_mutate PUT "dns/$rid" "$body"
             ;;
-        dns-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud dns del "${INF_ARGS[@]}" ;;
+        dns-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud dns del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         authuser-add) plak_panel_infra_add auth-users "$@" ;;
-        authuser-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud auth-users del "${INF_ARGS[@]}" ;;
+        authuser-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud auth-users del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh)
             plak_panel_infra_yes "$@"
             plak_panel_infra_cache "${sub#cache-}"
             ;;
         app-info|app-install|app-uninstall)
             plak_panel_infra_yes "$@"
-            plak_panel_infra_app "${sub#app-}" "${INF_ARGS[@]}"
+            plak_panel_infra_app "${sub#app-}" ${INF_ARGS[@]+"${INF_ARGS[@]}"}
             ;;
         *) plak_ui_error "Unknown infra command '$sub'."; return 1 ;;
     esac
@@ -10304,7 +10320,7 @@ plak_panel_srv_json_flag() {
     SRV_JSON=0
     local rest=()
     for a in "$@"; do case "$a" in --json) SRV_JSON=1 ;; *) rest+=("$a") ;; esac; done
-    SRV_ARGS=("${rest[@]}")
+    SRV_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_srv_read() {
@@ -10337,7 +10353,7 @@ plak_panel_srv_yes() {
     SRV_YES=0
     local rest=()
     for a in "$@"; do case "$a" in --yes|-y) SRV_YES=1 ;; *) rest+=("$a") ;; esac; done
-    SRV_ARGS=("${rest[@]}")
+    SRV_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_srv_service_op() {
@@ -10480,9 +10496,9 @@ plak_panel_server() {
     shift 2
     SRV_YES=0
     plak_panel_srv_args "$sel" "$@" || return 1
-    set -- "${SRV_ARGS[@]}"
+    set -- ${SRV_ARGS[@]+"${SRV_ARGS[@]}"}
     plak_panel_srv_json_flag "$@"
-    set -- "${SRV_ARGS[@]}"
+    set -- ${SRV_ARGS[@]+"${SRV_ARGS[@]}"}
     case "$sub" in
         service-list) plak_panel_srv_read "/api/v1/servers/$SRV_ID/services" ;;
         service-restart) plak_panel_srv_service_op restart "$@" ;;
@@ -10490,13 +10506,13 @@ plak_panel_server() {
         wpcli-install) plak_panel_srv_wpcli_install "$@" ;;
         wpcli-uninstall) plak_panel_srv_yes "$@"; plak_panel_srv_mutate DELETE "/api/v1/servers/$SRV_ID/wp-cli/uninstall" "" "$SRV_YES" "Uninstall WP-CLI on $SRV_SEL?" ;;
         php-info) plak_panel_srv_php info ;;
-        php-install) plak_panel_srv_yes "$@"; plak_panel_srv_php install "${SRV_ARGS[@]}" ;;
+        php-install) plak_panel_srv_yes "$@"; plak_panel_srv_php install ${SRV_ARGS[@]+"${SRV_ARGS[@]}"} ;;
         php-cli-set) plak_panel_srv_php cli-set "$@" ;;
         opcache-enable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache enable ;;
         opcache-disable) plak_panel_srv_yes "$@"; plak_panel_srv_opcache disable ;;
         opcache-refresh) plak_panel_srv_yes "$@"; plak_panel_srv_opcache refresh ;;
         firewall-list) plak_panel_srv_firewall list ;;
-        firewall-add) plak_panel_srv_yes "$@"; plak_panel_srv_firewall add "${SRV_ARGS[@]}" ;;
+        firewall-add) plak_panel_srv_yes "$@"; plak_panel_srv_firewall add ${SRV_ARGS[@]+"${SRV_ARGS[@]}"} ;;
         firewall-del) plak_panel_srv_yes "$@"; plak_panel_srv_firewall del ;;
         users-list) plak_panel_srv_users list ;;
         users-add) plak_panel_srv_users add "$@" ;;
@@ -10579,7 +10595,7 @@ plak_panel_wp_json_flag() {
     WP_JSON=0
     local rest=()
     for a in "$@"; do case "$a" in --json) WP_JSON=1 ;; *) rest+=("$a") ;; esac; done
-    WP_ARGS=("${rest[@]}")
+    WP_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_wp_read() {
@@ -10809,9 +10825,9 @@ plak_panel_wp() {
     [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"; return 1; }
     shift 2
     plak_panel_wp_args "$sel" "$@" || return 1
-    set -- "${WP_ARGS[@]}"
+    set -- ${WP_ARGS[@]+"${WP_ARGS[@]}"}
     plak_panel_wp_json_flag "$@" || return 1
-    set -- "${WP_ARGS[@]}"
+    set -- ${WP_ARGS[@]+"${WP_ARGS[@]}"}
     case "$sub" in
         wp-overview) plak_panel_wp_overview "$@" ;;
         wp-themes) plak_panel_wp_list themes "$@" ;;
@@ -12131,7 +12147,7 @@ PHP
             if [ -n "$multisite" ]; then
                 local network_flags=()
                 [ "$multisite" != subdomains ] || network_flags+=(--subdomains)
-                "${PLAK_WP_COMMAND[@]}" core multisite-convert "${network_flags[@]}" || exit 1
+                "${PLAK_WP_COMMAND[@]}" core multisite-convert ${network_flags[@]+"${network_flags[@]}"} || exit 1
                 printf '%s\n' "$multisite" > "$site_dir/.multisite-mode" || exit 1
             fi
             echo "   - Deleting default plugins (Hello Dolly, Akismet)..."
@@ -12606,7 +12622,7 @@ plak_core_one() (
     [[ "$multisite" = 0 || "$multisite" = 1 ]] || { plak_ui_error 'Could not determine single-site/network schema mode.'; return 1; }
     flags=()
     [[ "$multisite" != 1 && "$multisite" != true ]] || flags+=(--network)
-    "${PLAK_WP_COMMAND[@]}" core update-db "${flags[@]}" || return 1
+    "${PLAK_WP_COMMAND[@]}" core update-db ${flags[@]+"${flags[@]}"} || return 1
     effective=$("${PLAK_WP_COMMAND[@]}" core version) || return 1
     [ -n "$effective" ] || { plak_ui_error 'Effective version unavailable after update.'; return 1; }
     echo "$site.localhost: effective=$effective"
@@ -13159,7 +13175,7 @@ plak_site_delete() {
     # --- Clean /etc/hosts entries ---
     local entries_exist=false
     local host
-    for host in "${hosts_to_remove[@]}"; do
+    for host in ${hosts_to_remove[@]+"${hosts_to_remove[@]}"}; do
         if grep -qE "^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$" /etc/hosts 2>/dev/null; then
             entries_exist=true
             break
@@ -13169,7 +13185,7 @@ plak_site_delete() {
     if $entries_exist; then
         echo "🧹 Removing /etc/hosts entries (requires sudo)..."
         local sed_args=()
-        for host in "${hosts_to_remove[@]}"; do
+        for host in ${hosts_to_remove[@]+"${hosts_to_remove[@]}"}; do
             sed_args+=(-e "/^127\.0\.0\.1[[:space:]]+${host//./\\.}[[:space:]]*$/d")
         done
         # Use non-interactive sudo when we don't have a TTY (e.g., the dashboard's
@@ -14087,6 +14103,12 @@ install_dependency() {
 
     # 2. Attempt installation with the native package manager.
     if [ "$OS" == "macos" ]; then
+        if ! command -v brew &>/dev/null; then
+            echo "❌ Homebrew is required to install $cmd_name on macOS." >&2
+            echo "   Install it from https://brew.sh or with the .pkg at" >&2
+            echo "   https://github.com/Homebrew/brew/releases/latest, then run 'plak install' again." >&2
+            exit 1
+        fi
         if brew install "$brew_pkg"; then
             installed_successfully=true
         fi
@@ -14223,14 +14245,18 @@ plak_site_install() {
                 echo "   Then restart WSL with: wsl --shutdown"
                 echo ""
                 if $auto_yes; then
-                    echo "   (--yes set — continuing anyway.)"
-                else
-                    read -p "Do you want to continue anyway? (y/N) " -n 1 -r
-                    echo
-                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                        echo "🚫 Installation cancelled."
-                        exit 0
-                    fi
+                    echo "Error: systemd is not running in WSL. Plak needs it for MariaDB, Mailpit and FrankenPHP." >&2
+                    echo "Enable it in /etc/wsl.conf:" >&2
+                    echo "  [boot]" >&2
+                    echo "  systemd=true" >&2
+                    echo "Then run 'wsl --shutdown' from Windows and open WSL again." >&2
+                    exit 1
+                fi
+                read -p "Do you want to continue anyway? (y/N) " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo "🚫 Installation cancelled."
+                    exit 0
                 fi
             fi
         fi
@@ -16794,7 +16820,7 @@ plak_site_pull() {
         done
 
         local destination_choice
-        destination_choice=$(gum choose "New Site" "${wp_sites[@]}")
+        destination_choice=$(gum choose "New Site" ${wp_sites[@]+"${wp_sites[@]}"})
 
         if [ "$destination_choice" == "New Site" ]; then
             local proposed_name
@@ -18534,7 +18560,7 @@ plak_site_trust_nss() {
     while IFS= read -r -d '' db; do
         profile=$(dirname "$db")
         local seen=false item
-        for item in "${profiles[@]}"; do [ "$item" != "$profile" ] || seen=true; done
+        for item in ${profiles[@]+"${profiles[@]}"}; do [ "$item" != "$profile" ] || seen=true; done
         [ "$seen" = true ] || profiles+=("$profile")
     done < "$discovery"
     rm -f "$discovery"

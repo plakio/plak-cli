@@ -71,7 +71,7 @@ plak_panel_wp_json_flag() {
     WP_JSON=0
     local rest=()
     for a in "$@"; do case "$a" in --json) WP_JSON=1 ;; *) rest+=("$a") ;; esac; done
-    WP_ARGS=("${rest[@]}")
+    WP_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_wp_read() {
@@ -301,9 +301,9 @@ plak_panel_wp() {
     [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"; return 1; }
     shift 2
     plak_panel_wp_args "$sel" "$@" || return 1
-    set -- "${WP_ARGS[@]}"
+    set -- ${WP_ARGS[@]+"${WP_ARGS[@]}"}
     plak_panel_wp_json_flag "$@" || return 1
-    set -- "${WP_ARGS[@]}"
+    set -- ${WP_ARGS[@]+"${WP_ARGS[@]}"}
     case "$sub" in
         wp-overview) plak_panel_wp_overview "$@" ;;
         wp-themes) plak_panel_wp_list themes "$@" ;;

@@ -65,14 +65,14 @@ plak_panel_infra_json_flag() {
     INF_JSON=0
     local rest=()
     for a in "$@"; do case "$a" in --json) INF_JSON=1 ;; *) rest+=("$a") ;; esac; done
-    INF_ARGS=("${rest[@]}")
+    INF_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_infra_yes() {
     INF_YES=0
     local rest=()
     for a in "$@"; do case "$a" in --yes|-y) INF_YES=1 ;; *) rest+=("$a") ;; esac; done
-    INF_ARGS=("${rest[@]}")
+    INF_ARGS=(${rest[@]+"${rest[@]}"})
 }
 
 plak_panel_infra_read() {
@@ -262,9 +262,9 @@ plak_panel_infra() {
     shift 2
     INF_YES=0
     plak_panel_infra_args "$sel" "$@" || return 1
-    set -- "${INF_ARGS[@]}"
+    set -- ${INF_ARGS[@]+"${INF_ARGS[@]}"}
     plak_panel_infra_json_flag "$@"
-    set -- "${INF_ARGS[@]}"
+    set -- ${INF_ARGS[@]+"${INF_ARGS[@]}"}
     case "$sub" in
         db-list) plak_panel_infra_read "databases" ;;
         cron-list) plak_panel_infra_read "cronjobs" ;;
@@ -274,13 +274,13 @@ plak_panel_infra() {
         dns-list) plak_panel_infra_read "dns/records" ;;
         authuser-list) plak_panel_infra_read "auth-users" ;;
         db-add) plak_panel_infra_add databases "$@" ;;
-        db-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud databases del "${INF_ARGS[@]}" ;;
+        db-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud databases del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         cron-add) plak_panel_infra_add cronjobs "$@" ;;
-        cron-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud cronjobs del "${INF_ARGS[@]}" ;;
+        cron-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud cronjobs del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         cert-add) plak_panel_infra_add certificates "$@" ;;
-        cert-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud certificates del "${INF_ARGS[@]}" ;;
+        cert-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud certificates del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         redirect-add) plak_panel_infra_add redirects "$@" ;;
-        redirect-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud redirects del "${INF_ARGS[@]}" ;;
+        redirect-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud redirects del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         alias-add) plak_panel_infra_add aliases "$@" ;;
         alias-del)
             plak_panel_infra_yes "$@"
@@ -299,16 +299,16 @@ plak_panel_infra() {
             body=$(plak_panel_infra_dns_body "$@") || return 1
             plak_panel_infra_mutate PUT "dns/$rid" "$body"
             ;;
-        dns-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud dns del "${INF_ARGS[@]}" ;;
+        dns-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud dns del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         authuser-add) plak_panel_infra_add auth-users "$@" ;;
-        authuser-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud auth-users del "${INF_ARGS[@]}" ;;
+        authuser-del) plak_panel_infra_yes "$@"; plak_panel_infra_crud auth-users del ${INF_ARGS[@]+"${INF_ARGS[@]}"} ;;
         cache-info|cache-enable|cache-disable|cache-flush|cache-opcache-refresh)
             plak_panel_infra_yes "$@"
             plak_panel_infra_cache "${sub#cache-}"
             ;;
         app-info|app-install|app-uninstall)
             plak_panel_infra_yes "$@"
-            plak_panel_infra_app "${sub#app-}" "${INF_ARGS[@]}"
+            plak_panel_infra_app "${sub#app-}" ${INF_ARGS[@]+"${INF_ARGS[@]}"}
             ;;
         *) plak_ui_error "Unknown infra command '$sub'."; return 1 ;;
     esac

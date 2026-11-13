@@ -309,7 +309,7 @@ plak_site_pull() {
         done
 
         local destination_choice
-        destination_choice=$(gum choose "New Site" "${wp_sites[@]}")
+        destination_choice=$(gum choose "New Site" ${wp_sites[@]+"${wp_sites[@]}"})
 
         if [ "$destination_choice" == "New Site" ]; then
             local proposed_name

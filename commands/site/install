@@ -35,6 +35,12 @@ install_dependency() {
 
     # 2. Attempt installation with the native package manager.
     if [ "$OS" == "macos" ]; then
+        if ! command -v brew &>/dev/null; then
+            echo "❌ Homebrew is required to install $cmd_name on macOS." >&2
+            echo "   Install it from https://brew.sh or with the .pkg at" >&2
+            echo "   https://github.com/Homebrew/brew/releases/latest, then run 'plak install' again." >&2
+            exit 1
+        fi
         if brew install "$brew_pkg"; then
             installed_successfully=true
         fi
@@ -171,14 +177,18 @@ plak_site_install() {
                 echo "   Then restart WSL with: wsl --shutdown"
                 echo ""
                 if $auto_yes; then
-                    echo "   (--yes set — continuing anyway.)"
-                else
-                    read -p "Do you want to continue anyway? (y/N) " -n 1 -r
-                    echo
-                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                        echo "🚫 Installation cancelled."
-                        exit 0
-                    fi
+                    echo "Error: systemd is not running in WSL. Plak needs it for MariaDB, Mailpit and FrankenPHP." >&2
+                    echo "Enable it in /etc/wsl.conf:" >&2
+                    echo "  [boot]" >&2
+                    echo "  systemd=true" >&2
+                    echo "Then run 'wsl --shutdown' from Windows and open WSL again." >&2
+                    exit 1
+                fi
+                read -p "Do you want to continue anyway? (y/N) " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo "🚫 Installation cancelled."
+                    exit 0
                 fi
             fi
         fi

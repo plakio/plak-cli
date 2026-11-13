@@ -819,21 +819,33 @@ source_config() {
 
 # Function to check for required dependencies
 check_dependencies() {
+    local pkg_cmd cmd
+    local -a missing=()
+
     # Check for Caddy/FrankenPHP
     if ! command -v "$CADDY_CMD" &> /dev/null && ! [ -x "$CADDY_CMD" ]; then
-        gum style --foreground red "❌ Caddy/FrankenPHP not found. Please run 'plak install'."
-        exit 1
+        missing+=("$CADDY_CMD")
     fi
 
     # Check for other dependencies
     for pkg_cmd in mariadb mailpit "wp:wp-cli" gum; do
-        local pkg=${pkg_cmd##*:}
-        local cmd=${pkg_cmd%%:*}
-        if ! command -v $cmd &> /dev/null; then
-            gum style --foreground red "❌ Dependency '$cmd' not found. Please run 'plak install'."
-            exit 1
+        cmd=${pkg_cmd%%:*}
+        if ! command -v "$cmd" &> /dev/null; then
+            missing+=("$cmd")
         fi
     done
+
+    [ "${#missing[@]}" -gt 0 ] || return 0
+
+    # Report without gum: gum may be one of the missing dependencies, and the
+    # old gum-only error path produced "gum: command not found" on a fresh Mac.
+    plak_ui_error "Missing dependencies: ${missing[*]}"
+    echo "Run 'plak install' to install them." >&2
+    if [ "$OS" = "macos" ] && ! plak_command_exists brew; then
+        echo "On macOS, 'plak install' needs Homebrew: https://brew.sh" >&2
+        echo "Or install it with the .pkg: https://github.com/Homebrew/brew/releases/latest" >&2
+    fi
+    exit 1
 }
 
 # --- Helper Functions ---

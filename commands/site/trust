@@ -27,7 +27,7 @@ plak_site_trust_nss() {
     while IFS= read -r -d '' db; do
         profile=$(dirname "$db")
         local seen=false item
-        for item in "${profiles[@]}"; do [ "$item" != "$profile" ] || seen=true; done
+        for item in ${profiles[@]+"${profiles[@]}"}; do [ "$item" != "$profile" ] || seen=true; done
         [ "$seen" = true ] || profiles+=("$profile")
     done < "$discovery"
     rm -f "$discovery"
