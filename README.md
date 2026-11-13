@@ -86,6 +86,19 @@ curl -fsSL https://plak.sh/install | PLAK_YES=1 bash
 If sudo asks for a password, ask me to type it and do not store it.
 ```
 
+For a full setup that also creates a local WordPress site, the stable prompt
+is:
+
+```text
+Set up a new WordPress site locally with Plak. Fetch and follow:
+https://plak.sh/agent-setup/prompt.md
+```
+
+That URL serves [agent-setup/prompt.md](agent-setup/prompt.md), which contains
+the exact install, verification, site-creation and safety steps for an agent.
+It can be served from `plak.sh` with a redirect to the raw file on `main`,
+like the existing `/install` redirect.
+
 The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. On macOS arm64 the installer uses `/opt/homebrew/bin` only when that directory is already on `PATH`; otherwise it installs to `/usr/local/bin`. If the destination is not on `PATH`, it prints the line to add. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior.
 
 Install the Plak agent skill for Codex, Claude Code, OpenCode, Hermes, Pi, or the global agent skills directory:
