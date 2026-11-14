@@ -356,6 +356,15 @@ plak_php_runtime_php_version() {
     "$bin" php-cli -r 'echo PHP_VERSION;' 2>/dev/null
 }
 
+# Capture PHP startup diagnostics (for example a dynamic extension built for a
+# different PHP ABI) without mixing them into the version probe.
+plak_php_runtime_startup_warnings() {
+    local bin="${1:-frankenphp}" output
+    [ -x "$bin" ] || return 1
+    output=$("$bin" php-cli -r 'echo PHP_VERSION;' 2>&1 >/dev/null) || true
+    printf '%s\n' "$output" | grep -i 'PHP Startup' || true
+}
+
 plak_php_runtime_frankenphp_version() {
     local bin="${1:-frankenphp}"
     [ -x "$bin" ] || return 1

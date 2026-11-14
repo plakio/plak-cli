@@ -773,6 +773,81 @@ apt_stale_log="$tmpdir/apt-stale.log"
     grep -q -- '--reinstall' "$apt_stale_log" || exit 1
 ) || fail "apt stale-binary reinstall branch failed"
 
+# --- Patched PHP version but stale extension ABI: reinstall clears warnings ---
+apt_warn_bin="$tmpdir/apt-warn-bin"
+mkdir -p "$apt_warn_bin"
+cat > "$apt_warn_bin/frankenphp" <<'FRANK'
+#!/usr/bin/env bash
+case "${1:-}" in
+    version)
+        echo "FrankenPHP v1.13.2 PHP 8.5.12 Caddy v2.11.7 h1:fixture"
+        ;;
+    php-cli)
+        shift
+        [ "${1:-}" = "-r" ] && shift
+        case "${1:-}" in
+            *PHP_VERSION*)
+                if [ "${FAKE_PHP_STARTUP_WARNING:-0}" = "1" ]; then
+                    echo "PHP Warning:  PHP Startup: Unable to load dynamic library 'curl-zts-85' (tried: /usr/lib/php-zts/modules/curl-zts-85.so) in Unknown on line 0" >&2
+                fi
+                echo "8.5.12"
+                ;;
+            *get_loaded_extensions*) echo "mysqli,curl,fileinfo" ;;
+            *) echo "8.5.12" ;;
+        esac
+        ;;
+esac
+FRANK
+chmod +x "$apt_warn_bin/frankenphp"
+cat > "$apt_warn_bin/dpkg-query" <<'DPKG'
+#!/usr/bin/env bash
+printf 'php-zts-cli ii\nphp-zts-embed ii\nphp-zts-curl ii\nphp-zts-fileinfo ii\n'
+DPKG
+chmod +x "$apt_warn_bin/dpkg-query"
+apt_warn_log="$tmpdir/apt-warn.log"
+: > "$apt_warn_log"
+(
+    set +e
+    PATH="$apt_warn_bin:$BASE_PATH"
+    SUDO_CMD=""
+    PKG_MANAGER="apt"
+    CADDY_CMD="frankenphp"
+    FAKE_PHP_STARTUP_WARNING=1
+    export FAKE_PHP_STARTUP_WARNING
+    plak_php_runtime_channel() { echo apt-upstream; }
+    apt-get() {
+        printf '%s\n' "$*" >> "$apt_warn_log"
+        case " $* " in
+            *" --reinstall "*)
+                FAKE_PHP_STARTUP_WARNING=0
+                export FAKE_PHP_STARTUP_WARNING
+                ;;
+        esac
+        return 0
+    }
+    upgrade_frankenphp > "$tmpdir/upgrade-apt-warn.log" 2>&1
+    [ "$?" -eq 0 ] || { cat "$tmpdir/upgrade-apt-warn.log"; exit 1; }
+    grep -q 'PHP startup warnings detected' "$tmpdir/upgrade-apt-warn.log" || exit 1
+    grep -q 'reinstalling the runtime packages' "$tmpdir/upgrade-apt-warn.log" || exit 1
+    grep -q -- '--reinstall' "$apt_warn_log" || exit 1
+) || fail "apt extension-ABI reinstall branch failed"
+
+# --- Stale extension remains after reinstall: fail with diagnostics ---
+(
+    set +e
+    PATH="$apt_warn_bin:$BASE_PATH"
+    SUDO_CMD=""
+    PKG_MANAGER="apt"
+    CADDY_CMD="frankenphp"
+    FAKE_PHP_STARTUP_WARNING=1
+    export FAKE_PHP_STARTUP_WARNING
+    plak_php_runtime_channel() { echo apt-upstream; }
+    apt-get() { return 0; }
+    upgrade_frankenphp > "$tmpdir/upgrade-apt-warn-fail.log" 2>&1
+    [ "$?" -ne 0 ] || exit 1
+    grep -q 'PHP startup still cannot load' "$tmpdir/upgrade-apt-warn-fail.log" || exit 1
+) || fail "persistent PHP startup warning was not rejected"
+
 # --- plak upgrade decision: PHP 8.5.11 triggers even at FrankenPHP 1.13.2
 # plak_frankenphp_needs_update returns 0 when an update is required.
 plak_frankenphp_needs_update 1.13.2 1.13.2 1

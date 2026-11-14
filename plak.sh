@@ -2578,6 +2578,15 @@ plak_php_runtime_php_version() {
     "$bin" php-cli -r 'echo PHP_VERSION;' 2>/dev/null
 }
 
+# Capture PHP startup diagnostics (for example a dynamic extension built for a
+# different PHP ABI) without mixing them into the version probe.
+plak_php_runtime_startup_warnings() {
+    local bin="${1:-frankenphp}" output
+    [ -x "$bin" ] || return 1
+    output=$("$bin" php-cli -r 'echo PHP_VERSION;' 2>&1 >/dev/null) || true
+    printf '%s\n' "$output" | grep -i 'PHP Startup' || true
+}
+
 plak_php_runtime_frankenphp_version() {
     local bin="${1:-frankenphp}"
     [ -x "$bin" ] || return 1
@@ -19015,7 +19024,7 @@ plak_php_apt_runtime_packages() {
 # then require the embedded PHP (not just the FrankenPHP version) to be fixed.
 upgrade_frankenphp() {
     local frankenphp_path channel channel_label php_before brew_formula
-    local package
+    local package startup_before startup_after
     local -a apt_runtime_packages=(frankenphp)
     frankenphp_path=$(command -v frankenphp) || {
         gum style --foreground red "❌ FrankenPHP not found."
@@ -19025,9 +19034,14 @@ upgrade_frankenphp() {
     channel=$(plak_php_runtime_channel "$frankenphp_path")
     channel_label=$(plak_php_runtime_channel_label "$channel" "$frankenphp_path")
     php_before=$(plak_php_runtime_php_version "$frankenphp_path") || php_before=""
+    startup_before=$(plak_php_runtime_startup_warnings "$frankenphp_path") || startup_before=""
     PLAK_PHP_UNVERIFIED=false
     echo "   - Runtime: ${frankenphp_path} (${channel_label})"
     echo "   - Embedded PHP before update: ${php_before:-unknown}"
+    if [ -n "$startup_before" ]; then
+        echo "   - PHP startup warnings detected:"
+        printf '%s\n' "$startup_before" | sed 's/^/     /'
+    fi
 
     # A prefix path is only replaced automatically when it is provably not a
     # formula link. When ownership is ambiguous, ask before changing channel.
@@ -19139,13 +19153,16 @@ upgrade_frankenphp() {
     local php_after status_after rc=0
     php_after=$(plak_php_runtime_php_version "$frankenphp_path") || php_after=""
     status_after=$(plak_php_runtime_status "$frankenphp_path" "$channel") || rc=$?
+    startup_after=$(plak_php_runtime_startup_warnings "$frankenphp_path") || startup_after=""
     echo "   - Embedded PHP after update: ${php_after:-unknown} (${status_after})"
 
     # apt may report frankenphp as current while php-zts-cli/php-zts-embed are
-    # still old, or the on-disk binary may not match the package metadata. A
-    # forced reinstall replaces the package files without touching site data.
-    if [ "$rc" -ne 0 ] && [ "$channel" = apt-upstream ] && [ "$PKG_MANAGER" = apt ]; then
-        echo "   - The apt packages still report PHP ${php_after:-unknown}; reinstalling the runtime packages..."
+    # still old, the on-disk binary may not match the package metadata, or an
+    # extension .so may have been built for the previous PHP ABI. A forced
+    # reinstall replaces the package files without touching site data.
+    if [ "$channel" = apt-upstream ] && [ "$PKG_MANAGER" = apt ] &&
+        { [ "$rc" -ne 0 ] || [ -n "$startup_before" ] || [ -n "$startup_after" ]; }; then
+        echo "   - The apt packages still report PHP ${php_after:-unknown} or load stale modules; reinstalling the runtime packages..."
         if ! $SUDO_CMD apt-get install --reinstall -y "${apt_runtime_packages[@]}"; then
             gum style --foreground red "❌ Failed to reinstall FrankenPHP via apt."
             return 1
@@ -19153,7 +19170,17 @@ upgrade_frankenphp() {
         rc=0
         php_after=$(plak_php_runtime_php_version "$frankenphp_path") || php_after=""
         status_after=$(plak_php_runtime_status "$frankenphp_path" "$channel") || rc=$?
+        startup_after=$(plak_php_runtime_startup_warnings "$frankenphp_path") || startup_after=""
         echo "   - Embedded PHP after reinstall: ${php_after:-unknown} (${status_after})"
+    fi
+
+    if [ -n "$startup_after" ]; then
+        plak_ui_error 'PHP startup still cannot load one or more modules.'
+        printf '%s\n' "$startup_after" | sed 's/^/   /' >&2
+        echo "   Check package ownership and versions:" >&2
+        echo "     dpkg -S /usr/lib/php-zts/modules/*.so" >&2
+        echo "     dpkg-query -W -f='\${binary:Package} \${Version}\\n' 'php*-zts*'" >&2
+        return 1
     fi
 
     if [ "$rc" -eq 2 ]; then
@@ -19323,10 +19350,12 @@ plak_site_upgrade() {
     fi
 
     local frankenphp_bin local_frankenphp_version php_before php_status php_rc=0
+    local php_startup_warnings
     frankenphp_bin=$(command -v frankenphp)
     local_frankenphp_version=$(plak_php_runtime_frankenphp_version "$frankenphp_bin") || local_frankenphp_version=""
     php_before=$(plak_php_runtime_php_version "$frankenphp_bin") || php_before=""
     php_status=$(plak_php_runtime_status "$frankenphp_bin") || php_rc=$?
+    php_startup_warnings=$(plak_php_runtime_startup_warnings "$frankenphp_bin") || php_startup_warnings=""
 
     echo "   - Current FrankenPHP version:  ${local_frankenphp_version:-unknown}"
     echo "   - Embedded PHP version:        ${php_before:-unknown} (${php_status})"
@@ -19346,6 +19375,10 @@ plak_site_upgrade() {
     if plak_frankenphp_needs_update "$local_frankenphp_version" "$latest_frankenphp_version" "$php_rc"; then
         needs_upgrade="true"
         [ "$php_rc" -ne 0 ] && echo "   - The embedded PHP is not verified as patched; a runtime update is required."
+    fi
+    if [ -n "$php_startup_warnings" ]; then
+        needs_upgrade="true"
+        echo "   - PHP startup warnings detected; the runtime needs repair."
     fi
 
     if [ "$needs_upgrade" = "true" ]; then
