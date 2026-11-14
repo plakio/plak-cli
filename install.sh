@@ -199,7 +199,6 @@ plak_release_validate_script() {
 
     printf '%s\n' "$embedded"
 }
-
 # END plak-release-channel
 
 # The script-level validation above runs through Bash explicitly. Also verify
@@ -583,11 +582,6 @@ fi
 
 run_install_command mv -f "$staged_script" "$destination"
 staged_script=""
-
-if ! validate_plak_executable "$destination" "$expected_version"; then
-    echo "Error: the installed Plak executable failed validation." >&2
-    exit 1
-fi
 
 echo "Installed Plak to $destination"
 

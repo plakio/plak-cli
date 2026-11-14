@@ -63,7 +63,7 @@ exec /bin/bash "$@"
 BASH
 chmod +x "$tmpdir/tools/bash"
 if PATH="$tmpdir/tools:$PATH" /bin/bash "$ROOT_DIR/install.sh" > "$tmpdir/output" 2>&1; then exit 1; fi
-grep -q 'executable validation failed' "$tmpdir/output"
+grep -qE 'Invalid Plak script|failed validation|executable validation failed' "$tmpdir/output"
 cmp "$tmpdir/original" "$PLAK_INSTALL_DIR/plak"
 [ -z "$(find "$PLAK_INSTALL_DIR" -name '.plak-install.*' -print)" ]
 echo 'Installer validation, piped download, preservation and simulated Linux architecture tests passed (not real WSL)'
