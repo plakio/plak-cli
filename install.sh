@@ -201,6 +201,33 @@ plak_release_validate_script() {
 }
 # END plak-release-channel
 
+# The script-level validation above runs through Bash explicitly. Also verify
+# the staged executable through its shebang before replacing an existing Plak,
+# so a broken /usr/bin/env or interpreter cannot turn into a false success.
+validate_plak_executable() {
+    local executable="${1:-}" expected="${2:-}" result
+
+    if [ ! -x "$executable" ]; then
+        echo "Plak executable validation failed: ${executable:-missing} is not executable." >&2
+        return 1
+    fi
+    if ! result=$("$executable" version 2>&1); then
+        echo "Plak executable validation failed: '${executable}' could not run its version command." >&2
+        return 1
+    fi
+    case "$result" in
+        plak\ v[0-9]*.[0-9]*.[0-9]*) ;;
+        *)
+            echo "Plak executable validation failed: unexpected output '${result:-no output}'." >&2
+            return 1
+            ;;
+    esac
+    if [ -n "$expected" ] && [ "$result" != "plak v${expected}" ]; then
+        echo "Plak executable validation failed: expected 'plak v${expected}', received '${result}'." >&2
+        return 1
+    fi
+}
+
 DEV_MODE=false
 AUTO_YES=false
 CLI_ONLY=false
@@ -390,6 +417,10 @@ plak_path_has_dir() {
 }
 
 os_name=$(uname -s)
+case "$os_name" in
+    Linux|Darwin) ;;
+    *) echo "Unsupported operating system: $os_name (Plak requires Linux or macOS Bash)." >&2; exit 1 ;;
+esac
 
 # Resolve Homebrew before choosing the install directory. Otherwise a Mac
 # without Homebrew would get the CLI in /usr/local/bin and Homebrew later in
@@ -542,6 +573,10 @@ if ! cmp -s "$source_script" "$staged_script"; then
 fi
 if ! plak_release_validate_script "$staged_script" "$expected_version" >/dev/null; then
     echo "Error: the staged Plak script failed validation. Nothing was installed or replaced." >&2
+    exit 1
+fi
+if ! validate_plak_executable "$staged_script" "$expected_version"; then
+    echo "Error: the staged Plak executable failed validation. Nothing was installed or replaced." >&2
     exit 1
 fi
 
