@@ -147,6 +147,10 @@ plak_php_upgrade_blocked() {
             echo "   The package manager did not provide a verified fixed build." >&2
             echo "   Distribution packages can carry a backport without changing the" >&2
             echo "   upstream version; check the vendor security notice and changelog." >&2
+            if [ "$channel" = apt-upstream ] || [ "$channel" = dnf-upstream ]; then
+                echo "   The frankenphp package and the php-zts runtime packages are separate:" >&2
+                echo "   check that php-zts-cli/php-zts-embed are also upgraded, not only frankenphp." >&2
+            fi
             ;;
         brew)
             echo "   Homebrew still provides a PHP build below the upstream fixed release." >&2
@@ -196,10 +200,24 @@ plak_frankenphp_needs_update() {
     [ "$php_rc" -ne 0 ]
 }
 
+# Debian's frankenphp package links against libphp-zts-85.so, provided by the
+# php-zts-embed package. The fp package can be current while php-zts-cli and
+# php-zts-embed are still an older PHP (the deps are compatible across patch
+# releases), so upgrading only "frankenphp" leaves the embedded PHP stale.
+plak_php_apt_runtime_packages() {
+    command -v dpkg-query >/dev/null 2>&1 || return 0
+    # Only packages whose dpkg status is installed; a removed package that
+    # only left conffiles behind must not make apt-get fail the upgrade.
+    dpkg-query -W -f='${binary:Package} ${db:Status-Abbrev}\n' 'php*-zts*' 2>/dev/null |
+        awk '$2 == "ii" { print $1 }' || true
+}
+
 # Replace/update the FrankenPHP runtime through the channel that owns it and
 # then require the embedded PHP (not just the FrankenPHP version) to be fixed.
 upgrade_frankenphp() {
     local frankenphp_path channel channel_label php_before brew_formula
+    local package
+    local -a apt_runtime_packages=(frankenphp)
     frankenphp_path=$(command -v frankenphp) || {
         gum style --foreground red "❌ FrankenPHP not found."
         return 1
@@ -229,8 +247,12 @@ upgrade_frankenphp() {
                 gum style --foreground red "❌ Package-managed FrankenPHP needs apt, but the package manager is '${PKG_MANAGER:-unknown}'."
                 return 1
             fi
-            echo "   - Updating the apt package..."
-            if ! $SUDO_CMD apt-get update -qq || ! $SUDO_CMD apt-get install --only-upgrade -y frankenphp; then
+            while IFS= read -r package; do
+                [ -z "$package" ] || apt_runtime_packages+=("$package")
+            done < <(plak_php_apt_runtime_packages)
+            echo "   - Updating the apt packages (FrankenPHP + PHP ZTS)..."
+            if ! $SUDO_CMD apt-get update -qq ||
+                ! $SUDO_CMD apt-get install --only-upgrade -y "${apt_runtime_packages[@]}"; then
                 gum style --foreground red "❌ Failed to update FrankenPHP via apt."
                 return 1
             fi
@@ -319,6 +341,22 @@ upgrade_frankenphp() {
     php_after=$(plak_php_runtime_php_version "$frankenphp_path") || php_after=""
     status_after=$(plak_php_runtime_status "$frankenphp_path" "$channel") || rc=$?
     echo "   - Embedded PHP after update: ${php_after:-unknown} (${status_after})"
+
+    # apt may report frankenphp as current while php-zts-cli/php-zts-embed are
+    # still old, or the on-disk binary may not match the package metadata. A
+    # forced reinstall replaces the package files without touching site data.
+    if [ "$rc" -ne 0 ] && [ "$channel" = apt-upstream ] && [ "$PKG_MANAGER" = apt ]; then
+        echo "   - The apt packages still report PHP ${php_after:-unknown}; reinstalling the runtime packages..."
+        if ! $SUDO_CMD apt-get install --reinstall -y "${apt_runtime_packages[@]}"; then
+            gum style --foreground red "❌ Failed to reinstall FrankenPHP via apt."
+            return 1
+        fi
+        rc=0
+        php_after=$(plak_php_runtime_php_version "$frankenphp_path") || php_after=""
+        status_after=$(plak_php_runtime_status "$frankenphp_path" "$channel") || rc=$?
+        echo "   - Embedded PHP after reinstall: ${php_after:-unknown} (${status_after})"
+    fi
+
     if [ "$rc" -eq 2 ]; then
         case "$channel" in
             apt|dnf|package)

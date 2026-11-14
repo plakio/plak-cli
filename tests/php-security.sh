@@ -702,10 +702,17 @@ make_frankenphp "$tmpdir/fallback-asset" 8.5.12 1.13.1
     [ "$(plak_php_runtime_php_version "$intel_bin/frankenphp")" = "8.5.12" ] || exit 1
 ) || fail "Intel macOS fallback branch failed"
 
-# --- Package-managed runtime: equal FrankenPHP version is not enough ---
+# --- Package-managed runtime: upgrade php-zts packages, not only frankenphp ---
 apt_bin="$tmpdir/apt-bin"
 mkdir -p "$apt_bin"
 make_frankenphp "$apt_bin/frankenphp" 8.5.11 1.13.2
+cat > "$apt_bin/dpkg-query" <<'DPKG'
+#!/usr/bin/env bash
+printf 'php-zts-cli ii\nphp-zts-embed ii\n'
+DPKG
+chmod +x "$apt_bin/dpkg-query"
+apt_log="$tmpdir/apt.log"
+: > "$apt_log"
 (
     set +e
     PATH="$apt_bin:$BASE_PATH"
@@ -714,16 +721,57 @@ make_frankenphp "$apt_bin/frankenphp" 8.5.11 1.13.2
     CADDY_CMD="frankenphp"
     plak_php_runtime_channel() { echo apt-upstream; }
     apt-get() {
+        printf '%s\n' "$*" >> "$apt_log"
         if [ "${1:-}" = "install" ]; then
-            make_frankenphp "$apt_bin/frankenphp" 8.5.12 1.13.2
+            case " $* " in
+                *" php-zts-cli "*|*" php-zts-embed "*)
+                    make_frankenphp "$apt_bin/frankenphp" 8.5.12 1.13.2
+                    ;;
+            esac
         fi
         return 0
     }
     upgrade_frankenphp > "$tmpdir/upgrade-apt.log" 2>&1
     [ "$?" -eq 0 ] || { cat "$tmpdir/upgrade-apt.log"; exit 1; }
     [ "$(plak_php_runtime_php_version "$apt_bin/frankenphp")" = "8.5.12" ] || exit 1
-    grep -q 'Updating the apt package' "$tmpdir/upgrade-apt.log" || exit 1
+    grep -q 'Updating the apt packages' "$tmpdir/upgrade-apt.log" || exit 1
+    grep -q 'php-zts-cli' "$apt_log" || exit 1
+    grep -q 'php-zts-embed' "$apt_log" || exit 1
 ) || fail "package upgrade branch failed"
+
+# --- apt reports current packages but the binary is stale: force reinstall ---
+apt_stale_bin="$tmpdir/apt-stale-bin"
+mkdir -p "$apt_stale_bin"
+make_frankenphp "$apt_stale_bin/frankenphp" 8.5.11 1.13.2
+cat > "$apt_stale_bin/dpkg-query" <<'DPKG'
+#!/usr/bin/env bash
+printf 'php-zts-cli ii\nphp-zts-embed ii\n'
+DPKG
+chmod +x "$apt_stale_bin/dpkg-query"
+apt_stale_log="$tmpdir/apt-stale.log"
+: > "$apt_stale_log"
+(
+    set +e
+    PATH="$apt_stale_bin:$BASE_PATH"
+    SUDO_CMD=""
+    PKG_MANAGER="apt"
+    CADDY_CMD="frankenphp"
+    plak_php_runtime_channel() { echo apt-upstream; }
+    apt-get() {
+        printf '%s\n' "$*" >> "$apt_stale_log"
+        case " $* " in
+            *" --reinstall "*)
+                make_frankenphp "$apt_stale_bin/frankenphp" 8.5.12 1.13.2
+                ;;
+        esac
+        return 0
+    }
+    upgrade_frankenphp > "$tmpdir/upgrade-apt-stale.log" 2>&1
+    [ "$?" -eq 0 ] || { cat "$tmpdir/upgrade-apt-stale.log"; exit 1; }
+    [ "$(plak_php_runtime_php_version "$apt_stale_bin/frankenphp")" = "8.5.12" ] || exit 1
+    grep -q 'reinstalling the runtime packages' "$tmpdir/upgrade-apt-stale.log" || exit 1
+    grep -q -- '--reinstall' "$apt_stale_log" || exit 1
+) || fail "apt stale-binary reinstall branch failed"
 
 # --- plak upgrade decision: PHP 8.5.11 triggers even at FrankenPHP 1.13.2
 # plak_frankenphp_needs_update returns 0 when an update is required.

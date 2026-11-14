@@ -324,19 +324,28 @@ without touching the file.
 ```sh
 plak upgrade
 # or, explicitly:
-sudo apt-get update && sudo apt-get install --only-upgrade frankenphp
-sudo dnf upgrade frankenphp
+sudo apt-get update
+sudo apt-get install --only-upgrade -y frankenphp \
+  $(dpkg-query -W -f='${binary:Package}\n' 'php*-zts*' 2>/dev/null)
+sudo dnf upgrade -y frankenphp 'php*zts*'
 plak health php
 ```
 
 The package can keep a version such as `1.13.2+php85-1` while the embedded PHP
 changes. Plak therefore probes PHP and triggers a package update even when the
-FrankenPHP version already equals the latest release. If the package still
-reports a version below the floor, Plak reports `unverified` for a distribution
-package: check the vendor's security notice, package changelog/build date and
-USN/DSA/RHSA entry. A distribution backport can be fixed without a version bump,
-so the version string alone is neither proof of vulnerability nor proof of a
-fix.
+FrankenPHP version already equals the latest release. On Debian/Ubuntu the
+`frankenphp` package links against `libphp-zts-85.so`, which is provided by
+separate `php-zts-cli`/`php-zts-embed` packages. Upgrading only `frankenphp`
+can leave PHP 8.5.11 installed even when the frankenphp package version says
+`+php85.12-*`; Plak upgrades the installed `php-zts*` packages too. If the
+packages still report old PHP after that, `plak upgrade` forces a reinstall of
+those package files before failing.
+
+If the package still reports a version below the floor, Plak reports
+`unverified` for a distribution package: check the vendor's security notice,
+package changelog/build date and USN/DSA/RHSA entry. A distribution backport can
+be fixed without a version bump, so the version string alone is neither proof of
+vulnerability nor proof of a fix.
 
 ### Homebrew
 
