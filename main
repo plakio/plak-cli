@@ -208,6 +208,7 @@ HELP
             ;;
         health)
             echo "Usage: plak health [--json]"
+            echo "       plak health wordpress [--json]"
             echo "       plak health php [--json]"
             echo "       plak health opcache [--json]"
             echo "       plak health opcache set <directive>=<value>... [--restart]"
