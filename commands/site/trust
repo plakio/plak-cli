@@ -11,6 +11,59 @@ plak_site_caddy_root_cert() {
     [ -n "$root_cert" ] && [ -r "$root_cert" ] && printf '%s\n' "$root_cert"
 }
 
+# WSL runs Plak in Linux but the browser that opens plak.localhost usually runs
+# on Windows. Windows never reads the Linux trust store, so `frankenphp trust`
+# alone leaves Chrome/Edge showing "Not secure". Import the current Caddy root
+# into the current Windows user's Root store. `certutil -user` avoids UAC; the
+# PowerShell fallback covers systems where certutil.exe is not on PATH.
+plak_site_trust_wsl() {
+    local root_cert="$1" win_cert_path output rc=0
+    [ -n "$root_cert" ] && [ -r "$root_cert" ] || return 1
+
+    if ! command -v wslpath >/dev/null 2>&1; then
+        plak_ui_error 'WSL detected, but wslpath is unavailable; import the CA in Windows manually.'
+        return 1
+    fi
+    win_cert_path=$(wslpath -w "$root_cert" 2>/dev/null || true)
+    if [ -z "$win_cert_path" ]; then
+        plak_ui_error 'Could not translate the Caddy root path for Windows.'
+        return 1
+    fi
+
+    echo "   - Importing the Caddy root into Windows..."
+    if command -v certutil.exe >/dev/null 2>&1; then
+        output=$(certutil.exe -user -addstore -f Root "$win_cert_path" 2>&1) || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "   - ✅ Trusted for the current Windows user (Chrome/Edge)."
+            return 0
+        fi
+        echo "$output" | grep -vE '^$' || true
+    fi
+
+    if command -v powershell.exe >/dev/null 2>&1; then
+        local ps_path ps_script
+        ps_path=${win_cert_path//\'/\'\'}
+        ps_script=$(cat <<PS
+\$ErrorActionPreference = 'Stop'
+Get-ChildItem Cert:\\CurrentUser\\Root |
+    Where-Object { \$_.Subject -match 'Caddy Local Authority|Plak Local Authority' } |
+    Remove-Item -Force -Confirm:\$false -ErrorAction SilentlyContinue
+Import-Certificate -FilePath '$ps_path' -CertStoreLocation Cert:\\CurrentUser\\Root | Out-Null
+PS
+)
+        if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ps_script"; then
+            echo "   - ✅ Trusted for the current Windows user (Chrome/Edge)."
+            return 0
+        fi
+    fi
+
+    plak_ui_error 'Could not import the CA into Windows. Import it manually from PowerShell:'
+    echo "     Import-Certificate -FilePath \"$win_cert_path\" -CertStoreLocation Cert:\\CurrentUser\\Root"
+    echo "     For all Windows users, run this in an Administrator PowerShell:"
+    echo "     Import-Certificate -FilePath \"$win_cert_path\" -CertStoreLocation Cert:\\LocalMachine\\Root"
+    return 1
+}
+
 # Browser databases are always updated as the invoking user, never via sudo.
 plak_site_trust_nss() {
     local root_cert="$1" db profile prefix failed=0 discovery
@@ -170,6 +223,23 @@ plak_site_trust() {
         fi
     fi
 
+    # WSL: the browser usually runs on Windows and does not read Linux's trust
+    # store. Import the same root into the current Windows user's Root store.
+    if [ "$OS" = "linux" ] && [ "$IS_WSL" = true ]; then
+        local wsl_root_cert
+        wsl_root_cert=$(plak_site_caddy_root_cert) || wsl_root_cert=""
+        if [ -n "$wsl_root_cert" ] && [ -r "$wsl_root_cert" ]; then
+            if plak_site_trust_wsl "$wsl_root_cert"; then
+                echo "   - If Windows cannot resolve plak.localhost, run 'plak wsl-hosts'."
+            else
+                trust_rc=1
+            fi
+        else
+            plak_ui_error 'Could not locate current Caddy root.crt; Windows trust was not updated.'
+            trust_rc=1
+        fi
+    fi
+
     # Linuxbrew ships its own curl/OpenSSL with a CA bundle that ignores the
     # system store, so tools like wp-mcp fail with curl exit 60 even after the
     # root is trusted system-wide. Replace the managed root in Homebrew bundles.
@@ -188,7 +258,7 @@ plak_site_trust() {
             "✅ Local SSL trust installed" \
             "If a browser was open during this run, restart it to pick up the new CA."
     else
-        plak_ui_error 'Trust incomplete; see profile/bundle errors above. Close browsers and retry after resolving those errors.'
+        plak_ui_error 'Trust incomplete; see the errors above. Close browsers and retry after resolving them.'
     fi
     return "$trust_rc"
 }

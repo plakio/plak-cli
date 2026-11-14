@@ -121,6 +121,9 @@ plak_site_wsl_hosts() {
     gum style --foreground 212 "━━━ Step 2: Trust Caddy's CA Certificate ━━━"
     echo ""
     echo "To remove browser certificate warnings, install Caddy's root CA in Windows."
+    echo "Run 'plak trust' in WSL to do this automatically for the current Windows"
+    echo "user (Chrome/Edge). For all users, run the PowerShell command below as"
+    echo "Administrator."
     echo ""
 
     if [ -n "$windows_cert_path" ]; then

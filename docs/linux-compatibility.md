@@ -7,7 +7,16 @@ SQL schema names are bound parameters. `bash tests/db-linux.sh` exercises a real
 isolated MariaDB query with PDO disabled when the required tools are installed.
 
 Run `plak trust` **without sudo**, with Plak running. Only the system trust step
-escalates privileges. NSS writes use the invoking user's HOME, covering:
+escalates privileges. In WSL, `plak trust` also imports the current Caddy root
+into the current Windows user's `Root` store, because Windows browsers do not
+read the Linux trust store. This uses `certutil.exe -user` and falls back to
+`powershell.exe`; it does not require elevation. For all Windows users, import
+the same `root.crt` into `Cert:\LocalMachine\Root` from an Administrator
+PowerShell. Firefox on Windows keeps its own store: enable
+`security.enterprise_roots.enabled` or import the CA manually. Run
+`plak wsl-hosts` to update the Windows hosts file.
+
+NSS writes use the invoking user's HOME, covering:
 
 - Shared Chromium NSS databases (`~/.pki`, `~/.local/share/pki`).
 - Native Firefox profiles (`~/.mozilla/firefox`).

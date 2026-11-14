@@ -123,6 +123,7 @@ bash ./tests/install-db-port.sh
 bash ./tests/db-port.sh
 bash ./tests/path-prelude.sh
 bash ./tests/wsl-hosts.sh
+bash ./tests/trust-wsl.sh
 bash ./tests/trust-linuxbrew.sh
 bash ./tests/wp-cli.sh
 bash ./tests/agent.sh
