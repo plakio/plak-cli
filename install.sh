@@ -416,6 +416,29 @@ plak_path_has_dir() {
     return 1
 }
 
+# Choose the default CLI directory for the current platform. On Apple Silicon,
+# use Homebrew's actual prefix only when its bin directory is already on PATH.
+# This keeps a CLI-only install on /usr/local/bin when Homebrew is absent or its
+# shellenv was never loaded, avoiding two Plak copies that can shadow each other.
+plak_installer_choose_dir() {
+    local os="$1" arch="$2" prefix="" dir="/usr/local/bin"
+
+    if [ "$os" = "Darwin" ] && [ "$arch" = "arm64" ] &&
+        command -v brew >/dev/null 2>&1; then
+        prefix=$(brew --prefix 2>/dev/null) || prefix=""
+        if [ -n "$prefix" ] && [ -d "$prefix/bin" ] &&
+            plak_path_has_dir "$prefix/bin"; then
+            dir="$prefix/bin"
+        fi
+    fi
+    printf '%s\n' "$dir"
+}
+
+# Sourced by tests to exercise path selection without running the installer.
+if [ "${PLAK_INSTALLER_LIB_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 os_name=$(uname -s)
 case "$os_name" in
     Linux|Darwin) ;;
@@ -436,15 +459,7 @@ fi
 install_dir="${PLAK_INSTALL_DIR:-}"
 
 if [ -z "$install_dir" ]; then
-    install_dir="/usr/local/bin"
-
-    # For a full macOS install Homebrew is now on PATH, so Apple Silicon uses
-    # its bin directory. CLI-only installs without Homebrew stay in
-    # /usr/local/bin, which is part of the default macOS PATH.
-    if [ "$os_name" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] &&
-        plak_path_has_dir "/opt/homebrew/bin"; then
-        install_dir="/opt/homebrew/bin"
-    fi
+    install_dir=$(plak_installer_choose_dir "$os_name" "$(uname -m)")
 fi
 
 destination="$install_dir/plak"

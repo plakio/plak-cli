@@ -701,9 +701,10 @@ mac_install_out_brew="$tmpdir/mac-brew-install.out"
 mac_brew_src="$tmpdir/mac-brew"
 cat > "$mac_brew_src" <<'MAC_BREW'
 #!/usr/bin/env bash
-if [ "${1:-}" = "shellenv" ]; then
-    echo 'export PATH="/opt/homebrew/bin:$PATH"'
-fi
+case "${1:-}" in
+    --prefix) echo /opt/homebrew ;;
+    shellenv) echo 'export PATH="/opt/homebrew/bin:$PATH"' ;;
+esac
 MAC_BREW
 chmod +x "$mac_brew_src"
 : > "$mac_log"

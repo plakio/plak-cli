@@ -54,6 +54,32 @@ for arch in x86_64 aarch64; do
 done
 if PATH="$tmpdir/tools:$PATH" TEST_OS=Windows_NT bash "$ROOT_DIR/install.sh" > "$tmpdir/output" 2>&1; then exit 1; fi
 grep -q 'Unsupported operating system' "$tmpdir/output"
+
+# macOS arm64 Homebrew path selection, without running the installer.
+mac_home="$tmpdir/homebrew"
+mkdir -p "$mac_home/bin"
+cat > "$mac_home/bin/brew" <<'BREW'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --prefix) printf '%s\n' "$TEST_BREW_PREFIX" ;;
+    shellenv) printf 'export PATH="%s/bin:$PATH"\n' "$TEST_BREW_PREFIX" ;;
+esac
+BREW
+chmod +x "$mac_home/bin/brew"
+(
+    export PLAK_INSTALLER_LIB_ONLY=1 TEST_BREW_PREFIX="$mac_home"
+    export PATH="$mac_home/bin:/usr/bin:/bin"
+    source "$ROOT_DIR/install.sh"
+    selected=$(plak_installer_choose_dir Darwin arm64)
+    [ "$selected" = "$mac_home/bin" ] || exit 1
+    PATH="/usr/bin:/bin"
+    selected=$(plak_installer_choose_dir Darwin arm64)
+    [ "$selected" = "/usr/local/bin" ] || exit 1
+    selected=$(plak_installer_choose_dir Darwin x86_64)
+    [ "$selected" = "/usr/local/bin" ] || exit 1
+    selected=$(plak_installer_choose_dir Linux aarch64)
+    [ "$selected" = "/usr/local/bin" ] || exit 1
+) || { echo 'macOS Homebrew path selection failed' >&2; exit 1; }
 # Actual executable launch (not bash script invocation) must also work before
 # replacing the previous installation. Simulate a broken shebang interpreter.
 cat > "$tmpdir/tools/bash" <<'BASH'
