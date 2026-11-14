@@ -178,7 +178,7 @@ HELP
             if declare -F plak_skill_help >/dev/null 2>&1; then
                 plak_skill_help
             else
-                echo "Usage: plak skill install [codex|claude-code|opencode|hermes|pi|global|all]"
+                echo "Usage: plak skill install [--no-windows] [codex|claude-code|opencode|hermes|pi|global|all]"
             fi
             ;;
         connect|disconnect)
@@ -19785,37 +19785,55 @@ PLAK_WPMCP_SKILL_RAW_BASE="${PLAK_WPMCP_SKILL_RAW_BASE:-https://raw.githubuserco
 
 # Destination used by wp-mcp-cli's own `skill install` for a target.
 plak_skill_wpmcp_path() {
-    case "$1" in
-        codex) echo "$HOME/.codex/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        opencode) echo "$HOME/.config/opencode/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        hermes) echo "$HOME/.hermes/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        pi) echo "$HOME/.pi/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
-        global) echo "$HOME/.agents/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+    local target="$1" home_root="${2:-$HOME}" config_root
+    if [ "$home_root" = "$HOME" ]; then
+        config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+    else
+        config_root="$home_root/.config"
+    fi
+    case "$target" in
+        codex|global) echo "$home_root/.agents/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        claude-code|claude) echo "$home_root/.claude/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        opencode) echo "$config_root/opencode/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        hermes) echo "$home_root/.hermes/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
+        pi) echo "$home_root/.pi/skills/$PLAK_WPMCP_SKILL_NAME/SKILL.md" ;;
         *) return 1 ;;
     esac
 }
 
 # Install the official wp-mcp skill for one target. Prefer wp-mcp-cli's own
-# installer; fall back to fetching the pinned skill file. Never fails the Plak
-# skill install and never writes to targets the user did not select.
+# installer for the local environment; Windows/custom homes never delegate to a
+# WSL process. Never fails the Plak skill install and never writes to targets
+# the user did not select.
 plak_skill_install_wpmcp_companion() {
-    local target="$1" dest
-    if plak_command_exists wp-mcp; then
+    local target="$1" home_root="${2:-$HOME}" dest label="" downloaded
+    [ "$home_root" = "$HOME" ] || label=" (Windows)"
+    # Codex moved to ~/.agents/skills and OpenCode follows XDG; do not let an
+    # older wp-mcp-cli install the companion at a path our target does not use.
+    if [ "$home_root" = "$HOME" ] && [ "$target" != codex ] &&
+        { [ "$target" != opencode ] || [ -z "${XDG_CONFIG_HOME:-}" ]; } &&
+        plak_command_exists wp-mcp; then
         if wp-mcp skill install "$target" >/dev/null 2>&1; then
             return 0
         fi
     fi
-    dest=$(plak_skill_wpmcp_path "$target") || return 0
+    dest=$(plak_skill_wpmcp_path "$target" "$home_root") || return 0
     if ! plak_command_exists curl; then
         plak_ui_warn "curl is required to install the wp-mcp skill for $target."
         return 0
     fi
     mkdir -p "$(dirname "$dest")" || return 0
-    if curl -fsSL "$PLAK_WPMCP_SKILL_RAW_BASE/SKILL.md" -o "$dest"; then
-        plak_ui_success "Installed wp-mcp skill for $target: $dest"
+    downloaded=$(mktemp "$(dirname "$dest")/.SKILL.XXXXXX") || return 0
+    if curl -fsSL "$PLAK_WPMCP_SKILL_RAW_BASE/SKILL.md" -o "$downloaded" &&
+        [ -s "$downloaded" ] && mv "$downloaded" "$dest"; then
+        if [ -n "$label" ]; then
+            plak_skill_append_windows_note "$dest" ||
+                plak_ui_warn "Could not annotate the Windows wp-mcp skill for $target."
+        fi
+        plak_ui_success "Installed wp-mcp skill for $target$label: $dest"
     else
-        plak_ui_warn "Could not install the wp-mcp skill for $target."
+        rm -f "$downloaded"
+        plak_ui_warn "Could not install the wp-mcp skill for $target$label."
     fi
     return 0
 }
@@ -19823,30 +19841,101 @@ plak_skill_install_wpmcp_companion() {
 plak_skill_help() {
     cat <<'HELP'
 Usage:
-  plak skill install [codex|claude-code|opencode|hermes|pi|global|all]
+  plak skill install [--no-windows] [codex|claude-code|opencode|hermes|pi|global|all]
   plak skill help
 
 Installs the Plak CLI agent skill for supported coding agents.
 
 Targets:
-  codex        ~/.codex/skills/plak-cli/SKILL.md
+  codex        ~/.agents/skills/plak-cli/SKILL.md
   claude-code  ~/.claude/skills/plak-cli/SKILL.md
   opencode     ~/.config/opencode/skills/plak-cli/SKILL.md
   hermes       ~/.hermes/skills/plak-cli/SKILL.md
   pi           ~/.pi/agent/skills/plak-cli/SKILL.md
   global       ~/.agents/skills/plak-cli/SKILL.md
   all          Install for every agent-specific target (does not include global)
+
+In WSL, install also writes to the Windows user profile for codex,
+claude-code, opencode and global so native Windows agents can find it.
+Use --no-windows (or PLAK_SKILL_NO_WINDOWS=1) to install only in WSL.
+Set PLAK_WINDOWS_HOME to override the detected Windows profile.
+Hermes and Pi Windows discovery is not verified; they install only in WSL.
 HELP
 }
 
+# Resolve the Windows user profile once, then convert it to a WSL path.
+# cmd.exe can emit a UNC warning when the current directory is inside WSL, so
+# prefer a Windows directory and keep only the last drive-path line.
+plak_skill_windows_profile() {
+    local profile=""
+
+    if plak_command_exists cmd.exe; then
+        if [ -d /mnt/c ]; then
+            profile=$(cd /mnt/c && cmd.exe /d /c 'echo %USERPROFILE%' 2>/dev/null)
+        else
+            profile=$(cmd.exe /d /c 'echo %USERPROFILE%' 2>/dev/null)
+        fi
+        profile=$(printf '%s\n' "$profile" | tr -d '\r' |
+            awk '/^[A-Za-z]:\\/ { line=$0; sub(/[[:space:]]+$/, "", line) } END { print line }')
+        [ -n "$profile" ] && { printf '%s\n' "$profile"; return 0; }
+    fi
+
+    if plak_command_exists powershell.exe; then
+        profile=$(powershell.exe -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("UserProfile")' 2>/dev/null |
+            tr -d '\r' |
+            awk '/^[A-Za-z]:\\/ { line=$0; sub(/[[:space:]]+$/, "", line) } END { print line }')
+        [ -n "$profile" ] && { printf '%s\n' "$profile"; return 0; }
+    fi
+
+    return 1
+}
+
+plak_skill_windows_home() {
+    local win_home="${PLAK_WINDOWS_HOME:-}" unix_home
+
+    if [ -n "$win_home" ]; then
+        case "$win_home" in
+            [A-Za-z]:\\*)
+                plak_command_exists wslpath || return 1
+                unix_home=$(wslpath -u "$win_home" 2>/dev/null) || return 1
+                ;;
+            *)
+                unix_home="$win_home"
+                ;;
+        esac
+        [ -d "$unix_home" ] || return 1
+        printf '%s\n' "$unix_home"
+        return 0
+    fi
+
+    [ "${IS_WSL:-false}" = true ] || return 1
+    plak_command_exists wslpath || return 1
+    win_home=$(plak_skill_windows_profile) || return 1
+    unix_home=$(wslpath -u "$win_home" 2>/dev/null) || return 1
+    [ -d "$unix_home" ] || return 1
+    printf '%s\n' "$unix_home"
+}
+
 plak_skill_target_path() {
+    local target="$1" home_root="${2:-$HOME}" config_root
+    if [ "$home_root" = "$HOME" ]; then
+        config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+    else
+        config_root="$home_root/.config"
+    fi
+    case "$target" in
+        codex|global) echo "$home_root/.agents/skills/$PLAK_SKILL_NAME" ;;
+        claude-code|claude) echo "$home_root/.claude/skills/$PLAK_SKILL_NAME" ;;
+        opencode) echo "$config_root/opencode/skills/$PLAK_SKILL_NAME" ;;
+        hermes) echo "$home_root/.hermes/skills/$PLAK_SKILL_NAME" ;;
+        pi) echo "$home_root/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
+        *) return 1 ;;
+    esac
+}
+
+plak_skill_windows_supported() {
     case "$1" in
-        codex) echo "$HOME/.codex/skills/$PLAK_SKILL_NAME" ;;
-        claude-code|claude) echo "$HOME/.claude/skills/$PLAK_SKILL_NAME" ;;
-        opencode) echo "$HOME/.config/opencode/skills/$PLAK_SKILL_NAME" ;;
-        hermes) echo "$HOME/.hermes/skills/$PLAK_SKILL_NAME" ;;
-        pi) echo "$HOME/.pi/agent/skills/$PLAK_SKILL_NAME" ;;
-        global) echo "$HOME/.agents/skills/$PLAK_SKILL_NAME" ;;
+        codex|claude-code|opencode|global) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -19878,20 +19967,60 @@ plak_skill_source_dir() {
     fi
 }
 
-plak_skill_install_target() {
-    local target="$1" dest source_dir
-    dest=$(plak_skill_target_path "$target") || return 1
+# Add the WSL execution boundary to the Windows copy. Idempotent: remove a
+# previous copy of this section before appending the current one.
+plak_skill_append_windows_note() {
+    local skill_file="$1" marker="## Native Windows host with Plak in WSL" tmp
+    [ -f "$skill_file" ] || return 1
+    tmp=$(mktemp "$(dirname "$skill_file")/.SKILL.XXXXXX") || return 1
+    if ! awk -v marker="$marker" '
+        $0 == marker { skip = 1; next }
+        skip && /^## / { skip = 0 }
+        !skip { print }
+    ' "$skill_file" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    cat >> "$tmp" <<'WINDOWS'
 
-    mkdir -p "$dest"
+## Native Windows host with Plak in WSL
+
+This copy is for an agent running natively on Windows while Plak and wp-mcp run
+inside WSL. Run them through WSL, for example:
+
+```bash
+wsl.exe -d <distribution> -- bash -lc 'plak status'
+```
+
+Identify the distribution with `wsl.exe --list --quiet`. Confirm `command -v plak`
+inside that shell first. Do not run Plak or wp-mcp as native Windows executables
+or assume Windows paths are Linux paths. This skill copy does not configure
+cross-environment MCP or credentials; those must be set up separately.
+WINDOWS
+    mv "$tmp" "$skill_file"
+}
+
+plak_skill_install_target() {
+    local target="$1" home_root="${2:-$HOME}" dest source_dir label="" downloaded
+    dest=$(plak_skill_target_path "$target" "$home_root") || return 1
+    [ "$home_root" = "$HOME" ] || label=" (Windows)"
+
+    mkdir -p "$dest" || { plak_ui_error "Cannot create skill destination: $dest"; return 1; }
 
     if source_dir=$(plak_skill_source_dir); then
-        cp -R "$source_dir/." "$dest/"
+        cp -R "$source_dir/." "$dest/" || { plak_ui_error "Cannot copy skill to $dest"; return 1; }
     else
         if ! plak_command_exists curl; then
             plak_ui_error "curl is required to download the Plak skill."
             return 1
         fi
-        curl -fsSL "$PLAK_SKILL_RAW_BASE/SKILL.md" -o "$dest/SKILL.md"
+        downloaded=$(mktemp "$dest/.SKILL.XXXXXX") || return 1
+        if ! curl -fsSL "$PLAK_SKILL_RAW_BASE/SKILL.md" -o "$downloaded" ||
+            [ ! -s "$downloaded" ] || ! mv "$downloaded" "$dest/SKILL.md"; then
+            rm -f "$downloaded"
+            plak_ui_error "Could not download skill for $target; existing SKILL.md was preserved."
+            return 1
+        fi
     fi
 
     if [ ! -f "$dest/SKILL.md" ]; then
@@ -19899,8 +20028,15 @@ plak_skill_install_target() {
         return 1
     fi
 
-    plak_ui_success "Installed Plak skill for $target: $dest/SKILL.md"
-    plak_skill_install_wpmcp_companion "$target"
+    if [ -n "$label" ]; then
+        plak_skill_append_windows_note "$dest/SKILL.md" || {
+            plak_ui_error "Could not annotate the Windows skill at $dest/SKILL.md."
+            return 1
+        }
+    fi
+
+    plak_ui_success "Installed Plak skill for $target$label: $dest/SKILL.md"
+    plak_skill_install_wpmcp_companion "$target" "$home_root"
 }
 
 plak_skill_prompt_targets() {
@@ -19967,6 +20103,9 @@ plak_skill_prompt_targets() {
 
 plak_skill_install() {
     local targets=() arg normalized target failed=false
+    local install_windows=true windows_home=""
+
+    [ "${PLAK_SKILL_NO_WINDOWS:-0}" = "1" ] && install_windows=false
 
     if [ "$#" -eq 0 ]; then
         while IFS= read -r target; do
@@ -19978,6 +20117,9 @@ plak_skill_install() {
                 --help|-h)
                     plak_skill_help
                     return 0
+                    ;;
+                --no-windows)
+                    install_windows=false
                     ;;
                 *)
                     if ! normalized=$(plak_skill_normalize_target "$arg"); then
@@ -20000,6 +20142,16 @@ plak_skill_install() {
         return 0
     fi
 
+    if [ "$install_windows" = true ] &&
+        { [ "${IS_WSL:-false}" = true ] || [ -n "${PLAK_WINDOWS_HOME:-}" ]; }; then
+        windows_home=$(plak_skill_windows_home) || windows_home=""
+        if [ -z "$windows_home" ]; then
+            plak_ui_warn 'Windows user profile is not reachable; installing only in the current Linux/WSL home.'
+            plak_ui_warn 'Set PLAK_WINDOWS_HOME or enable cmd.exe/wslpath interop; use --no-windows to silence this warning.'
+        fi
+    fi
+    [ "$windows_home" = "$HOME" ] && windows_home=""
+
     local seen=","
     for target in "${targets[@]}"; do
         case "$seen" in
@@ -20008,6 +20160,15 @@ plak_skill_install() {
         seen="$seen$target,"
         if ! plak_skill_install_target "$target"; then
             failed=true
+        fi
+        if [ -n "$windows_home" ]; then
+            if plak_skill_windows_supported "$target"; then
+                if ! plak_skill_install_target "$target" "$windows_home"; then
+                    failed=true
+                fi
+            else
+                plak_ui_warn "Windows discovery is not verified for $target; installed only in WSL."
+            fi
         fi
     done
 

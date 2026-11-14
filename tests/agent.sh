@@ -363,7 +363,7 @@ exit 0
 WPMCP
 chmod +x "$HOME/.local/bin/wp-mcp"
 : > "$WPMCP_LOG"
-./plak.sh skill install opencode >/dev/null 2>&1 || fail 'skill install failed'
+./plak.sh skill install --no-windows opencode >/dev/null 2>&1 || fail 'skill install failed'
 grep -q 'skill install opencode' "$WPMCP_LOG" || fail 'wp-mcp companion skill was not delegated for the selected target'
 [ ! -e "$HOME/.codex/skills/wp-mcp/SKILL.md" ] || fail 'wrote the wp-mcp skill to an unselected target'
 
@@ -371,7 +371,7 @@ grep -q 'skill install opencode' "$WPMCP_LOG" || fail 'wp-mcp companion skill wa
 rm -f "$HOME/.local/bin/wp-mcp"
 hash -r
 : > "$CURL_LOG"
-./plak.sh skill install opencode >/dev/null 2>&1 || fail 'skill install fallback failed'
+./plak.sh skill install --no-windows opencode >/dev/null 2>&1 || fail 'skill install fallback failed'
 [ -f "$HOME/.config/opencode/skills/wp-mcp/SKILL.md" ] || fail 'wp-mcp skill fallback file missing'
 grep -q 'wp-mcp-cli/v0.1.9/skills/wp-mcp/SKILL.md' "$CURL_LOG" || fail 'wp-mcp skill fallback was not pinned to a release'
 [ ! -e "$HOME/.codex/skills/wp-mcp/SKILL.md" ] || fail 'fallback wrote to an unselected target'

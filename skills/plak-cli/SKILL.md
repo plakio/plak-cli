@@ -49,8 +49,13 @@ with systemd enabled.
 Install this skill for supported agents:
 
 ```bash
-plak skill install [codex|claude-code|opencode|hermes|pi|global|all]
+plak skill install [--no-windows] [codex|claude-code|opencode|hermes|pi|global|all]
 ```
+
+On WSL, this also installs into the Windows user profile for `codex`,
+`claude-code`, `opencode`, and `global`, so native Windows agents can discover
+it. Use `--no-windows` to install only in WSL. Hermes and Pi are installed only
+in WSL because their Windows discovery paths are not verified.
 
 Hermes installs to `~/.hermes/skills/plak-cli/SKILL.md`.
 

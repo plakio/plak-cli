@@ -126,6 +126,19 @@ plak skill install all
 
 `all` installs agent-specific targets only (`codex`, `claude-code`, `opencode`, `hermes`, and `pi`). Use `global` explicitly to install into `~/.agents/skills`.
 
+In WSL, `plak skill install` installs in both the WSL home and the Windows
+user profile for `codex`, `claude-code`, `opencode`, and `global`, so agents
+running natively on Windows can discover the skill. Use `--no-windows` (or
+`PLAK_SKILL_NO_WINDOWS=1`) to keep the install local. Windows discovery is not
+verified for Hermes and Pi; those targets install only in WSL. If Windows is
+not reachable, Plak installs locally and says so.
+
+Codex now uses its current user discovery root, `~/.agents/skills`. The Windows
+copy includes a short note explaining how to invoke Plak through
+`wsl.exe -d <distribution> -- bash -lc 'plak ...'`. See
+[agent skills from WSL](docs/skills-wsl.md) for the destination table,
+`PLAK_WINDOWS_HOME`, and limitations.
+
 For local development, Plak can also install/check the local site stack:
 
 ```bash
