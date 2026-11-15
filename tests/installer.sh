@@ -80,6 +80,32 @@ chmod +x "$mac_home/bin/brew"
     selected=$(plak_installer_choose_dir Linux aarch64)
     [ "$selected" = "/usr/local/bin" ] || exit 1
 ) || { echo 'macOS Homebrew path selection failed' >&2; exit 1; }
+
+# Homebrew requires the Xcode Command Line Tools. An installed toolchain is
+# accepted silently; when it is missing, non-interactive runs fail with the
+# exact command instead of starting Apple's GUI installer and blocking.
+mkdir -p "$tmpdir/clt"
+cat > "$tmpdir/clt/xcode-select" <<'XCODE'
+#!/usr/bin/env bash
+case "${1:-}" in
+    -p)
+        [ "${TEST_CLT_INSTALLED:-0}" = "1" ] || exit 1
+        echo /Library/Developer/CommandLineTools
+        ;;
+esac
+XCODE
+chmod +x "$tmpdir/clt/xcode-select"
+(
+    PLAK_INSTALLER_LIB_ONLY=1
+    source "$ROOT_DIR/install.sh"
+    PATH="$tmpdir/clt:/usr/bin:/bin"
+    export TEST_CLT_INSTALLED=1
+    plak_installer_ensure_xcode_clt || exit 1
+    AUTO_YES=true
+    export TEST_CLT_INSTALLED=0
+    if plak_installer_ensure_xcode_clt > "$tmpdir/clt-missing.out" 2>&1; then exit 1; fi
+) || { echo 'Xcode Command Line Tools handling failed' >&2; exit 1; }
+grep -q "xcode-select --install" "$tmpdir/clt-missing.out"
 # Actual executable launch (not bash script invocation) must also work before
 # replacing the previous installation. Simulate a broken shebang interpreter.
 cat > "$tmpdir/tools/bash" <<'BASH'

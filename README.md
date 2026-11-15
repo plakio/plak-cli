@@ -35,9 +35,10 @@ open https://plak.localhost
 - `sudo` for writing to `/etc/hosts` when needed
 
 The universal installer installs the CLI and then offers to install the local
-stack with `plak install`. On macOS that step needs Homebrew, which the
-installer can install for you. For agents, CI and scripted machines the whole
-flow can run without prompts; see below.
+stack with `plak install`. On macOS that step needs Homebrew and the Xcode
+Command Line Tools it requires; the installer can set both up for you. If the
+stack cannot be set up, it offers to install just the CLI. For agents, CI and
+scripted machines the whole flow can run without prompts; see below.
 
 ## Installation
 
@@ -75,7 +76,9 @@ curl -fsSL https://plak.sh/install | PLAK_CLI_ONLY=1 bash
 
 `PLAK_YES=1` installs Homebrew on macOS when it is needed for MariaDB, Mailpit
 or gum. The process may still ask for a sudo password; run it in a terminal or
-configure passwordless sudo for the agent. On Windows, run the command inside
+configure passwordless sudo for the agent. On a fresh Mac, install the Xcode
+Command Line Tools first with `xcode-select --install`, because Apple's GUI
+installer cannot finish non-interactively. On Windows, run the command inside
 WSL with systemd enabled.
 
 Agent prompt:

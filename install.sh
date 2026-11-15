@@ -280,6 +280,20 @@ plak_installer_confirm() {
     return 1
 }
 
+# For prerequisites of an action the user already approved: accepting with
+# Enter keeps the flow moving without hiding the extra download.
+plak_installer_confirm_yes() {
+    local prompt="$1" answer
+    printf '%s [Y/n] ' "$prompt" > /dev/tty 2>/dev/null || return 1
+    if ! IFS= read -r answer < /dev/tty 2>/dev/null; then
+        return 1
+    fi
+    case "$answer" in
+        [nN]|[nN][oO]) return 1 ;;
+    esac
+    return 0
+}
+
 # Use Homebrew already installed outside PATH (the shell profile was never
 # configured), or in a non-default prefix. `brew shellenv` fixes this process.
 plak_installer_load_homebrew() {
@@ -361,6 +375,45 @@ plak_installer_run_homebrew() {
     )
 }
 
+# Homebrew cannot run without the Xcode Command Line Tools, and a fresh Mac
+# does not have them. `xcode-select --install` opens a GUI installer, so guide
+# the user through it and wait instead of aborting after they agreed to install
+# Homebrew. Non-interactive runs cannot complete that dialog and fail early.
+plak_installer_ensure_xcode_clt() {
+    if command -v xcode-select >/dev/null 2>&1 &&
+        xcode-select -p >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo ""
+    echo "Homebrew requires the Xcode Command Line Tools, and they are not installed."
+
+    if [ "$AUTO_YES" = true ] || ! plak_installer_can_prompt ||
+        ! plak_installer_confirm_yes "Install the Xcode Command Line Tools now?"; then
+        echo "Run 'xcode-select --install', finish the installer, then rerun this installer." >&2
+        return 1
+    fi
+
+    echo "Requesting the Command Line Tools installation..."
+    # An error here usually means the installer is already running, which the
+    # wait below still covers, so it is not fatal on its own.
+    if ! xcode-select --install 2>&1; then
+        echo "Could not request them automatically. If no installer dialog opens, run 'xcode-select --install' yourself."
+    fi
+
+    echo "Finish the installation in the macOS dialog, then come back to this terminal."
+    while ! xcode-select -p >/dev/null 2>&1; do
+        printf 'Press Enter when it has finished... ' > /dev/tty
+        IFS= read -r _ < /dev/tty || return 1
+        if ! xcode-select -p >/dev/null 2>&1; then
+            echo "The Command Line Tools are still installing. Wait for the dialog to finish and try again."
+        fi
+    done
+
+    echo "Xcode Command Line Tools are installed."
+    return 0
+}
+
 plak_installer_ensure_homebrew() {
     if plak_installer_load_homebrew; then
         plak_installer_persist_homebrew
@@ -388,10 +441,7 @@ plak_installer_ensure_homebrew() {
         echo "Error: installing Homebrew requires sudo. Run the installer in a terminal, or configure passwordless sudo for the agent." >&2
         return 1
     fi
-    if ! command -v xcode-select >/dev/null 2>&1 ||
-        ! xcode-select -p >/dev/null 2>&1; then
-        echo "Error: Homebrew requires the Xcode Command Line Tools." >&2
-        echo "Run 'xcode-select --install', finish the installer, then rerun this installer." >&2
+    if ! plak_installer_ensure_xcode_clt; then
         return 1
     fi
 
@@ -451,8 +501,19 @@ esac
 # CLI-only installs intentionally skip this and stay in the default PATH.
 if [ "$os_name" = "Darwin" ] && [ "$CLI_ONLY" != true ]; then
     if ! plak_installer_ensure_homebrew; then
-        echo "Nothing was installed. Re-run with PLAK_CLI_ONLY=1 to install only the CLI." >&2
-        exit 1
+        # The CLI itself does not need Homebrew. Offer a usable installation
+        # instead of ending with nothing after the user already agreed.
+        install_cli_only=false
+        if [ "$AUTO_YES" != true ] && plak_installer_can_prompt &&
+            plak_installer_confirm "Install only the Plak CLI for now?"; then
+            install_cli_only=true
+        fi
+        if [ "$install_cli_only" != true ]; then
+            echo "Nothing was installed. Re-run with PLAK_CLI_ONLY=1 to install only the CLI." >&2
+            exit 1
+        fi
+        echo "Installing only the Plak CLI. Run this installer again once Homebrew is available to add the local stack."
+        CLI_ONLY=true
     fi
 fi
 
