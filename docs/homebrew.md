@@ -24,6 +24,7 @@ The universal installer (`install.sh`, served by `https://plak.sh/install`) and 
 4. Stage it on the destination filesystem and rename it into place only after validation.
 5. On macOS a full install resolves Homebrew before choosing the destination: it reuses an existing Homebrew even when it is not on `PATH`, asks before installing it when missing, installs the Xcode Command Line Tools it requires (waiting for Apple's GUI installer), and persists `brew shellenv` for new shells. The CLI then goes into Homebrew's bin directory. CLI-only installs skip this step. If Homebrew cannot be set up, an interactive run offers to install only the CLI instead of leaving nothing installed.
 6. Optionally run `plak install` to install the local stack. The CLI is already in place at this point, so a stack failure never invalidates the installed executable.
+7. `plak upgrade` refreshes the local UI (dashboard, HTML editor and Adminer theme) through `plak reload`, so the new design appears without a separate command. The refresh also runs when the runtime or Adminer checks are skipped, and the dashboard sends `Cache-Control: no-store` so a normal reload cannot reuse the previous design.
 
 Non-interactive runs use `PLAK_YES=1` (or `--yes`). They install Homebrew on macOS when it is missing, pass `--yes` to `plak install`, and do not prompt. Apple's Command Line Tools installer needs a GUI session, so install them first with `xcode-select --install` on a fresh Mac. `PLAK_CLI_ONLY=1` (or `--cli-only`) keeps the CLI-only behavior.
 

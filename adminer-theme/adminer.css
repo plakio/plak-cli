@@ -1,11 +1,11 @@
 /**
  * Plak - Adminer skin.
- * Matches the Plak local-site landing page + dashboard (https://plak.sh).
+ * Matches the Plak panel shell and the local context bar (panel.plak.work).
  *
- * Light/dark via prefers-color-scheme. Design tokens mirror
- * the Plak WordPress theme so the two UIs feel native together.
+ * Light/dark via the explicit theme toggle. Design tokens mirror the
+ * implemented panel shell so local and cloud feel native together.
  */
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700;750&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
 
 /* ============================================
    Design tokens — Plak (light)
@@ -322,6 +322,17 @@ h3 {
 .plak-brand-name {
     overflow: hidden;
     text-overflow: ellipsis;
+}
+.plak-local-pill {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 4px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--dim);
+    font: 500 .55rem var(--font-mono);
+    letter-spacing: .05em;
+    vertical-align: middle;
 }
 
 /* Brand anchor (wraps the app name so it links back to the server home).
@@ -1761,4 +1772,256 @@ td, th { border-color: var(--border-soft); }
     color: var(--action-fg);
     border-radius: var(--radius-sm);
     box-shadow: none;
+}
+
+/* ============================================
+   Plak panel shell + local context bar
+   ============================================ */
+html,
+html[data-theme="light"] {
+    --bg: #ffffff;
+    --bg-elev: #ffffff;
+    --bg-sunk: #f6f8fb;
+    --bg-card: #ffffff;
+    --border: #e4e7ed;
+    --border-soft: #edf0f4;
+    --border-strong: #d7dbe3;
+    --text: #17213a;
+    --text-soft: #3a4254;
+    --muted: #5e6a80;
+    --dim: #8a96a8;
+    --accent: #3156f5;
+    --accent-soft: rgba(49, 86, 245, 0.1);
+    --accent-ink: #2345db;
+    --accent-bright: #3156f5;
+    --action-bg: #3156f5;
+    --action-fg: #ffffff;
+    --action-border: #3156f5;
+    --action-hover: #2345db;
+    --ok: #198453;
+    --warn: #b26a00;
+    --err: #b52b43;
+    --radius-sm: 4px;
+    --radius: 6px;
+    --radius-lg: 8px;
+    --menu-width: 238px;
+    --font-sans: "DM Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    --font-serif: "DM Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --shadow-sm: 0 1px 2px rgba(13, 31, 63, 0.04);
+    --shadow: 0 12px 28px rgba(13, 31, 63, 0.08);
+    --shadow-lg: 0 18px 46px rgba(13, 31, 63, 0.12);
+}
+html[data-theme="dark"] {
+    --bg: #000000;
+    --bg-elev: #0b0b0d;
+    --bg-sunk: #111114;
+    --bg-card: #0b0b0d;
+    --border: #232327;
+    --border-soft: #1b1b1e;
+    --border-strong: #30343a;
+    --text: #fafafa;
+    --text-soft: #d4d4d8;
+    --muted: #a3a3a3;
+    --dim: #6b6b70;
+    --accent: #4f6ef7;
+    --accent-soft: rgba(79, 110, 247, 0.16);
+    --accent-ink: #8aa2ff;
+    --accent-bright: #8aa2ff;
+    --action-bg: #4f6ef7;
+    --action-fg: #ffffff;
+    --action-border: #4f6ef7;
+    --action-hover: #607dff;
+    --ok: #78d6a4;
+    --warn: #e7c06a;
+    --err: #ff8fa2;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow: 0 18px 46px rgba(0, 0, 0, 0.72);
+    --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.8);
+}
+body {
+    font-size: 13px;
+}
+#menu {
+    background: var(--bg-sunk);
+}
+html[data-theme="dark"] #menu {
+    background: #050506;
+}
+#content {
+    background: var(--bg);
+}
+#breadcrumb {
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    border-bottom-color: var(--border);
+}
+h2,
+#content h1,
+#content h2 {
+    font-family: var(--font-sans);
+    font-style: normal;
+    font-weight: 700;
+    letter-spacing: -.035em;
+}
+#content h1 {
+    margin-bottom: 18px;
+    font-size: 26px;
+    line-height: 1.2;
+    letter-spacing: -.045em;
+}
+#menu h1 {
+    padding: .95rem 1rem;
+}
+.plak-brand-mark {
+    background: var(--accent);
+    color: #ffffff;
+    box-shadow: none;
+    border-radius: 6px;
+}
+.plak-brand-kicker {
+    color: var(--dim);
+}
+#menu p {
+    color: var(--dim);
+}
+#menu a {
+    border-radius: 5px;
+}
+#menu a.active,
+#menu .active > a,
+#tables a.active {
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+    color: var(--accent-ink);
+}
+input,
+select,
+textarea,
+button,
+.button {
+    border-radius: 6px;
+}
+input,
+select,
+textarea {
+    border-color: var(--border);
+    background: var(--bg-elev);
+    color: var(--text);
+}
+input:focus,
+select:focus,
+textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+    outline: none;
+}
+button,
+.button {
+    font-family: var(--font-sans);
+}
+table th {
+    background: var(--bg-sunk);
+    color: var(--dim);
+}
+table td {
+    border-color: var(--border-soft);
+}
+
+/* Local environment bar, injected by adminer.js. */
+body.plak-has-local-bar {
+    --plak-local-bar-h: 30px;
+}
+.plak-local-context {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 105;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 30px;
+    padding: 0 14px;
+    border-bottom: 1px solid color-mix(in srgb, #baf180 48%, var(--border));
+    background: color-mix(in srgb, #baf180 16%, var(--bg-elev));
+    color: var(--muted);
+    font: 500 11px var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+}
+html[data-theme="dark"] .plak-local-context {
+    background: #0f1a0c;
+    border-bottom-color: #22331a;
+    color: #e8ecf5;
+}
+.plak-local-context .ctx-local {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+    font-weight: 600;
+    letter-spacing: .08em;
+}
+html[data-theme="dark"] .plak-local-context .ctx-local { color: #e8ecf5; }
+.plak-local-context .ctx-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #b7fa45;
+    flex: none;
+}
+.plak-local-context .ctx-host {
+    color: var(--text);
+    font-weight: 600;
+}
+html[data-theme="dark"] .plak-local-context .ctx-host { color: #e8ecf5; }
+.plak-local-context .ctx-sep { color: var(--muted); }
+.plak-local-context .ctx-service { color: var(--muted); }
+.plak-local-context .ctx-link {
+    margin-left: auto;
+    color: var(--accent-ink);
+    font-weight: 600;
+    text-decoration: none;
+}
+.plak-local-context .ctx-link:hover { text-decoration: underline; }
+
+body.plak-has-local-bar #menu {
+    top: 30px;
+    height: calc(100vh - 30px);
+}
+body.plak-has-local-bar #breadcrumb {
+    top: 30px;
+}
+body.plak-has-local-bar #content {
+    padding-top: calc(3.35rem + 30px);
+}
+body.plak-has-local-bar .plak-theme-toggle {
+    top: calc(0.45rem + 30px);
+}
+@media all and (max-width: 800px) {
+    body.plak-has-local-bar {
+        padding-top: 30px;
+    }
+    body.plak-has-local-bar #menu {
+        top: auto;
+        height: auto;
+    }
+    body.plak-has-local-bar #breadcrumb {
+        top: auto;
+    }
+    body.plak-has-local-bar #content {
+        padding-top: 1rem;
+    }
+    body.plak-has-local-bar .plak-theme-toggle {
+        top: calc(0.45rem + 30px);
+    }
+    body.plak-has-local-bar .js #menuopen {
+        top: 33px;
+    }
+    .plak-local-context .ctx-service {
+        display: none;
+    }
+    .plak-local-context {
+        padding: 0 10px;
+        font-size: 10px;
+    }
 }

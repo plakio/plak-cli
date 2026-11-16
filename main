@@ -419,7 +419,10 @@ main() {
             plak_site_disable "$@"
             ;;
         reload)
-            check_dependencies
+            # Reload also refreshes the dashboard, editor and Adminer assets.
+            # Do not require MariaDB, Mailpit or WP-CLI here: `plak upgrade`
+            # may run before those are on PATH, and the UI refresh is still
+            # valid (and needed) even when one of them is missing.
             plak_site_reload "$@"
             ;;
         trust)

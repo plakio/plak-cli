@@ -242,7 +242,7 @@ export PLAK_MAILPIT_URL="http://127.0.0.1:$mailpit_port"
 # Serve the generated dashboard with PHP's built-in server so $_GET, $_SERVER
 # and php://input behave as they do under FrankenPHP.
 port=$(( (RANDOM % 2000) + 20000 ))
-php -S 127.0.0.1:"$port" -t "$GUI_DIR" >/dev/null 2>&1 &
+php -d opcache.enable=0 -d opcache.enable_cli=0 -S 127.0.0.1:"$port" -t "$GUI_DIR" >/dev/null 2>&1 &
 server_pid=$!
 base="http://127.0.0.1:$port"
 
@@ -255,6 +255,14 @@ done
 [ -f "$HOME/Plak/cache/dashboard-token" ] || fail 'first dashboard page did not initialize CSRF'
 first_token=$(cat "$HOME/Plak/cache/dashboard-token")
 grep -q "const CSRF_TOKEN = '$first_token'" "$tmpdir/first-index" || fail 'first dashboard page embedded an empty or different token'
+grep -q 'class="local-context"' "$tmpdir/first-index" || fail 'dashboard lacks the local context bar'
+grep -q 'class="sidebar"' "$tmpdir/first-index" || fail 'dashboard lacks the panel sidebar'
+grep -q 'Local overview' "$tmpdir/first-index" || fail 'dashboard lacks the local overview heading'
+grep -q 'family=DM+Sans' "$tmpdir/first-index" || fail 'dashboard does not load DM Sans'
+grep -q 'plak-theme' "$tmpdir/first-index" || fail 'dashboard does not use the shared theme key'
+grep -q 'site-table-head' "$tmpdir/first-index" || fail 'dashboard lacks the sites table header'
+grep -q 'Cache-Control: no-store' "$GUI_DIR/index.php" || fail 'dashboard HTML can be cached after an upgrade'
+grep -q 'Cache-Control: no-store' "$GUI_DIR/api.php" || fail 'dashboard API can be cached after an upgrade'
 HOME="$tmpdir/service-home" php "$GUI_DIR/index.php" > "$tmpdir/service-index"
 grep -q "const CSRF_TOKEN = '$first_token'" "$tmpdir/service-index" || fail 'service HOME changed the dashboard user/token'
 
@@ -634,6 +642,8 @@ grep -q 'This answers only on the machine running Plak' plak.sh || fail "admin h
 grep -q 'remote_ip private_ranges' plak.sh || fail "WSL private-range handling is missing"
 grep -q "remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1" plak.sh || fail "Tailscale admin guard is missing"
 grep -q 'deploy_adminer_theme' commands/site/reload || fail "reload does not refresh the Adminer theme"
+grep -q 'plak-local-context' adminer-theme/adminer.js || fail "Adminer lacks the local context bar"
+grep -q 'plak-has-local-bar' adminer-theme/adminer.css || fail "Adminer lacks the local context offset styles"
 
 # Network mutations without an explicit scope are refused before execution.
 sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/deleted-cellar/plak';|" "$GUI_DIR/api.php"

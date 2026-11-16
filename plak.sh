@@ -419,7 +419,10 @@ main() {
             plak_site_disable "$@"
             ;;
         reload)
-            check_dependencies
+            # Reload also refreshes the dashboard, editor and Adminer assets.
+            # Do not require MariaDB, Mailpit or WP-CLI here: `plak upgrade`
+            # may run before those are on PATH, and the UI refresh is still
+            # valid (and needed) even when one of them is missing.
             plak_site_reload "$@"
             ;;
         trust)
@@ -3744,10 +3747,10 @@ function adminer_object() {
         function login($login, $password) { return true; }
         function head($title = null) {
             // Inject the Plak theme toggle. Inline init runs before adminer.css
-            // applies so the saved choice (or system preference) is honored
-            // without a theme flash on load.
+            // applies so the saved choice (default light, like the panel) is
+            // honored without a theme flash on load.
             $nonce = \Adminer\nonce();
-            $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:'dark';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
+            $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
             echo "<script{$nonce}>{$init}</script>\n";
             $v = @filemtime(__DIR__ . '/adminer.js') ?: 1;
             echo "<script src='adminer.js?v={$v}'{$nonce}></script>\n";
@@ -4314,6 +4317,7 @@ EOM
     cat > "$GUI_DIR/api.php.tmp" << 'EOM'
 <?php
 header('Content-Type: application/json');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 $sitedir = 'SITES_DIR_PLACEHOLDER';
 $plak_site_path = 'PLAK_SITE_EXECUTABLE_PATH_PLACEHOLDER';
 $user_home = 'USER_HOME_PLACEHOLDER';
@@ -5531,6 +5535,11 @@ EOM
     # Create the main dashboard file (the UI)
     cat > "$GUI_DIR/index.php.tmp" << 'EOM'
 <?php
+// The dashboard HTML embeds the whole design. Never let a browser reuse a
+// cached copy after `plak upgrade`/`plak reload` deploys a new one.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+
 $user_home = 'USER_HOME_PLACEHOLDER';
 $config_file = $user_home . '/Plak/config';
 $config_data = file_exists($config_file) ? parse_ini_file($config_file) : [];
@@ -5542,14 +5551,24 @@ $__plak_site_port_suffix = ($__plak_site_https_port === 443) ? '' : ':' . $__pla
 require_once __DIR__ . '/dashboard-auth.php';
 $__plak_site_token_file = $user_home . '/Plak/cache/dashboard-token';
 $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
+
+// Link back to the panel the CLI is connected to, if any.
+$__plak_panel_url = 'https://panel.plak.work/';
+$__plak_connect_file = $user_home . '/Plak/connect.json';
+if (is_file($__plak_connect_file)) {
+    $__plak_connect = json_decode((string) file_get_contents($__plak_connect_file), true);
+    if (is_array($__plak_connect) && !empty($__plak_connect['panel_url'])) {
+        $__plak_panel_url = rtrim((string) $__plak_connect['panel_url'], '/') . '/';
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="color-scheme" content="dark light">
+    <meta name="color-scheme" content="light dark">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plak CLI — sites</title>
+    <title>Plak local — sites</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='8' fill='%23b7fa45'/><text x='32' y='46' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='%2310110f'>P</text></svg>">
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
@@ -5558,15 +5577,15 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         // in sync with no extra flip.
         (function () {
             try {
-                var s = localStorage.getItem('theme');
-                var t = (s === 'dark' || s === 'light') ? s : 'dark';
+                var s = localStorage.getItem('plak-theme') || localStorage.getItem('theme');
+                var t = (s === 'dark' || s === 'light') ? s : 'light';
                 document.documentElement.setAttribute('data-theme', t);
             } catch (e) {}
         })();
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700;750&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="//unpkg.com/alpinejs" defer></script>
     <style>
         *, *::before, *::after { box-sizing: border-box; }
@@ -5957,185 +5976,731 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
         .import-form .modal-foot { margin-top: 0.2rem; }
 
         /* ============================================
-           Console theme
+           Plak panel theme + local context bar
            ============================================ */
-        html[data-theme="dark"] {
-            --bg: #0e110f;
-            --bg-sunk: #0b0e0c;
-            --panel: #151a16;
-            --panel-hover: #1b211b;
-            --panel-border: #2a352a;
-            --text: #d6e9d3;
-            --text-dim: #8a9b86;
-            --text-faint: #5f735c;
-            --accent: #b7fa45;
-            --accent-fg: #10110f;
-            --pill-bg: #1b211b;
-            --pill-wp-bg: rgba(183, 250, 69, .14);
-            --pill-wp-fg: #b7fa45;
-            --pill-static-bg: #1b211b;
-            --pill-static-fg: #9aad95;
-            --input-bg: #0b0e0c;
-            --danger: #ff8a80;
-            --shadow-lg: none;
-            --action-bg: #b7fa45;
-            --action-fg: #10110f;
-            --action-border: #b7fa45;
-            --action-shadow: none;
-            --card-shadow: none;
-            --radius-lg: 4px;
-            --radius-md: 3px;
-            --radius-pill: 3px;
+        :root {
+            --font-sans: 'DM Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-serif: 'DM Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+            --plak-blue: #3156f5;
+            --plak-blue-hover: #2345db;
+            --plak-lime: #93ef60;
+            --plak-acid: #b7fa45;
+            --plak-soft-lime: #baf180;
+            --plak-success: #198453;
+            --plak-warning: #b26a00;
         }
         html[data-theme="light"] {
-            --bg: #f5f5f1;
-            --bg-sunk: #efece4;
+            --bg: #ffffff;
+            --bg-sunk: #f6f8fb;
             --panel: #ffffff;
-            --panel-hover: #f7f5ee;
-            --panel-border: #10110f;
-            --text: #10110f;
-            --text-dim: #62665f;
-            --text-faint: #8a8d84;
-            --accent: #344aff;
+            --panel-hover: #f2f5fa;
+            --panel-border: #e4e7ed;
+            --text: #17213a;
+            --text-dim: #5e6a80;
+            --text-faint: #8a96a8;
+            --accent: #3156f5;
             --accent-fg: #ffffff;
-            --pill-bg: #f1ede5;
-            --pill-wp-bg: rgba(183, 250, 69, .32);
-            --pill-wp-fg: #10110f;
-            --pill-static-bg: #f1ede5;
-            --pill-static-fg: #62665f;
+            --pill-bg: #f6f8fb;
+            --pill-wp-bg: color-mix(in srgb, #3156f5 10%, #ffffff);
+            --pill-wp-fg: #2345db;
+            --pill-static-bg: #f6f8fb;
+            --pill-static-fg: #5e6a80;
             --input-bg: #ffffff;
-            --danger: #b42318;
-            --shadow-lg: 4px 4px 0 #10110f;
-            --action-bg: #b7fa45;
-            --action-fg: #10110f;
-            --action-border: #10110f;
-            --action-shadow: 4px 4px 0 #10110f;
-            --card-shadow: 4px 4px 0 #10110f;
-            --radius-lg: 0px;
-            --radius-md: 0px;
-            --radius-pill: 0px;
+            --danger: #b52b43;
+            --radius-lg: 8px;
+            --radius-md: 6px;
+            --radius-pill: 6px;
+            --shadow-lg: 0 12px 28px rgba(13, 31, 63, .08);
+            --card-shadow: 0 12px 28px rgba(13, 31, 63, .08);
+            color-scheme: light;
         }
-        :root {
-            --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            --font-serif: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        html[data-theme="dark"] {
+            --bg: #000000;
+            --bg-sunk: #111114;
+            --panel: #0b0b0d;
+            --panel-hover: #18181b;
+            --panel-border: #232327;
+            --text: #fafafa;
+            --text-dim: #a3a3a3;
+            --text-faint: #6b6b70;
+            --accent: #4f6ef7;
+            --accent-fg: #ffffff;
+            --pill-bg: #111114;
+            --pill-wp-bg: color-mix(in srgb, #8aa2ff 14%, #0b0b0d);
+            --pill-wp-fg: #8aa2ff;
+            --pill-static-bg: #111114;
+            --pill-static-fg: #a3a3a3;
+            --input-bg: #0e0e10;
+            --danger: #ff8fa2;
+            --radius-lg: 8px;
+            --radius-md: 6px;
+            --radius-pill: 6px;
+            --shadow-lg: 0 18px 46px rgba(0, 0, 0, .72);
+            --card-shadow: 0 18px 46px rgba(0, 0, 0, .72);
+            color-scheme: dark;
         }
         body {
-            font-family: var(--font-sans);
-            background-image: radial-gradient(circle at 84% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 32%);
+            padding: 0;
+            background: var(--bg);
+            background-image: none;
+            color: var(--text);
+            font-size: 13px;
+            line-height: 1.5;
         }
-        .wrap { max-width: 1040px; }
-        .nav { margin-bottom: 1.4rem; }
-        .logo { gap: 9px; font-family: var(--font-sans); font-size: 1.08rem; font-weight: 700; letter-spacing: -.03em; }
-        .logo-mark {
-            width: 28px;
-            height: 28px;
-            display: inline-grid;
-            place-items: center;
-            background: var(--action-bg);
-            color: var(--action-fg);
-            border: 1px solid var(--action-border);
-            border-radius: 3px;
-            font-family: var(--font-mono);
-            font-size: 15px;
+
+        /* Local environment bar: the only structural difference from the panel. */
+        .local-context {
+            position: sticky;
+            top: 0;
+            z-index: 60;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            height: 30px;
+            padding: 0 14px;
+            border-bottom: 1px solid color-mix(in srgb, var(--plak-soft-lime) 48%, var(--panel-border));
+            background: color-mix(in srgb, var(--plak-soft-lime) 16%, var(--panel));
+            color: var(--text-dim);
+            font: 500 11px var(--font-mono);
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        html[data-theme="dark"] .local-context {
+            background: #0f1a0c;
+            border-bottom-color: #22331a;
+            color: #e8ecf5;
+        }
+        .local-context .ctx-local {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text);
             font-weight: 600;
+            letter-spacing: .08em;
+        }
+        html[data-theme="dark"] .local-context .ctx-local { color: #e8ecf5; }
+        .local-context .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--plak-acid); flex: none; }
+        .local-context .ctx-host { color: var(--text); font-weight: 600; }
+        html[data-theme="dark"] .local-context .ctx-host { color: #e8ecf5; }
+        .local-context .ctx-sep { color: var(--text-faint); }
+        .local-context .ctx-services { display: flex; align-items: center; gap: 12px; color: var(--text-dim); }
+        .local-context .ctx-svc {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            color: inherit;
+            text-decoration: none;
+            border-radius: 3px;
+        }
+        .local-context .ctx-svc:hover { color: var(--accent); }
+        .local-context .ctx-svc::before {
+            content: "";
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--plak-success);
             flex: none;
         }
-        .logo-tag {
+        .local-context .ctx-svc.is-link::before { background: var(--text-faint); }
+        .local-context .ctx-link {
+            margin-left: auto;
+            color: var(--accent);
+            font-weight: 600;
+            text-decoration: none;
+        }
+        .local-context .ctx-link:hover { text-decoration: underline; }
+
+        .app { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 100vh; }
+        .sidebar {
+            position: sticky;
+            top: 30px;
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 30px);
+            overflow: hidden;
+            background: var(--bg-sunk);
+            border-right: 1px solid var(--panel-border);
+        }
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            height: 79px;
+            padding: 0 23px;
+            border-bottom: 1px solid var(--panel-border);
+            color: var(--text);
+            text-decoration: none;
+            flex: none;
+        }
+        .brand-cloud { width: 48px; height: 25px; flex: none; color: var(--plak-blue); }
+        html[data-theme="dark"] .brand-cloud { color: #ffffff; }
+        .brand-name { font-size: 24px; font-weight: 750; letter-spacing: -.08em; white-space: nowrap; }
+        .brand-name b { color: var(--plak-blue); }
+        html[data-theme="dark"] .brand-name b { color: var(--accent); }
+        .product-pill {
+            margin-left: auto;
+            padding: 3px 6px;
             border: 1px solid var(--panel-border);
-            padding: 2px 5px;
-            color: var(--text-dim);
-            font-family: var(--font-mono);
-            font-size: 8px;
-            font-weight: 400;
-            letter-spacing: .08em;
+            border-radius: 4px;
+            color: var(--text-faint);
+            font: 500 10px var(--font-mono);
+            letter-spacing: .05em;
+            white-space: nowrap;
+        }
+        .theme-line {
+            height: 3px;
+            flex: none;
+            background: linear-gradient(90deg, #2f55f2 0%, #2f55f2 86%, #9ce968 86%, #9ce968 100%);
+        }
+        html[data-theme="dark"] .theme-line {
+            background: linear-gradient(90deg, #4f6ef7 0%, #4f6ef7 86%, #c8ff6a 86%, #c8ff6a 100%);
+        }
+        .sidebar-nav { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 16px; }
+        .side-label {
+            padding: 28px 22px 10px;
+            color: var(--text-faint);
+            font: 600 10px var(--font-mono);
+            letter-spacing: .09em;
             text-transform: uppercase;
         }
-        .theme-btn { border-radius: 3px; }
-        .console-hero { padding: 0 0 1.4rem; }
-        .console-eyebrow {
+        .side-nav { display: grid; gap: 3px; padding: 0 11px; }
+        .side-link {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            width: 100%;
+            padding: 12px 13px;
+            border: 0;
+            border-radius: 6px;
+            background: none;
             color: var(--text-dim);
-            font-family: var(--font-mono);
-            font-size: 10px;
-            letter-spacing: .12em;
-            text-transform: uppercase;
+            font: 600 13px var(--font-sans);
+            text-align: left;
+            text-decoration: none;
+            cursor: pointer;
         }
-        .console-eyebrow::before { content: "●"; color: var(--action-bg); margin-right: 7px; }
-        .console-hero h1 {
-            margin: .55rem 0 .45rem;
-            font-family: var(--font-sans);
-            font-size: clamp(2.4rem, 5vw, 3.8rem);
-            font-weight: 800;
-            line-height: .95;
-            letter-spacing: -.055em;
-        }
-        .console-hero h1 span {
-            background: var(--action-bg);
-            color: var(--action-fg);
-            padding: 0 .08em;
-        }
-        .console-hero p { margin: 0; max-width: 62ch; color: var(--text-dim); font-size: .9rem; line-height: 1.5; }
-        .card { border-radius: var(--radius-lg); box-shadow: var(--card-shadow); }
-        .card-title { font-family: var(--font-sans); font-style: normal; font-weight: 700; font-size: 1.55rem; letter-spacing: -.035em; }
-        .card-head { border-bottom-color: var(--panel-border); }
-        .pill { border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: .72rem; }
-        .pill.primary {
-            background: var(--action-bg);
-            border-color: var(--action-border);
-            color: var(--action-fg);
-            box-shadow: var(--action-shadow);
-        }
-        .pill.primary:hover {
-            background: color-mix(in srgb, var(--action-bg) 88%, white);
-            border-color: var(--action-border);
-            color: var(--action-fg);
-        }
-        .filter-row { border-bottom-color: var(--panel-border); }
-        .add-row { border-bottom-color: var(--panel-border); }
-        .add-row input[type="text"] { border-radius: 0; }
-        .site-row { border-bottom-color: var(--panel-border); }
-        .site-domain { font-family: var(--font-mono); }
-        .site-type { border-radius: 0; letter-spacing: .06em; }
-        .site-type.wp { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
-        .site-type.static { background: var(--pill-static-bg); color: var(--pill-static-fg); }
-        .site-action-btn { border-radius: 0; }
-        .card-foot { border-top-color: var(--panel-border); }
-        .dot::before { background: var(--action-bg); box-shadow: none; }
-        .modal { border-radius: 0; }
-        .modal .modal-foot { border-top-color: var(--panel-border); }
-        .snackbar {
+        .side-link svg { width: 17px; height: 17px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+        .side-link:hover { background: var(--panel-hover); color: var(--text); }
+        .side-link.active { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); color: var(--accent); }
+        .side-count { margin-left: auto; color: var(--text-faint); font: 500 10px var(--font-mono); }
+        .sidebar-foot { margin-top: auto; padding: 12px 11px 18px; border-top: 1px solid var(--panel-border); flex: none; }
+        .workspace-card {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 18px 2px 10px;
+            padding: 13px;
+            border: 1px solid var(--panel-border);
+            border-radius: 7px;
             background: var(--panel);
             color: var(--text);
-            border: 1px solid var(--action-bg);
-            border-radius: 3px;
-            font-family: var(--font-mono);
-            font-size: .78rem;
+            text-decoration: none;
         }
-        .snackbar.error { background: var(--danger); border-color: var(--danger); color: #fff; }
+        .workspace-card:hover { background: var(--panel-hover); }
+        .workspace-avatar {
+            display: grid;
+            place-items: center;
+            width: 30px;
+            height: 30px;
+            flex: none;
+            border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--panel-border));
+            border-radius: 50%;
+            background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+            color: var(--accent);
+            font: 750 11px var(--font-sans);
+        }
+        .workspace-meta b { display: block; font-size: 12px; font-weight: 650; }
+        .workspace-meta span { display: block; margin-top: 5px; color: var(--text-dim); font: 500 11px var(--font-mono); }
+        .workspace-chev { margin-left: auto; color: var(--text-faint); font-size: 18px; line-height: 1; }
+        .side-cloud {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 9px;
+            border-radius: 6px;
+            color: var(--text-dim);
+            font-size: 11px;
+            font-weight: 600;
+            text-decoration: none;
+        }
+        .side-cloud:hover { background: var(--panel-hover); color: var(--accent); }
+        .side-cloud span:last-child { margin-left: auto; color: var(--text-faint); }
+        .sidebar-backdrop { display: none; }
+
+        .workspace { min-width: 0; display: flex; flex-direction: column; }
+        .topbar {
+            position: sticky;
+            top: 30px;
+            z-index: 30;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            height: 68px;
+            padding: 0 40px;
+            border-bottom: 1px solid var(--panel-border);
+            background: var(--panel);
+        }
+        .crumbs {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+            overflow: hidden;
+            color: var(--text-dim);
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .crumbs b { overflow: hidden; color: var(--text); font-weight: 650; text-overflow: ellipsis; }
+        .crumb-sep { color: var(--text-faint); }
+        .top-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+        .top-search {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            min-width: 220px;
+            padding: 8px 10px;
+            border: 1px solid var(--panel-border);
+            border-radius: 7px;
+            background: var(--bg-sunk);
+            color: var(--text-faint);
+            font: 500 12px var(--font-sans);
+            cursor: pointer;
+            text-align: left;
+        }
+        .top-search svg { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; }
+        .top-search kbd {
+            margin-left: auto;
+            padding: 2px 5px;
+            border: 1px solid var(--panel-border);
+            border-radius: 4px;
+            color: var(--text-faint);
+            font: 500 10px var(--font-mono);
+        }
+        .top-search:hover { border-color: var(--accent); color: var(--text-dim); }
+        .top-icon {
+            display: grid;
+            place-items: center;
+            width: 34px;
+            height: 34px;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-dim);
+            cursor: pointer;
+        }
+        .top-icon:hover { border-color: var(--panel-border); background: var(--panel-hover); color: var(--text); }
+        .top-avatar {
+            display: grid;
+            place-items: center;
+            width: 30px;
+            height: 30px;
+            border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--panel-border));
+            border-radius: 50%;
+            background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+            color: var(--accent);
+            font: 750 11px var(--font-sans);
+        }
+        .mobile-menu { display: none; }
+        .theme-btn {
+            width: 34px;
+            height: 34px;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-dim);
+        }
+        .theme-btn:hover { border-color: var(--panel-border); background: var(--panel-hover); color: var(--text); }
+
+        .main { width: 100%; max-width: 1490px; margin: 0 auto; padding: 40px 48px 72px; }
+        .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 33px; }
+        .page-head h1 { margin: 0 0 8px; font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -.045em; }
+        .page-head p { margin: 0; color: var(--text-dim); font-size: 13px; line-height: 1.6; }
+        .page-head .pill.primary { padding: 10px 14px; font-size: 13px; }
+
+        .card { border-radius: 8px; box-shadow: var(--card-shadow); border-color: var(--panel-border); }
+        .card-head { padding: 18px 20px; }
+        .card-title { margin: 0; font-family: var(--font-sans); font-style: normal; font-weight: 650; font-size: 17px; letter-spacing: -.02em; }
+        .card-actions { gap: 6px; flex-wrap: wrap; }
+        .pill {
+            padding: 7px 10px;
+            border-radius: 6px;
+            font-family: var(--font-sans);
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .pill.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--accent-fg);
+            box-shadow: none;
+        }
+        .pill.primary:hover {
+            background: var(--plak-blue-hover);
+            border-color: var(--plak-blue-hover);
+            color: var(--accent-fg);
+        }
+        html[data-theme="dark"] .pill.primary:hover {
+            background: #607dff;
+            border-color: #607dff;
+        }
+        .pill:disabled { opacity: .5; cursor: not-allowed; }
+
+        .filter-row { padding: 12px 20px; gap: 8px; border-bottom: 1px solid var(--panel-border); background: var(--panel); }
+        .filter-row .filter-input {
+            flex: 1;
+            min-width: 0;
+            padding: 8px 10px;
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            background: var(--input-bg);
+            color: var(--text);
+            font-family: var(--font-sans);
+            font-size: 12px;
+        }
+        .filter-row .filter-input:focus {
+            border-color: var(--accent);
+            outline: 0;
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+        }
+        .filter-row .filter-input::placeholder { color: var(--text-faint); }
+        .filter-kbd {
+            padding: 2px 5px;
+            border: 1px solid var(--panel-border);
+            border-radius: 4px;
+            color: var(--text-faint);
+            font: 500 10px var(--font-mono);
+        }
+        .filter-chip {
+            padding: 4px 6px;
+            border-radius: 4px;
+            background: var(--pill-wp-bg);
+            color: var(--pill-wp-fg);
+            font: 500 10px var(--font-mono);
+        }
+        .filter-chip-x { width: 16px; height: 16px; }
+        .filter-clear { color: var(--text-dim); }
+        .filter-clear:hover { background: var(--panel-hover); color: var(--text); }
+
+        .add-row { padding: 14px 20px; background: var(--bg-sunk); border-bottom: 1px solid var(--panel-border); }
+        .add-row input[type="text"] {
+            padding: 8px 10px;
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            background: var(--input-bg);
+            color: var(--text);
+            font-family: var(--font-sans);
+            font-size: 12px;
+        }
+        .add-row input[type="text"]:focus { border-color: var(--accent); outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+        .add-row .plain-toggle { color: var(--text-dim); font-size: 12px; }
+        .add-row .plain-toggle input { accent-color: var(--accent); }
+        .add-row.is-creating::before { background: var(--accent); }
+
+        .site-table-head {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 90px 110px 80px 210px;
+            gap: 12px;
+            padding: 9px 20px;
+            border-bottom: 1px solid var(--panel-border);
+            background: var(--bg-sunk);
+            color: var(--text-faint);
+            font: 600 9px var(--font-mono);
+            letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+        .site-table-head .right { text-align: right; }
+        .site-list {
+            grid-template-columns: minmax(0, 1fr) 90px 110px 80px 210px;
+            column-gap: 12px;
+        }
+        .site-row { padding: 11px 20px; }
+        .site-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .site-domain {
+            overflow: hidden;
+            color: var(--text);
+            font-family: var(--font-sans);
+            font-size: 13px;
+            font-weight: 650;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .site-domain:hover { color: var(--accent); }
+        .site-domain mark { background: color-mix(in srgb, var(--accent) 18%, transparent); color: inherit; }
+        .site-path {
+            display: block;
+            overflow: hidden;
+            color: var(--text-faint);
+            font: 500 10px var(--font-mono);
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .site-type {
+            justify-self: start;
+            min-width: 0;
+            padding: 3px 6px;
+            border-radius: 3px;
+            font: 600 9px var(--font-mono);
+            letter-spacing: .04em;
+        }
+        .site-modified, .site-size {
+            color: var(--text-dim);
+            font: 500 11px var(--font-mono);
+            text-align: left;
+            min-width: 0;
+        }
+        .site-size { color: var(--text-dim); }
+        .site-actions { display: flex; gap: 4px; justify-content: flex-end; opacity: 1; }
+        .site-action-btn {
+            display: inline-grid;
+            grid-template-areas: "stack";
+            place-items: center;
+            width: auto;
+            height: auto;
+            padding: 4px 6px;
+            border: 1px solid var(--panel-border);
+            border-radius: 4px;
+            background: var(--panel);
+            color: var(--text-dim);
+            font-family: var(--font-sans);
+            font-size: 10px;
+            font-weight: 600;
+            line-height: 1;
+            text-decoration: none;
+        }
+        .site-action-btn > * { grid-area: stack; }
+        .site-action-btn:hover { border-color: var(--accent); background: var(--panel); color: var(--accent); }
+        .site-action-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+        .site-action-btn:disabled { cursor: wait; }
+        .site-action-btn .btn-spinner { width: 10px; height: 10px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; opacity: 0; pointer-events: none; }
+        .site-action-btn.loading .btn-label { opacity: 0; }
+        .site-action-btn.loading .btn-spinner { opacity: 1; }
+        .agent-badge { border-radius: 3px; font: 600 9px var(--font-mono); padding: 3px 5px; background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .site-list > .empty, .site-list > .loading { padding: 48px 20px; color: var(--text-dim); }
+        .empty-hint { margin-top: 5px; font: 500 11px var(--font-mono); color: var(--text-faint); }
+        .empty-hint code { background: var(--bg-sunk); padding: 1px 5px; border-radius: 3px; }
+
+        .card-foot {
+            padding: 12px 20px;
+            border-top: 1px solid var(--panel-border);
+            color: var(--text-faint);
+            font: 500 10px var(--font-mono);
+            letter-spacing: .03em;
+            text-transform: uppercase;
+        }
+        .services { gap: 16px; }
+        .dot { color: var(--text-dim); font-size: inherit; }
+        .dot::before { width: 5px; height: 5px; background: var(--text-faint); box-shadow: none; }
+        .services .dot:first-child::before { background: var(--plak-success); }
+        .dot.link:hover, .dot[role="button"]:hover { color: var(--accent); }
+        .refresh-btn { color: var(--text-dim); }
+        .refresh-btn:hover { background: var(--panel-hover); color: var(--text); }
+
+        .new-site-alert { padding: 10px 20px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); font-size: 12px; }
+        .new-site-alert-icon { width: 20px; height: 20px; background: var(--accent); color: var(--accent-fg); }
+        .new-site-alert-text strong { font-family: var(--font-mono); }
+        .new-site-alert-close { color: var(--text-dim); }
+
+        .site-detail { margin-top: 20px; padding: 20px 22px; }
+        .detail-head { gap: 10px; margin-bottom: 14px; }
+        .detail-title { font-family: var(--font-sans); font-style: normal; font-weight: 650; font-size: 22px; letter-spacing: -.03em; }
+        .detail-grid { grid-template-columns: 160px minmax(0, 1fr); gap: 8px 18px; margin-bottom: 16px; }
+        .detail-grid dt { color: var(--text-faint); font: 500 10px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
+        .detail-grid dd { font-size: 13px; }
+        .detail-grid dd code { font-family: var(--font-mono); font-size: 11px; }
+        .detail-actions { gap: 6px; }
+        .detail-actions .site-action-btn { padding: 6px 9px; font-size: 11px; }
+        .site-detail h3 { margin: 18px 0 8px; font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
+        .components { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--panel-border); }
+        .components-head { margin-bottom: 10px; }
+        .components-tabs { gap: 4px; }
+        .comp-tab { padding: 5px 8px; border-radius: 4px; font: 600 10px var(--font-mono); }
+        .comp-tab.active { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); color: var(--accent); }
+        .comp-hint, .comp-loading { color: var(--text-dim); font-size: 11px; }
+        .comp-row { padding: 8px 0; border-bottom: 1px solid var(--panel-border); }
+        .comp-title { font-weight: 600; }
+        .comp-slug, .comp-version { font-family: var(--font-mono); font-size: 10px; }
+        .comp-badge { border-radius: 3px; padding: 2px 6px; font: 600 9px var(--font-mono); }
+        .comp-badge.active { background: var(--pill-wp-bg); color: var(--pill-wp-fg); }
+        .comp-badge.mu { background: var(--pill-static-bg); color: var(--pill-static-fg); }
+        .comp-badge.update { background: var(--accent); color: var(--accent-fg); }
+        .console-input, .log-search, .log-select {
+            background: var(--input-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text);
+        }
+        .console-input:focus, .log-search:focus { border-color: var(--accent); outline: 0; }
+        .console-out { background: var(--bg-sunk); border: 1px solid var(--panel-border); border-radius: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+        .console-hist-btn, .log-level { border-radius: 4px; font-family: var(--font-mono); font-size: 10px; }
+        .trace pre, .log-trace pre { background: var(--bg-sunk); font-family: var(--font-mono); font-size: 10px; }
+        .traffic-card { background: var(--bg-sunk); border: 1px solid var(--panel-border); border-radius: 6px; }
+        .traffic-num { font-family: var(--font-mono); font-size: 16px; }
+        .traffic-label { font: 500 9px var(--font-mono); letter-spacing: .05em; }
+
+        .modal-backdrop { background: rgba(7, 15, 31, .58); }
+        html[data-theme="light"] .modal-backdrop { background: rgba(7, 15, 31, .42); }
+        .modal { border-radius: 10px; border: 1px solid var(--panel-border); box-shadow: var(--shadow-lg); }
+        .modal h3 { font-family: var(--font-sans); font-style: normal; font-weight: 650; font-size: 18px; letter-spacing: -.02em; }
+        .modal .modal-sub { color: var(--text-dim); font-size: 12px; }
+        .modal .modal-foot { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+        .db-creds { background: var(--bg-sunk); border: 1px solid var(--panel-border); border-radius: 6px; }
+        .db-cred-row { font-family: var(--font-mono); font-size: 11px; }
+        .db-cred-label { color: var(--text-faint); }
+        .snackbar { background: #111d37; color: #ffffff; border: 1px solid #334260; border-radius: 8px; font-family: var(--font-sans); font-size: 12px; box-shadow: 0 12px 28px rgba(13, 31, 63, .18); }
+        .snackbar.error { background: var(--danger); border-color: var(--danger); }
+
+        @media (max-width: 1180px) {
+            .main { padding: 34px 28px 64px; }
+            .topbar { padding: 0 24px; }
+            .top-search { min-width: 0; }
+            .top-search span, .top-search kbd { display: none; }
+        }
+        @media (max-width: 900px) {
+            .app { display: block; }
+            .sidebar {
+                position: fixed;
+                top: 30px;
+                left: 0;
+                width: 244px;
+                height: calc(100vh - 30px);
+                transform: translateX(-110%);
+                transition: transform .2s ease;
+                box-shadow: 0 18px 46px rgba(0, 0, 0, .18);
+                z-index: 50;
+            }
+            .sidebar.open { transform: translateX(0); }
+            .sidebar-backdrop {
+                display: block;
+                position: fixed;
+                inset: 30px 0 0 0;
+                z-index: 45;
+                background: rgba(7, 15, 31, .42);
+            }
+            .mobile-menu { display: grid; }
+            .topbar { padding: 0 16px; }
+            .main { padding: 28px 18px 56px; }
+            .page-head { flex-direction: column; gap: 14px; }
+            .top-search { display: none; }
+            .site-table-head { display: none; }
+            .site-list { grid-template-columns: minmax(0, 1fr) auto auto; }
+            .site-modified, .site-size { display: none; }
+            .site-row { padding: 10px 16px; }
+            .site-actions { grid-column: 3; }
+            .card-head { padding: 14px 16px; }
+            .filter-row, .add-row { padding-left: 16px; padding-right: 16px; }
+            .card-foot { padding: 10px 16px; }
+            .local-context .ctx-services { display: none; }
+            .local-context { padding: 0 10px; font-size: 10px; gap: 7px; }
+        }
         @media (max-width: 620px) {
-            .console-hero h1 { font-size: clamp(2rem, 11vw, 3rem); }
+            .page-head h1 { font-size: 26px; }
+            .local-context .ctx-link { font-size: 0; }
+            .local-context .ctx-link::after { content: "Cloud ↗"; font-size: 10px; }
         }
     </style>
 </head>
 <body x-data="dashboard" x-init="init()">
-    <div class="wrap">
-        <nav class="nav">
-            <a class="logo" href="/"><span class="logo-mark">P</span><span>plak</span><span class="logo-tag">CLI</span></a>
-            <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
-                <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
-                <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
-            </button>
-        </nav>
-
-        <section class="console-hero">
-            <div class="console-eyebrow">Local dashboard / <span x-text="sites.length"></span> sites</div>
-            <h1>Your local <span>sites.</span></h1>
-            <p>WordPress and static projects, all running locally with HTTPS, one dashboard and zero config.</p>
-        </section>
-
-        <section class="card">
+    <div class="local-context" aria-label="Local environment">
+        <span class="ctx-local"><span class="ctx-dot"></span>LOCAL</span>
+        <span class="ctx-host">plak.localhost<?= $__plak_site_port_suffix ?></span>
+        <span class="ctx-sep">·</span>
+        <span class="ctx-services">
+            <span class="ctx-svc" title="Caddy is serving this dashboard">Caddy</span>
+            <a class="ctx-svc is-link" :href="adminerUrl" target="_blank" rel="noopener">MariaDB</a>
+            <a class="ctx-svc is-link" :href="mailpitUrl" target="_blank" rel="noopener">Mailpit</a>
+        </span>
+        <a class="ctx-link" href="<?= htmlspecialchars($__plak_panel_url, ENT_QUOTES) ?>" target="_blank" rel="noopener">Open cloud panel ↗</a>
+    </div>
+    <div class="app">
+        <aside class="sidebar" :class="{ open: sidebarOpen }">
+            <a class="sidebar-brand" href="/">
+                <svg class="brand-cloud" viewBox="0 0 375 156" aria-hidden="true"><path fill="currentColor" d="M 368.640625 128.355469 L 200.929688 128.355469 C 197.421875 128.355469 194.574219 125.519531 194.574219 122.015625 C 194.574219 118.511719 197.421875 115.675781 200.929688 115.675781 L 323.390625 115.675781 C 326.898438 115.675781 329.742188 112.835938 329.742188 109.335938 C 329.742188 105.832031 326.898438 102.992188 323.390625 102.992188 L 310.15625 102.992188 C 307.757812 86.25 297.835938 71.125 279.460938 67.597656 C 279.945312 64.574219 280.203125 61.472656 280.203125 58.3125 C 280.203125 26.152344 254.082031 0.0859375 221.859375 0.0859375 C 193.839844 0.0859375 170.4375 19.800781 164.8125 46.085938 L 164.808594 46.085938 C 156.394531 41.386719 146.695312 38.710938 136.367188 38.710938 C 113.375 38.710938 93.488281 51.988281 83.984375 71.285156 L 6.363281 71.285156 C 2.851562 71.285156 0.0078125 74.125 0.0078125 77.625 C 0.0078125 81.125 2.851562 83.964844 6.363281 83.964844 L 128.820312 83.964844 C 132.332031 83.964844 135.175781 86.804688 135.175781 90.308594 C 135.175781 93.8125 132.332031 96.648438 128.820312 96.648438 L 51.609375 96.648438 C 48.101562 96.648438 45.257812 99.488281 45.257812 102.992188 C 45.257812 106.496094 48.101562 109.335938 51.609375 109.335938 L 79.355469 109.335938 C 85.046875 135.535156 108.410156 155.164062 136.367188 155.164062 L 280.859375 155.164062 C 289.902344 153.535156 297.003906 148.257812 302.015625 141.039062 L 368.640625 141.039062 C 372.148438 141.039062 374.992188 138.199219 374.992188 134.699219 C 374.992188 131.195312 372.148438 128.355469 368.640625 128.355469 "/></svg>
+                <span class="brand-name">Plak<b>.</b></span>
+                <span class="product-pill">LOCAL</span>
+            </a>
+            <div class="theme-line"></div>
+            <div class="sidebar-nav">
+                <div class="side-label">Local workspace</div>
+                <nav class="side-nav">
+                    <a class="side-link" :class="{ active: !detailSite }" href="#overview" @click="sidebarOpen = false">
+                        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                        <span>Overview</span>
+                    </a>
+                    <a class="side-link" :class="{ active: detailSite }" href="#sites" @click="sidebarOpen = false">
+                        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+                        <span>Websites</span>
+                        <span class="side-count" x-text="sites.length"></span>
+                    </a>
+                </nav>
+                <div class="side-label">Tools</div>
+                <nav class="side-nav">
+                    <button class="side-link" type="button" @click="openEditor()">
+                        <svg viewBox="0 0 24 24"><path d="m8 6-6 6 6 6M16 6l6 6-6 6"/></svg>
+                        <span>Editor</span>
+                    </button>
+                    <a class="side-link" :href="adminerUrl" target="_blank" rel="noopener">
+                        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="2.5"/><path d="M4 5v14c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5V5"/><path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"/></svg>
+                        <span>Database</span>
+                    </a>
+                    <a class="side-link" :href="mailpitUrl" target="_blank" rel="noopener">
+                        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+                        <span>Mail</span>
+                    </a>
+                </nav>
+                <div class="side-label">System</div>
+                <nav class="side-nav">
+                    <a class="side-link" href="#services" @click="sidebarOpen = false">
+                        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg>
+                        <span>Services</span>
+                    </a>
+                </nav>
+            </div>
+            <div class="sidebar-foot">
+                <a class="workspace-card" href="#overview" @click="sidebarOpen = false">
+                    <span class="workspace-avatar">L</span>
+                    <span class="workspace-meta"><b>Local machine</b><span>plak.localhost</span></span>
+                    <span class="workspace-chev">›</span>
+                </a>
+                <a class="side-cloud" href="<?= htmlspecialchars($__plak_panel_url, ENT_QUOTES) ?>" target="_blank" rel="noopener">Open cloud panel <span>↗</span></a>
+            </div>
+        </aside>
+        <div class="sidebar-backdrop" x-show="sidebarOpen" @click="sidebarOpen = false" x-cloak></div>
+        <div class="workspace">
+            <header class="topbar">
+                <div class="crumbs">
+                    <button type="button" class="top-icon mobile-menu" @click="sidebarOpen = !sidebarOpen" aria-label="Open navigation">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+                    </button>
+                    <span>Plak local</span><span class="crumb-sep">/</span><b x-text="detailSite ? detailSite.name : 'Overview'"></b>
+                </div>
+                <div class="top-actions">
+                    <button type="button" class="top-search" @click="$refs.filterInput.focus()" aria-label="Search sites">
+                        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 5 5"/></svg>
+                        <span>Search sites...</span><kbd>/</kbd>
+                    </button>
+                    <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
+                        <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
+                        <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
+                    </button>
+                    <span class="top-avatar" title="Local environment">L</span>
+                </div>
+            </header>
+            <main class="main" id="overview">
+                <div class="page-head">
+                    <div>
+                        <h1>Local overview</h1>
+                        <p>Your local WordPress and HTML sites, running on this machine.</p>
+                    </div>
+                    <button class="pill primary" type="button" @click="toggleAdd()" x-text="adding ? 'Cancel' : '+ Add site'"></button>
+                </div>
+                <section class="card" id="sites">
             <header class="card-head">
-                <h1 class="card-title">Sites</h1>
+                <h2 class="card-title">Websites</h2>
                 <div class="card-actions">
                     <button class="pill" @click="cycleSort()" :title="'Sort by — click to cycle'" x-text="'sort: ' + sort"></button>
                     <a class="pill" href="https://db.plak.localhost<?= $__plak_site_port_suffix ?>" target="_blank" rel="noopener" title="Open Adminer">
@@ -6148,7 +6713,6 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                     </a>
                     <button class="pill" @click="openMail('all')" title="Read captured mail in the dashboard">inbox</button>
                     <button class="pill" @click="openImport()" title="Create a site from a backup archive">import</button>
-                    <button class="pill primary" @click="toggleAdd()" x-text="adding ? 'cancel' : '+ add site'"></button>
                 </div>
             </header>
 
@@ -6217,10 +6781,20 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                 </div>
             </div>
 
+            <div class="site-table-head" aria-hidden="true">
+                <span>Site</span>
+                <span>Type</span>
+                <span>Updated</span>
+                <span>Size</span>
+                <span class="right">Actions</span>
+            </div>
             <ul class="site-list">
                 <template x-for="site in filteredSites" :key="site.name">
                     <li class="site-row" @click="openSite(site)">
-                        <a class="site-domain" :href="site.domain" target="_blank" rel="noopener" @click.stop x-html="highlightedDomain(site.domain, filter)"></a>
+                        <span class="site-cell">
+                            <a class="site-domain" :href="site.domain" target="_blank" rel="noopener" @click.stop x-html="highlightedDomain(site.domain, filter)"></a>
+                            <span class="site-path" x-text="site.display_path"></span>
+                        </span>
                         <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.multisite_mode ? 'NETWORK' : (site.type === 'WordPress' ? 'WP' : 'STATIC')"></span>
                         <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
@@ -6239,6 +6813,9 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                                     <span class="btn-label">login</span>
                                     <span class="btn-spinner" aria-hidden="true"></span>
                                 </button>
+                            </template>
+                            <template x-if="site.type !== 'WordPress'">
+                                <a class="site-action-btn" :href="'/editor/?site=' + encodeURIComponent(site.name)" target="_blank" rel="noopener" @click.stop title="Edit HTML">edit</a>
                             </template>
                             <button class="site-action-btn" @click.stop="copyPath(site.full_path)" title="Copy site path to clipboard">path</button>
                             <button class="site-action-btn danger" @click.stop="deleteSite(site.name)" :title="'Delete ' + site.name">delete</button>
@@ -6262,7 +6839,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                 </template>
             </ul>
 
-            <footer class="card-foot">
+            <footer class="card-foot" id="services">
                 <div class="services">
                     <span class="dot" title="Caddy is serving this page — it's running">caddy</span>
                     <button type="button" class="dot link" @click="showDbModal = true" title="Database credentials">mariadb</button>
@@ -6275,9 +6852,8 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                 </div>
             </footer>
         </section>
-    </div>
 
-    <section class="card site-detail" x-show="detailSite" x-cloak>
+    <section class="card site-detail" id="site-detail" x-show="detailSite" x-cloak>
         <template x-if="detailSite">
             <div>
                 <div class="detail-head">
@@ -6621,6 +7197,9 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
             </div>
         </template>
     </section>
+            </main>
+        </div>
+    </div>
 
     <div x-show="showDbModal" x-transition.opacity class="modal-backdrop" @click.self="showDbModal = false" @keydown.escape.window="showDbModal = false" style="display: none;">
         <div class="modal">
@@ -6740,8 +7319,10 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
 
         document.addEventListener('alpine:init', () => {
             Alpine.data('dashboard', () => ({
-                // Respect the OS theme preference on first visit, dark otherwise.
-                theme: localStorage.getItem('theme') || 'dark',
+                // Follow the saved panel theme; first visits start light like
+                // panel.plak.work. `theme` is kept as a migration fallback.
+                theme: localStorage.getItem('plak-theme') || localStorage.getItem('theme') || 'light',
+                sidebarOpen: false,
                 sites: [],
                 isLoading: true,
                 adding: false,
@@ -6876,7 +7457,7 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
 
                 init() {
                     this.applyTheme();
-                    this.$watch('theme', () => { this.applyTheme(); localStorage.setItem('theme', this.theme); });
+                    this.$watch('theme', () => { this.applyTheme(); localStorage.setItem('plak-theme', this.theme); });
 
                     // `/` focuses the filter (GitHub-style). Ignored when typing
                     // in a form field or holding a modifier key.
@@ -6954,6 +7535,10 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                             if (this.detailSite.type === 'WordPress') this.loadTool(name);
                             this.loadLogs(name);
                             this.loadSnapshots(name);
+                            this.$nextTick(() => {
+                                const detail = document.getElementById('site-detail');
+                                if (detail) detail.scrollIntoView({ block: 'start' });
+                            });
                         }
                     } else {
                         this.detailSite = null;
@@ -7492,6 +8077,15 @@ $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
                     if (this.adding) {
                         this.$nextTick(() => { if (this.$refs.newSiteInput) this.$refs.newSiteInput.focus(); });
                     }
+                },
+
+                openEditor() {
+                    const site = this.sites.find(s => s.type !== 'WordPress');
+                    if (!site) {
+                        this.showSnack('Create a static site first to use the HTML editor.', true);
+                        return;
+                    }
+                    window.open('/editor/?site=' + encodeURIComponent(site.name), '_blank', 'noopener');
                 },
 
                 formatSize(bytes) {
@@ -17402,6 +17996,14 @@ plak_site_push() {
 
 # Source: commands/site/reload
 plak_site_reload() {
+    # `plak upgrade` may run before the local stack has ever created ~/Plak.
+    # Create the state directory first: without it the reload lock cannot be
+    # written and the function would silently return without deploying the UI.
+    mkdir -p "$PLAK_SITE_DIR" 2>/dev/null || {
+        echo "❌ Could not create $PLAK_SITE_DIR." >&2
+        return 1
+    }
+
     # Auto-heal any root-owned state left over from a pre-1.10 install.
     heal_plak_site_state_ownership
     # Serialize reloads to keep Caddy's admin server healthy. The dashboard
@@ -17442,7 +18044,8 @@ plak_site_reload() {
         if ! acquire_reload_lock; then
             # Lost the race to another reclaimer — they've got it.
             touch "$pending" 2>/dev/null || true
-            return 0
+            echo "❌ Could not acquire the reload lock at $lock_file." >&2
+            return 1
         fi
     fi
 
@@ -19328,6 +19931,23 @@ plak_upgrade_replace_plak_script() {
     )
 }
 
+# Refresh the local dashboard, editor and Adminer theme with the newly
+# installed script. This is deliberately just `reload`: it deploys the UI
+# assets before the service-specific work, and it no longer requires the
+# whole local stack to be on PATH.
+plak_site_upgrade_reload_ui() {
+    local install_path="${1:-}"
+    [ -n "$install_path" ] || return 1
+
+    echo ""
+    echo "🔄 Reloading Plak to apply UI updates..."
+    if ! "$install_path" reload; then
+        echo "⚠️ Plak reload failed; run 'plak reload' after resolving the error." >&2
+        return 1
+    fi
+    return 0
+}
+
 plak_site_upgrade() {
     local auto_yes=false
     for arg in "$@"; do
@@ -19407,6 +20027,9 @@ plak_site_upgrade() {
 
     if ! command -v frankenphp &> /dev/null; then
         echo "   - ⚠️ FrankenPHP not found. Skipping update check."
+        # Still refresh the dashboard/editor/Adminer: the CLI can be upgraded
+        # before the local stack exists, and the UI assets are independent.
+        plak_site_upgrade_reload_ui "$install_path" || true
         return 0
     fi
 
@@ -19460,6 +20083,7 @@ plak_site_upgrade() {
     local adminer_file="$ADMINER_DIR/adminer-core.php"
     if [ ! -f "$adminer_file" ]; then
         echo "   - ⚠️ Adminer not found. Skipping update check."
+        plak_site_upgrade_reload_ui "$install_path" || true
         return 0
     fi
 
@@ -19593,11 +20217,7 @@ plak_site_upgrade() {
 
     # Invoke the on-disk binary so a freshly-upgraded script's new functions are used
     # (the currently-running process still holds the pre-upgrade functions in memory).
-    echo ""
-    echo "🔄 Reloading Plak to apply UI updates..."
-    if ! "$install_path" reload; then
-        echo "⚠️ Plak reload failed; run 'plak reload' after resolving the error." >&2
-    fi
+    plak_site_upgrade_reload_ui "$install_path" || true
 
     local restart_needed=false
     [ "$PLAK_FRANKENPHP_UPDATED" = true ] && restart_needed=true
@@ -21008,40 +21628,40 @@ PLAK_EDITOR_ASSET_EOF
     cat > "$editor_dir/editor.css" <<'PLAK_EDITOR_ASSET_EOF'
 :root {
   color-scheme: light;
-  --bg: #f5f5f1;
+  --bg: #ffffff;
   --panel: #ffffff;
-  --panel-2: #efece4;
-  --ink: #10110f;
-  --muted: #62665f;
-  --border: #10110f;
-  --soft: #d6d3c9;
+  --panel-2: #f6f8fb;
+  --ink: #17213a;
+  --muted: #5e6a80;
+  --border: #e4e7ed;
+  --soft: #edf0f4;
   --input: #ffffff;
-  --action-bg: #b7fa45;
-  --action-fg: #10110f;
-  --action-border: #10110f;
-  --action-shadow: 4px 4px 0 #10110f;
-  --accent: #344aff;
-  --danger: #b42318;
-  --radius: 3px;
-  --font-sans: "Outfit", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --action-bg: #3156f5;
+  --action-fg: #ffffff;
+  --action-border: #3156f5;
+  --action-shadow: none;
+  --accent: #3156f5;
+  --danger: #b52b43;
+  --radius: 6px;
+  --font-sans: "DM Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0e110f;
-  --panel: #151a16;
-  --panel-2: #101510;
-  --ink: #d6e9d3;
-  --muted: #8a9b86;
-  --border: #2a352a;
-  --soft: #202920;
-  --input: #0b0e0c;
-  --action-bg: #b7fa45;
-  --action-fg: #10110f;
-  --action-border: #b7fa45;
+  --bg: #000000;
+  --panel: #0b0b0d;
+  --panel-2: #111114;
+  --ink: #fafafa;
+  --muted: #a3a3a3;
+  --border: #232327;
+  --soft: #1b1b1e;
+  --input: #0e0e10;
+  --action-bg: #4f6ef7;
+  --action-fg: #ffffff;
+  --action-border: #4f6ef7;
   --action-shadow: none;
-  --accent: #b7fa45;
-  --danger: #ff8a80;
+  --accent: #8aa2ff;
+  --danger: #ff8fa2;
 }
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -21395,6 +22015,104 @@ body.embed .site { max-width: 28rem; }
   .actions .status { margin-left: auto; }
   .canvas { padding: 8px; }
 }
+
+/* =========================================================
+   Plak panel shell + local context bar
+   ========================================================= */
+.local-context {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  height: 30px;
+  padding: 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, #baf180 48%, var(--border));
+  background: color-mix(in srgb, #baf180 16%, var(--panel));
+  color: var(--muted);
+  font: 500 11px var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+}
+html[data-theme="dark"] .local-context {
+  background: #0f1a0c;
+  border-bottom-color: #22331a;
+  color: #e8ecf5;
+}
+.local-context .ctx-local {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-weight: 600;
+  letter-spacing: .08em;
+}
+html[data-theme="dark"] .local-context .ctx-local { color: #e8ecf5; }
+.local-context .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: #b7fa45; flex: none; }
+.local-context .ctx-host { color: var(--ink); font-weight: 600; }
+html[data-theme="dark"] .local-context .ctx-host { color: #e8ecf5; }
+.local-context .ctx-sep { color: var(--muted); }
+.local-context .ctx-site { overflow: hidden; text-overflow: ellipsis; }
+.local-context .ctx-link {
+  margin-left: auto;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+.local-context .ctx-link:hover { text-decoration: underline; }
+
+.brand { gap: .45rem; }
+.brand-cloud { width: 36px; height: 18px; flex: none; color: var(--action-bg); }
+html[data-theme="dark"] .brand-cloud { color: #ffffff; }
+.brand-name { font-size: 18px; font-weight: 750; letter-spacing: -.07em; }
+.brand-name b { color: var(--accent); }
+.brand-pill {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: .55rem;
+  font-weight: 500;
+  letter-spacing: .06em;
+}
+.topbar { padding: .55rem .9rem; gap: .7rem; }
+.actions button,
+.actions .ghost {
+  min-height: 32px;
+  padding: .4rem .62rem;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: .72rem;
+  font-weight: 600;
+}
+.actions button.primary { border-radius: 6px; box-shadow: none; }
+.actions button.primary:hover { background: color-mix(in srgb, var(--action-bg) 88%, white); }
+html[data-theme="dark"] .actions button.primary:hover { background: #607dff; }
+.status { color: var(--muted); }
+.status::before { color: #198453; }
+html[data-theme="dark"] .status::before { color: #78d6a4; }
+html[data-theme="light"] .status { color: var(--muted); }
+.canvas { background: var(--panel-2); }
+#preview, #code { border-radius: 8px; }
+.modal-card { border-radius: 10px; box-shadow: 0 18px 46px rgba(13, 31, 63, .16); }
+.modal-card h2 { font-weight: 700; letter-spacing: -.03em; }
+.modal-card input,
+.modal-card select,
+.field input[type="text"] { border-radius: 6px; }
+.field-row button,
+.modal-actions button { border-radius: 6px; font-family: var(--font-sans); font-size: .72rem; font-weight: 600; }
+.modal-actions button.primary { border-radius: 6px; box-shadow: none; }
+.modal-actions button.primary:hover { background: color-mix(in srgb, var(--action-bg) 88%, white); }
+@media (max-width: 760px) {
+  .local-context .ctx-site { display: none; }
+  .local-context { padding: 0 10px; font-size: 10px; }
+}
+
+/* `hidden` must win over the flex button rule: Close is embed-only. */
+.actions [hidden] { display: none !important; }
 PLAK_EDITOR_ASSET_EOF
     cat > "$editor_dir/editor.js" <<'PLAK_EDITOR_ASSET_EOF'
 (() => {
@@ -21456,7 +22174,7 @@ PLAK_EDITOR_ASSET_EOF
     themeToggle.addEventListener('click', () => {
       const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
       document.documentElement.dataset.theme = next;
-      try { localStorage.setItem('plak-editor-theme', next); } catch (event) {}
+      try { localStorage.setItem('plak-theme', next); } catch (event) {}
       updateThemeToggle();
     });
     updateThemeToggle();
@@ -22478,6 +23196,9 @@ $initialFile = isset($_GET['file']) ? ltrim((string) $_GET['file'], '/') : 'inde
 $embed = isset($_GET['embed']) && (string) $_GET['embed'] === '1';
 $dashboard = plak_html_dashboard_base();
 $siteUrl = $domain . '/';
+$dashboardHost = parse_url($dashboard, PHP_URL_HOST) ?: 'plak.localhost';
+$dashboardPort = parse_url($dashboard, PHP_URL_PORT);
+$editorHost = $dashboardHost . ($dashboardPort ? ':' . $dashboardPort : '');
 // Cache-bust assets per deploy so an upgrade never reuses an old editor.
 $jsVersion = (string) (@filemtime(__DIR__ . '/editor.js') ?: 1);
 $cssVersion = (string) (@filemtime(__DIR__ . '/editor.css') ?: 1);
@@ -22496,28 +23217,36 @@ header('Referrer-Policy: no-referrer');
 <meta name="plak-domain" content="<?= htmlspecialchars($domain, ENT_QUOTES, 'UTF-8') ?>">
 <meta name="plak-file" content="<?= htmlspecialchars($initialFile, ENT_QUOTES, 'UTF-8') ?>">
 <meta name="plak-embed" content="<?= $embed ? '1' : '0' ?>">
-<title>Edit <?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?> · Plak</title>
+<title>Edit <?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?> · Plak local</title>
 <script>
 (function () {
   try {
-    var saved = localStorage.getItem('plak-editor-theme');
-    var theme = (saved === 'dark' || saved === 'light') ? saved : 'dark';
+    var saved = localStorage.getItem('plak-theme') || localStorage.getItem('plak-editor-theme');
+    var theme = (saved === 'dark' || saved === 'light') ? saved : 'light';
     document.documentElement.setAttribute('data-theme', theme);
   } catch (event) {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    document.documentElement.setAttribute('data-theme', 'light');
   }
 })();
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700;750&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="editor.css?v=<?= $cssVersion ?>">
 </head>
 <body class="<?= $embed ? 'embed' : '' ?>">
+<div class="local-context" aria-label="Local environment">
+  <span class="ctx-local"><span class="ctx-dot"></span>LOCAL</span>
+  <span class="ctx-host"><?= htmlspecialchars($editorHost, ENT_QUOTES, 'UTF-8') ?>/editor</span>
+  <span class="ctx-sep">·</span>
+  <span class="ctx-site"><?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?></span>
+  <a class="ctx-link" href="<?= htmlspecialchars($dashboard, ENT_QUOTES, 'UTF-8') ?>/">Back to dashboard ↗</a>
+</div>
 <header class="topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">P</span>
-    <span>Plak <span class="brand-sub">HTML editor</span></span>
+    <svg class="brand-cloud" viewBox="0 0 375 156" aria-hidden="true"><path fill="currentColor" d="M 368.640625 128.355469 L 200.929688 128.355469 C 197.421875 128.355469 194.574219 125.519531 194.574219 122.015625 C 194.574219 118.511719 197.421875 115.675781 200.929688 115.675781 L 323.390625 115.675781 C 326.898438 115.675781 329.742188 112.835938 329.742188 109.335938 C 329.742188 105.832031 326.898438 102.992188 323.390625 102.992188 L 310.15625 102.992188 C 307.757812 86.25 297.835938 71.125 279.460938 67.597656 C 279.945312 64.574219 280.203125 61.472656 280.203125 58.3125 C 280.203125 26.152344 254.082031 0.0859375 221.859375 0.0859375 C 193.839844 0.0859375 170.4375 19.800781 164.8125 46.085938 L 164.808594 46.085938 C 156.394531 41.386719 146.695312 38.710938 136.367188 38.710938 C 113.375 38.710938 93.488281 51.988281 83.984375 71.285156 L 6.363281 71.285156 C 2.851562 71.285156 0.0078125 74.125 0.0078125 77.625 C 0.0078125 81.125 2.851562 83.964844 6.363281 83.964844 L 128.820312 83.964844 C 132.332031 83.964844 135.175781 86.804688 135.175781 90.308594 C 135.175781 93.8125 132.332031 96.648438 128.820312 96.648438 L 51.609375 96.648438 C 48.101562 96.648438 45.257812 99.488281 45.257812 102.992188 C 45.257812 106.496094 48.101562 109.335938 51.609375 109.335938 L 79.355469 109.335938 C 85.046875 135.535156 108.410156 155.164062 136.367188 155.164062 L 280.859375 155.164062 C 289.902344 153.535156 297.003906 148.257812 302.015625 141.039062 L 368.640625 141.039062 C 372.148438 141.039062 374.992188 138.199219 374.992188 134.699219 C 374.992188 131.195312 372.148438 128.355469 368.640625 128.355469 "/></svg>
+    <span class="brand-name">Plak<b>.</b></span>
+    <span class="brand-pill">LOCAL</span>
   </div>
   <div class="site">
     <strong><?= htmlspecialchars($site, ENT_QUOTES, 'UTF-8') ?></strong>
@@ -22741,32 +23470,43 @@ PLAK_EDITOR_ASSET_EOF
         z-index: 2;
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        min-height: 40px;
-        padding: .55rem .85rem;
-        border: 1px solid #10110f;
-        border-radius: 3px;
-        background: #b7fa45;
-        color: #10110f;
-        box-shadow: 4px 4px 0 #10110f;
+        gap: 7px;
+        min-height: 38px;
+        padding: .5rem .8rem;
+        border: 1px solid #e4e7ed;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, .97);
+        color: #17213a;
+        box-shadow: 0 8px 18px rgba(13, 31, 63, .12);
         cursor: pointer;
-        font: 600 12px/1 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        letter-spacing: .02em;
+        font: 600 12px/1 "DM Sans", Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+        letter-spacing: -.01em;
+        backdrop-filter: blur(8px) saturate(140%);
+        -webkit-backdrop-filter: blur(8px) saturate(140%);
       }
-      .launcher span { opacity: .85; }
-      .launcher:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #10110f; }
-      .launcher:focus-visible { outline: 3px solid #344aff; outline-offset: 3px; }
+      .launcher::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #b7fa45;
+        flex: none;
+      }
+      .launcher span { color: #5e6a80; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 11px; }
+      .launcher:hover { border-color: #3156f5; color: #3156f5; transform: translateY(-1px); }
+      .launcher:hover span { color: #3156f5; }
+      .launcher:focus-visible { outline: 2px solid #3156f5; outline-offset: 3px; }
       .overlay {
         position: fixed;
         inset: 0;
         z-index: 3;
-        background: #0e110f;
+        background: #f6f8fb;
       }
       .overlay[hidden] { display: none; }
       .frame-wrap {
         width: 100%;
         height: 100%;
-        background: #0e110f;
+        background: #f6f8fb;
         overflow: hidden;
       }
       iframe {
@@ -22774,13 +23514,13 @@ PLAK_EDITOR_ASSET_EOF
         width: 100%;
         height: 100%;
         border: 0;
-        background: #0e110f;
+        background: #ffffff;
       }
       @media (max-width: 700px) {
         .launcher { right: 14px; bottom: 14px; }
       }
     </style>
-    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&gt;_</span> Edit</button>
+    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&lt;/&gt;</span> Edit site</button>
     <div class="overlay" id="plak-edit-overlay" hidden>
       <div class="frame-wrap">
         <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>

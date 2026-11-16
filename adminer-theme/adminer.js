@@ -19,7 +19,7 @@
       var s = localStorage.getItem(KEY_THEME);
       if (s === 'dark' || s === 'light') return s;
     } catch (e) {}
-    return 'dark';
+    return 'light';
   }
 
   function applyTheme(t) {
@@ -159,7 +159,7 @@
 
     var version = h1.querySelector('.version');
     var label = link.textContent.trim() || 'Plak DB';
-    link.textContent = label.replace(/^Adminer/i, 'Plak DB');
+    link.textContent = 'Plak DB';
 
     var brand = document.createElement('span');
     brand.className = 'plak-brand';
@@ -187,6 +187,11 @@
     }
     text.appendChild(kicker);
     text.appendChild(name);
+
+    var pill = document.createElement('span');
+    pill.className = 'plak-local-pill';
+    pill.textContent = 'LOCAL';
+    name.appendChild(pill);
     brand.appendChild(mark);
     brand.appendChild(text);
 
@@ -194,7 +199,55 @@
     h1.appendChild(brand);
   }
 
+  /* ---------- Local context bar ----------
+     The same 30px strip as the dashboard and the editor: this is the one
+     structural difference from panel.plak.work. */
+  function makeLocalBar() {
+    if (document.querySelector('.plak-local-context')) return;
+
+    var host = location.host || 'db.plak.localhost';
+    var dashHost = host.replace(/^db\./, '');
+    var dash = location.protocol + '//' + dashHost + '/';
+
+    var bar = document.createElement('div');
+    bar.className = 'plak-local-context';
+    bar.setAttribute('aria-label', 'Local environment');
+
+    var local = document.createElement('span');
+    local.className = 'ctx-local';
+    var dot = document.createElement('span');
+    dot.className = 'ctx-dot';
+    local.appendChild(dot);
+    local.appendChild(document.createTextNode('LOCAL'));
+
+    var hostEl = document.createElement('span');
+    hostEl.className = 'ctx-host';
+    hostEl.textContent = host;
+
+    var sep = document.createElement('span');
+    sep.className = 'ctx-sep';
+    sep.textContent = '·';
+
+    var service = document.createElement('span');
+    service.className = 'ctx-service';
+    service.textContent = 'MariaDB';
+
+    var link = document.createElement('a');
+    link.className = 'ctx-link';
+    link.href = dash;
+    link.textContent = 'Back to dashboard ↗';
+
+    bar.appendChild(local);
+    bar.appendChild(hostEl);
+    bar.appendChild(sep);
+    bar.appendChild(service);
+    bar.appendChild(link);
+    document.body.insertBefore(bar, document.body.firstChild);
+    document.body.classList.add('plak-has-local-bar');
+  }
+
   function init() {
+    makeLocalBar();
     makeToggle();
     makeResizer();
     retargetBrand();

@@ -1,4 +1,12 @@
 plak_site_reload() {
+    # `plak upgrade` may run before the local stack has ever created ~/Plak.
+    # Create the state directory first: without it the reload lock cannot be
+    # written and the function would silently return without deploying the UI.
+    mkdir -p "$PLAK_SITE_DIR" 2>/dev/null || {
+        echo "❌ Could not create $PLAK_SITE_DIR." >&2
+        return 1
+    }
+
     # Auto-heal any root-owned state left over from a pre-1.10 install.
     heal_plak_site_state_ownership
     # Serialize reloads to keep Caddy's admin server healthy. The dashboard
@@ -39,7 +47,8 @@ plak_site_reload() {
         if ! acquire_reload_lock; then
             # Lost the race to another reclaimer — they've got it.
             touch "$pending" 2>/dev/null || true
-            return 0
+            echo "❌ Could not acquire the reload lock at $lock_file." >&2
+            return 1
         fi
     fi
 

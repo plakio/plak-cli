@@ -107,7 +107,7 @@ The Plak.io/panel onboarding prompt lives at
 [agent-setup/panel/prompt.md](agent-setup/panel/prompt.md). It installs the
 CLI, connects the machine to the panel, and verifies the account.
 
-The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. On macOS arm64 the installer uses `/opt/homebrew/bin` only when that directory is already on `PATH`; otherwise it installs to `/usr/local/bin`. If the destination is not on `PATH`, it prints the line to add. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior.
+The installer and `plak upgrade` use the newest stable `vX.Y.Z` Git tag. They validate the downloaded script against that tag's embedded version and never install unreleased commits from `main`. If the tag cannot be resolved or validated, the existing installation is left untouched. On macOS arm64 the installer uses `/opt/homebrew/bin` only when that directory is already on `PATH`; otherwise it installs to `/usr/local/bin`. If the destination is not on `PATH`, it prints the line to add. See [docs/homebrew.md](docs/homebrew.md#stable-channel-selection-rules) for selection and failure behavior. `plak upgrade` also refreshes the local dashboard, HTML editor and Adminer theme, so the new UI appears without a separate `plak reload`.
 
 Install the Plak agent skill for Codex, Claude Code, OpenCode, Hermes, Pi, or the global agent skills directory:
 

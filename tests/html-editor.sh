@@ -76,6 +76,8 @@ done
 grep -q 'editor.js?v=' "$GUI_DIR/editor/index.php" || fail "editor.js is not cache-busted"
 grep -q 'editor.css?v=' "$GUI_DIR/editor/index.php" || fail "editor.css is not cache-busted"
 grep -q 'loader.js?v=' "$APP_DIR/site-router/render.php" || fail "loader.js is not cache-busted"
+grep -q 'Edit site' "$GUI_DIR/editor/loader.js" || fail "launcher lacks the panel label"
+grep -q 'DM Sans' "$GUI_DIR/editor/loader.js" || fail "launcher does not use the panel font stack"
 grep -q "addEventListener('input'" "$GUI_DIR/editor/editor.js" || fail "editor does not commit on input"
 grep -q 'data-plak-format="bold"' "$GUI_DIR/editor/editor.js" || fail "editor lacks the bold format control"
 grep -q 'plak-image-drop' "$GUI_DIR/editor/editor.js" || fail "editor lacks the image drop target"
@@ -101,6 +103,10 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.2
 done
 grep -q 'plak-csrf' "$tmpdir/page.html" || fail "editor page did not render"
+grep -q 'class="local-context"' "$tmpdir/page.html" || fail "editor lacks the local context bar"
+grep -q 'family=DM+Sans' "$tmpdir/page.html" || fail "editor does not load DM Sans"
+grep -q 'plak-theme' "$tmpdir/page.html" || fail "editor does not use the shared theme key"
+grep -q 'brand-cloud' "$tmpdir/page.html" || fail "editor lacks the panel brand mark"
 token=$(cat "$HOME/Plak/cache/dashboard-token")
 [ "${#token}" -eq 64 ] || fail "editor token was not created"
 

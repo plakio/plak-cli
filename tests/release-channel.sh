@@ -542,8 +542,18 @@ assert_contains "$tmpdir/upgrade.out" "Upgrading Plak to version ${new_version}"
 assert_contains "$upgrade_log" "raw.githubusercontent.com/plakio/plak-cli/${new_tag}/plak.sh" "upgrade tag URL"
 assert_no_main_fallback "$upgrade_log" "upgrade"
 assert_no_temps "$tmpdir/upgrade-bin" "successful upgrade"
+# The upgrade must refresh the dashboard assets with the new script, without
+# waiting for a separate manual `plak reload`.
+if [ ! -f "$tmpdir/home/Plak/App/gui/index.php" ]; then
+    echo "--- upgrade output ---" >&2
+    cat "$tmpdir/upgrade.out" >&2
+    echo "--- end upgrade output ---" >&2
+    fail "upgrade did not deploy the dashboard"
+fi
+grep -q 'local-context' "$tmpdir/home/Plak/App/gui/index.php" \
+    || fail "upgrade left the old dashboard in place"
 
-# Already current: no script download at all.
+# Already current: no script download; the UI/theme refresh is still allowed.
 reset_upgrade_prior
 : > "$upgrade_log"
 same_tags="$tmpdir/same-tags.json"
@@ -551,7 +561,7 @@ tags_json "v${old_version}" > "$same_tags"
 run_upgrade "$upgrade_log" "$same_tags" "$new_payload" > "$tmpdir/upgrade.out" 2>&1 \
     || fail "upgrade at current version failed"
 assert_contains "$tmpdir/upgrade.out" "already using the latest stable version" "already current message"
-if grep -Fq 'raw.githubusercontent.com' "$upgrade_log"; then
+if grep -Eq 'raw\.githubusercontent\.com/plakio/plak-cli/[^/]+/plak\.sh' "$upgrade_log"; then
     fail "already-current upgrade downloaded a script"
 fi
 cmp -s "$tmpdir/prior-upgrade-plak" "$tmpdir/upgrade-bin/plak" || fail "already-current upgrade changed the executable"
@@ -569,7 +579,7 @@ tags_json "v${old_version}" > "$older_tags"
 run_upgrade "$upgrade_log" "$older_tags" "$new_payload" > "$tmpdir/upgrade.out" 2>&1 \
     || fail "newer-than-stable upgrade failed"
 assert_contains "$tmpdir/upgrade.out" "newer than the latest stable release" "newer-than-stable message"
-if grep -Fq 'raw.githubusercontent.com' "$upgrade_log"; then
+if grep -Eq 'raw\.githubusercontent\.com/plakio/plak-cli/[^/]+/plak\.sh' "$upgrade_log"; then
     fail "newer-than-stable upgrade downloaded a script"
 fi
 

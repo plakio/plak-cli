@@ -459,6 +459,23 @@ plak_upgrade_replace_plak_script() {
     )
 }
 
+# Refresh the local dashboard, editor and Adminer theme with the newly
+# installed script. This is deliberately just `reload`: it deploys the UI
+# assets before the service-specific work, and it no longer requires the
+# whole local stack to be on PATH.
+plak_site_upgrade_reload_ui() {
+    local install_path="${1:-}"
+    [ -n "$install_path" ] || return 1
+
+    echo ""
+    echo "🔄 Reloading Plak to apply UI updates..."
+    if ! "$install_path" reload; then
+        echo "⚠️ Plak reload failed; run 'plak reload' after resolving the error." >&2
+        return 1
+    fi
+    return 0
+}
+
 plak_site_upgrade() {
     local auto_yes=false
     for arg in "$@"; do
@@ -538,6 +555,9 @@ plak_site_upgrade() {
 
     if ! command -v frankenphp &> /dev/null; then
         echo "   - ⚠️ FrankenPHP not found. Skipping update check."
+        # Still refresh the dashboard/editor/Adminer: the CLI can be upgraded
+        # before the local stack exists, and the UI assets are independent.
+        plak_site_upgrade_reload_ui "$install_path" || true
         return 0
     fi
 
@@ -591,6 +611,7 @@ plak_site_upgrade() {
     local adminer_file="$ADMINER_DIR/adminer-core.php"
     if [ ! -f "$adminer_file" ]; then
         echo "   - ⚠️ Adminer not found. Skipping update check."
+        plak_site_upgrade_reload_ui "$install_path" || true
         return 0
     fi
 
@@ -724,11 +745,7 @@ plak_site_upgrade() {
 
     # Invoke the on-disk binary so a freshly-upgraded script's new functions are used
     # (the currently-running process still holds the pre-upgrade functions in memory).
-    echo ""
-    echo "🔄 Reloading Plak to apply UI updates..."
-    if ! "$install_path" reload; then
-        echo "⚠️ Plak reload failed; run 'plak reload' after resolving the error." >&2
-    fi
+    plak_site_upgrade_reload_ui "$install_path" || true
 
     local restart_needed=false
     [ "$PLAK_FRANKENPHP_UPDATED" = true ] && restart_needed=true

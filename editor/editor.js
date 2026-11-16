@@ -57,7 +57,7 @@
     themeToggle.addEventListener('click', () => {
       const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
       document.documentElement.dataset.theme = next;
-      try { localStorage.setItem('plak-editor-theme', next); } catch (event) {}
+      try { localStorage.setItem('plak-theme', next); } catch (event) {}
       updateThemeToggle();
     });
     updateThemeToggle();

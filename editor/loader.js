@@ -28,32 +28,43 @@
         z-index: 2;
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        min-height: 40px;
-        padding: .55rem .85rem;
-        border: 1px solid #10110f;
-        border-radius: 3px;
-        background: #b7fa45;
-        color: #10110f;
-        box-shadow: 4px 4px 0 #10110f;
+        gap: 7px;
+        min-height: 38px;
+        padding: .5rem .8rem;
+        border: 1px solid #e4e7ed;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, .97);
+        color: #17213a;
+        box-shadow: 0 8px 18px rgba(13, 31, 63, .12);
         cursor: pointer;
-        font: 600 12px/1 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        letter-spacing: .02em;
+        font: 600 12px/1 "DM Sans", Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+        letter-spacing: -.01em;
+        backdrop-filter: blur(8px) saturate(140%);
+        -webkit-backdrop-filter: blur(8px) saturate(140%);
       }
-      .launcher span { opacity: .85; }
-      .launcher:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #10110f; }
-      .launcher:focus-visible { outline: 3px solid #344aff; outline-offset: 3px; }
+      .launcher::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #b7fa45;
+        flex: none;
+      }
+      .launcher span { color: #5e6a80; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 11px; }
+      .launcher:hover { border-color: #3156f5; color: #3156f5; transform: translateY(-1px); }
+      .launcher:hover span { color: #3156f5; }
+      .launcher:focus-visible { outline: 2px solid #3156f5; outline-offset: 3px; }
       .overlay {
         position: fixed;
         inset: 0;
         z-index: 3;
-        background: #0e110f;
+        background: #f6f8fb;
       }
       .overlay[hidden] { display: none; }
       .frame-wrap {
         width: 100%;
         height: 100%;
-        background: #0e110f;
+        background: #f6f8fb;
         overflow: hidden;
       }
       iframe {
@@ -61,13 +72,13 @@
         width: 100%;
         height: 100%;
         border: 0;
-        background: #0e110f;
+        background: #ffffff;
       }
       @media (max-width: 700px) {
         .launcher { right: 14px; bottom: 14px; }
       }
     </style>
-    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&gt;_</span> Edit</button>
+    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&lt;/&gt;</span> Edit site</button>
     <div class="overlay" id="plak-edit-overlay" hidden>
       <div class="frame-wrap">
         <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>
