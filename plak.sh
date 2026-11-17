@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PLAK_NAME="plak"
-PLAK_VERSION="0.4.85"
+PLAK_VERSION="0.4.86"
 PLAK_HOME="${PLAK_HOME:-$HOME/.plak}"
 PLAK_SSH_CONFIG="${PLAK_SSH_CONFIG:-$HOME/.ssh/config}"
 PLAK_HOSTS_FILE="${PLAK_HOSTS_FILE:-/etc/hosts}"
