@@ -98,6 +98,12 @@ sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/plak-stub';|" "
 # A servable site so list_sites has data.
 mkdir -p "$SITES_DIR/demo.localhost/public"
 touch "$SITES_DIR/demo.localhost/public/wp-config.php"
+# A static site for the editor picker and its HTML-file count.
+mkdir -p "$SITES_DIR/static.localhost/public"
+printf '<!doctype html><title>Static</title>\n' > "$SITES_DIR/static.localhost/public/index.html"
+printf '<!doctype html><title>About</title>\n' > "$SITES_DIR/static.localhost/public/about.html"
+mkdir -p "$HOME/Plak/Logs"
+printf 'mailpit log line 1\nmailpit log line 2\n' > "$HOME/Plak/Logs/mailpit.log"
 
 # Fixtures for the diagnostics panel (CLI-14): a shared PHP error log with
 # entries from two sites, a per-site debug.log, and a Caddy access log.
@@ -261,7 +267,16 @@ grep -q 'Local overview' "$tmpdir/first-index" || fail 'dashboard lacks the loca
 grep -q 'family=DM+Sans' "$tmpdir/first-index" || fail 'dashboard does not load DM Sans'
 grep -q 'plak-theme' "$tmpdir/first-index" || fail 'dashboard does not use the shared theme key'
 grep -q 'site-table-head' "$tmpdir/first-index" || fail 'dashboard lacks the sites table header'
+grep -q 'editor-view' "$tmpdir/first-index" || fail 'dashboard lacks the editor picker view'
+grep -q 'services-view' "$tmpdir/first-index" || fail 'dashboard lacks the services view'
+grep -q 'paletteOpen' "$tmpdir/first-index" || fail 'dashboard lacks the command palette'
+grep -q 'Keyboard shortcuts' "$tmpdir/first-index" || fail 'dashboard lacks the shortcuts sheet'
+grep -q 'action=static_sites' "$tmpdir/first-index" || fail 'dashboard does not load static sites'
+grep -q 'action=services' "$tmpdir/first-index" || fail 'dashboard does not load services'
+grep -q '<body x-data="dashboard">' "$tmpdir/first-index" || fail 'dashboard must not call init twice via x-init'
+grep -q "o: 'overview', w: 'websites', e: 'editor', s: 'services'" "$tmpdir/first-index" || fail 'dashboard shortcut mapping deviates from the panel convention'
 grep -q 'Cache-Control: no-store' "$GUI_DIR/index.php" || fail 'dashboard HTML can be cached after an upgrade'
+grep -q 'https://cloud.plak.io/' "$GUI_DIR/index.php" || fail 'Open cloud panel does not point to production'
 grep -q 'Cache-Control: no-store' "$GUI_DIR/api.php" || fail 'dashboard API can be cached after an upgrade'
 HOME="$tmpdir/service-home" php "$GUI_DIR/index.php" > "$tmpdir/service-index"
 grep -q "const CSRF_TOKEN = '$first_token'" "$tmpdir/service-index" || fail 'service HOME changed the dashboard user/token'
@@ -269,6 +284,24 @@ grep -q "const CSRF_TOKEN = '$first_token'" "$tmpdir/service-index" || fail 'ser
 # --- GET list_sites works (read-only) ---
 list_out=$(curl -fsS "$base/api.php?action=list_sites")
 grep -q '"name":"demo"' <<<"$list_out" || fail "list_sites did not return the demo site"
+
+# --- GET static_sites feeds the editor picker ---
+static_out=$(curl -fsS "$base/api.php?action=static_sites")
+grep -q '"name":"static"' <<<"$static_out" || fail "static_sites did not return the static site: $static_out"
+grep -q '"html_files":2' <<<"$static_out" || fail "static_sites did not count HTML files: $static_out"
+if grep -q '"name":"demo"' <<<"$static_out"; then fail "static_sites included a WordPress site"; fi
+
+# --- GET services feeds the Services page and topbar dots ---
+services_out=$(curl -fsS "$base/api.php?action=services")
+grep -q '"caddy"' <<<"$services_out" || fail "services did not return Caddy: $services_out"
+grep -q '"mariadb"' <<<"$services_out" || fail "services did not return MariaDB: $services_out"
+grep -q '"mailpit"' <<<"$services_out" || fail "services did not return Mailpit: $services_out"
+grep -q '"all_running"' <<<"$services_out" || fail "services did not return all_running: $services_out"
+
+# --- GET service_logs reads the local log tail ---
+logs_out=$(curl -fsS "$base/api.php?action=service_logs&service=mailpit")
+grep -q '"success":true' <<<"$logs_out" || fail "service_logs failed: $logs_out"
+grep -q 'mailpit log line 2' <<<"$logs_out" || fail "service_logs omitted the log tail: $logs_out"
 
 # api.php creates the shared CSRF token on first use.
 [ -f "$HOME/Plak/cache/dashboard-token" ] || fail "dashboard token was not created"

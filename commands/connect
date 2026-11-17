@@ -21,7 +21,7 @@ Connect this machine to your Plak panel account (device flow, Botmail-style):
 requests a pairing, shows/opens the approval link, polls until you approve
 it in the panel with 1 click. No secrets to copy by hand.
 
-  --panel URL   Panel origin (default https://panel.plak.work).
+  --panel URL   Panel origin (default https://cloud.plak.io).
                 Use an explicit URL for staging/dev, e.g. http://127.0.0.1:8000.
   --dev         Shorthand for $PLAK_PANEL_DEV_URL (default http://127.0.0.1:8000).
   --no-open     Print the approval link without opening a browser.

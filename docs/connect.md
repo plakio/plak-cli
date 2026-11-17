@@ -5,7 +5,7 @@ Device flow estilo Botmail. La CLI pide un pairing, el humano aprueba con
 personal. Sin copiar secretos a mano.
 
 ```bash
-plak connect --panel https://panel.plak.work   # producción (defecto)
+plak connect --panel https://cloud.plak.io   # producción (defecto)
 plak connect --dev                             # $PLAK_PANEL_DEV_URL (defecto http://127.0.0.1:8000)
 plak connect --manual --token-stdin            # fallback headless/WSL/auto
 plak connect status [--json]

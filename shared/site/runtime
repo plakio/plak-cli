@@ -984,6 +984,8 @@ function adminer_object() {
             // applies so the saved choice (default light, like the panel) is
             // honored without a theme flash on load.
             $nonce = \Adminer\nonce();
+            $favicon = 'data:image/png;base64,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';
+            echo "<link rel=\"icon\" type=\"image/png\" href=\"{$favicon}\" data-plak-favicon>\n";
             $init = "(function(){try{var s=localStorage.getItem('plak-adminer-theme');var t=(s==='dark'||s==='light')?s:'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();";
             echo "<script{$nonce}>{$init}</script>\n";
             $v = @filemtime(__DIR__ . '/adminer.js') ?: 1;
@@ -1651,6 +1653,173 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         echo json_encode($sites_info);
         exit;
     }
+    if ($action === 'static_sites') {
+        // Editor picker: only static sites, with a bounded HTML file count.
+        // Counting here keeps the overview list fast even for large sites.
+        $static_sites = [];
+        if (is_dir($sitedir)) {
+            foreach (scandir($sitedir) ?: [] as $item) {
+                if ($item === '.' || $item === '..') continue;
+                $site_path = $sitedir . '/' . $item;
+                if (!is_dir($site_path) || is_file($site_path . '/public/wp-config.php')) continue;
+                $public = $site_path . '/public';
+                $count = 0;
+                if (is_dir($public)) {
+                    try {
+                        $iterator = new RecursiveIteratorIterator(
+                            new RecursiveDirectoryIterator($public, FilesystemIterator::SKIP_DOTS)
+                        );
+                        foreach ($iterator as $entry) {
+                            if (!$entry->isFile()) continue;
+                            $rel = substr($entry->getPathname(), strlen($public) + 1);
+                            if (preg_match('#(^|/)\.#', $rel)) continue;
+                            if (preg_match('#(^|/)(node_modules|vendor)#i', $rel)) continue;
+                            if (preg_match('/\.(?:html?|htm)$/i', $entry->getFilename())) {
+                                $count++;
+                                if ($count >= 500) break;
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        $count = 0;
+                    }
+                }
+                $mtime = @filemtime($public);
+                if (!$mtime) $mtime = @filemtime($site_path);
+                $static_sites[] = [
+                    'name' => str_replace('.localhost', '', $item),
+                    'domain' => 'https://' . $item . $__plak_site_port_suffix,
+                    'display_path' => '~/Plak/Sites/' . $item,
+                    'full_path' => $site_path,
+                    'modified_at' => $mtime ?: null,
+                    'html_files' => $count,
+                ];
+            }
+        }
+        usort($static_sites, static function (array $a, array $b): int {
+            return ($b['modified_at'] ?? 0) <=> ($a['modified_at'] ?? 0);
+        });
+        echo json_encode($static_sites, JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    if ($action === 'services') {
+        // Read-only service status for the Services page and topbar dots.
+        // The CLI owns the platform-specific checks; PHP only aggregates.
+        $services_status = [];
+        $command = sprintf(
+            'HOME=%s %s status --json 2>/dev/null',
+            escapeshellarg($user_home),
+            escapeshellarg($plak_site_path)
+        );
+        $lines = [];
+        $rc = 1;
+        if (function_exists('exec')) {
+            @exec($command, $lines, $rc);
+        }
+        if ($rc === 0) {
+            $decoded = json_decode(implode("\n", $lines), true);
+            if (is_array($decoded)) $services_status = $decoded;
+        }
+        $normalize = static function ($value): string {
+            return in_array($value, ['running', 'stopped'], true) ? $value : 'unknown';
+        };
+        $config = [];
+        $config_path = $user_home . '/Plak/config';
+        if (is_file($config_path)) {
+            $parsed = parse_ini_file($config_path);
+            if (is_array($parsed)) $config = $parsed;
+        }
+        $db_host = (string) ($config['DB_HOST'] ?? '127.0.0.1');
+        $db_port = (string) ($config['DB_PORT'] ?? '3306');
+        $version = static function (string $cmd, string $pattern): ?string {
+            if (!function_exists('shell_exec')) return null;
+            $output = @shell_exec($cmd . ' 2>/dev/null');
+            if (!is_string($output) || $output === '') return null;
+            if (!preg_match($pattern, $output, $match)) return null;
+            return $match[1];
+        };
+        $caddy_status = $normalize($services_status['caddy'] ?? 'unknown');
+        // This endpoint is served by the local web stack; if the CLI cannot
+        // classify Caddy, the fact that this request answered is stronger.
+        if ($caddy_status === 'unknown') $caddy_status = 'running';
+        $services = [
+            'caddy' => [
+                'status' => $caddy_status,
+                'version' => $version('frankenphp version', '/v?([0-9]+\.[0-9]+\.[0-9]+)/'),
+                'address' => 'plak.localhost' . $__plak_site_port_suffix,
+                'open' => 'https://plak.localhost' . $__plak_site_port_suffix . '/',
+            ],
+            'mariadb' => [
+                'status' => $normalize($services_status['mariadb'] ?? 'unknown'),
+                'version' => $version('mariadb --version', '/Distrib\s+([0-9]+\.[0-9]+\.[0-9]+)/'),
+                'address' => $db_host . ':' . $db_port,
+                'open' => 'https://db.plak.localhost' . $__plak_site_port_suffix . '/',
+            ],
+            'mailpit' => [
+                'status' => $normalize($services_status['mailpit'] ?? 'unknown'),
+                'version' => $version('mailpit version', '/v?([0-9]+\.[0-9]+\.[0-9]+)/'),
+                'address' => '127.0.0.1:8025',
+                'open' => 'https://mail.plak.localhost' . $__plak_site_port_suffix . '/',
+            ],
+            'all_running' => false,
+            'checked_at' => time(),
+        ];
+        $services['all_running'] = $services['caddy']['status'] === 'running'
+            && $services['mariadb']['status'] === 'running'
+            && $services['mailpit']['status'] === 'running';
+        $services['php_version'] = $version('frankenphp php-cli -r "echo phpversion();"', '/([0-9]+\.[0-9]+\.[0-9]+)/');
+        if ($services['php_version'] === null) {
+            $services['php_version'] = $version('php -r "echo phpversion();"', '/([0-9]+\.[0-9]+\.[0-9]+)/');
+        }
+        echo json_encode($services, JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    if ($action === 'service_logs') {
+        $service = (string) ($_GET['service'] ?? '');
+        $log_dir = $user_home . '/Plak/Logs';
+        $candidates = [
+            'caddy' => [$log_dir . '/caddy-process.log', $log_dir . '/errors.log', $log_dir . '/caddy-reload.log'],
+            'mariadb' => [
+                '/opt/homebrew/var/log/mariadb/mariadb.log',
+                '/usr/local/var/log/mariadb/mariadb.log',
+                '/var/log/mysql/error.log',
+                '/var/log/mariadb/mariadb.log',
+                $log_dir . '/mariadb.log',
+            ],
+            'mailpit' => [$log_dir . '/mailpit.log'],
+        ];
+        if (!isset($candidates[$service])) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Unknown service.']);
+            exit;
+        }
+        $file = null;
+        foreach ($candidates[$service] as $candidate) {
+            if (is_file($candidate) && is_readable($candidate)) {
+                $file = $candidate;
+                break;
+            }
+        }
+        if ($file === null) {
+            echo json_encode(['success' => false, 'message' => 'No log file found for this service yet.']);
+            exit;
+        }
+        if (!function_exists('shell_exec')) {
+            echo json_encode(['success' => false, 'message' => 'Log reading is unavailable on this PHP build.']);
+            exit;
+        }
+        $content = @shell_exec('tail -n 80 ' . escapeshellarg($file) . ' 2>/dev/null');
+        $lines = is_string($content) ? preg_split('/\r?\n/', rtrim($content)) : [];
+        echo json_encode([
+            'success' => true,
+            'service' => $service,
+            'file' => $file,
+            'lines' => $lines === [''] ? [] : $lines,
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
     if ($action === 'download_snapshot') {
         // Streaming a full backup over GET: read-only, but sensitive, so it
         // still requires the per-install token and validated site/id.
@@ -2786,13 +2955,18 @@ require_once __DIR__ . '/dashboard-auth.php';
 $__plak_site_token_file = $user_home . '/Plak/cache/dashboard-token';
 $__plak_site_csrf = plak_site_dashboard_token($__plak_site_token_file);
 
-// Link back to the panel the CLI is connected to, if any.
-$__plak_panel_url = 'https://panel.plak.work/';
+// "Open cloud panel" always means production. A custom panel URL from
+// `plak connect` is honored, but the development/staging panel is not: the
+// link must not send local users to panel.plak.work.
+$__plak_panel_url = 'https://cloud.plak.io/';
 $__plak_connect_file = $user_home . '/Plak/connect.json';
 if (is_file($__plak_connect_file)) {
     $__plak_connect = json_decode((string) file_get_contents($__plak_connect_file), true);
     if (is_array($__plak_connect) && !empty($__plak_connect['panel_url'])) {
-        $__plak_panel_url = rtrim((string) $__plak_connect['panel_url'], '/') . '/';
+        $__plak_connected_panel = rtrim((string) $__plak_connect['panel_url'], '/');
+        if (!preg_match('#^https?://panel\.plak\.work$#i', $__plak_connected_panel)) {
+            $__plak_panel_url = $__plak_connected_panel . '/';
+        }
     }
 }
 ?>
@@ -2803,7 +2977,8 @@ if (is_file($__plak_connect_file)) {
     <meta name="color-scheme" content="light dark">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plak local — sites</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='8' fill='%23b7fa45'/><text x='32' y='46' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='%2310110f'>P</text></svg>">
+    <link rel="icon" type="image/png" href="data:image/png;base64,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">
+    <link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAD/h4/MvwAAAAlwSFlzAAAOwwAADsMBx2+oZAAAAAd0SU1FB+oLEQEQDz/B9lgAAAL+elRYdFJhdyBwcm9maWxlIHR5cGUgeG1wAABIiZVWSbbcIAzc6xQ5AkhC4OM4HnZ5L8scPyU8u3H37/bz0CBUUmkA+vfnL/3CL0rOJEMu0udiYw42WspqkYP/t8GmLD4nI7NFU5uNLUm/jO/SMzMHOtRg8LcvSUXHFDio2JyxkIMYTxLqzTKFnoNfMIGh3KRPrEpqN/xl0m0oWXEF6YE55/rjKUOIpwqReZYonV88kwRhDDCe46IEb8kd1MLsXHh0AJ8+bLlbpGqJsphgoKuudWBhgoWrAHhhYIMJtxBEXBSdr1zo5JQrspZb1abpoBvf4M9GOLyucddiJXF+j3fAQZk0GETUEhwZDvpcEM+EhckD7FzBnrkCxmdAuiNqrEhgzfjZyUPGGXRuCeTuHjsLO/oX7vo3AesbcgusCWeoLSnoioPc2GLXpy5BSXYVw+aATTIhAU2GI2KLJLVEWw5dIMorBD1gNETfQ9CyUOcag7QWxuFGvAI8yYWeWgg16fpaOqmKY3nbmqPqaG0EAkfiO+F7oSL0nUw6J1HRCLLRd0pKiP3MIQUMQZWOPqXdIqRDde+i4BWQDqxD+J19LtdynZ7EF2GnEzfq7occaUSY9VuOtkLxf4RCmCx7mdRuiF6HOMecXLEXgA4IcIbxAkUjVDGyrsFZI/yvnL2zd+OMPvMgw6W1uFr0iLssXZf8JG7tFbSStv7FJhkzo8Y8tbAhwErf6da6q90Uc687yksbeXInea4kKCk7wATawc8mR8+Cn9y6QtJO4ZGnybTieaiVR7xLfdrZgvsqWpZ9h76rSRktWjvXAEVSBDscbpxOQOQoODMIG7Zw1KzPulWd54qPoXCKZIz78g5jijeylRrmnnB+bildVMCyRQEQud7m2OiTijvjyy0MDXCjbenn1Hvfk+hJ+FNPupcNtepmT/96krukBoA853x3QWcQ7x3Z/LBIXDcetBLkj4tn5qVNfFByP3TRqVlorajbset8Zjw5jlMj8gFzCyiK9nqerS3qP6vvdH+7Z5pHAAACN0lEQVRYw+2VPWgUQRTH/2/2zJ13uYjk85AUEQwBQQ8OOcVCxUaRGBuLBIWIYhcUUqogkiJNCkmR2AmCWKQStBIsREQlCiYpEo1WBvVSSNTDmJ15Fru3t7M7exyXQJp91c6bmd/+38fMUBqbM7HJ/TEgBsSAGLB1gEQdaxigxgHMCoKZBDUGYNVVOND+9+PrJdtqBKAyg1f6koD69nhy2SiCal7rqnVsqMn9fn/tjUmDtaOW/tTYJU9iLv9iVdQLYJZSMVT/zWTVmUs9k+EgjCEotPV00fflPw/O+N2lgXfhIAxJZLXn4rmeNJU/zxa1ifYjs6gDwOroeEEAaMkfDEztE0wRAAZ7+g9N9VbiCyzOGsJ1AGw1VxLMmVu9iLBcft4OFoLSAFhdGPEAyb2RleXS/Ym1AMENgTy1tL7g/K0zDKCOUboTKKVTRrayBICl55dnp5tgsNXzr/RSOgpI/mSAO0/t9HJ5zHxK2k6/ZCFCABAIsI/fq9XYjg0kfj/64iP4O1F1nEgxDR/Wd9gb2lCIf1dnfOr8QsWPh4BMF7Us/bo9F8ja+hwkAPdwJ3Q6YD29vF8TsLISLH03AZBfyxQMAQDAavBuiyah7B9ZXr+MTwqC4SyQmNl9o9XnyGoN/GHJDUgtUiiJFTadvF7MGEsgn49+ciWwJIoAgNWuQqE7CQZ5bUFggv32SamakEgFAFjCdIOyEqFLzdxvlKgeb7/bClMjr/Xot0i37X9cY0AMiAExoGL/Ad87lyvXdI4wAAAAIHRFWHR4bXA6Q3JlYXRvclRvb2wAQ2FudmEgKFJlbmRlcmVyKc95fYMAAAAASUVORK5CYII=">
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
         // theme's background is used from the very first frame (no FOUC).
@@ -3788,6 +3963,142 @@ if (is_file($__plak_connect_file)) {
         .snackbar { background: #111d37; color: #ffffff; border: 1px solid #334260; border-radius: 8px; font-family: var(--font-sans); font-size: 12px; box-shadow: 0 12px 28px rgba(13, 31, 63, .18); }
         .snackbar.error { background: var(--danger); border-color: var(--danger); }
 
+        /* Overview stats */
+        .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat { min-height: 104px; padding: 18px 20px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); }
+        .stat-top { display: flex; align-items: center; justify-content: space-between; color: var(--text-dim); font-size: 12px; font-weight: 600; }
+        .stat-top span { color: var(--text-faint); }
+        .stat-n { margin-top: 11px; color: var(--text); font: 600 30px var(--font-mono); letter-spacing: -.04em; line-height: 1.2; }
+        .stat-cap { margin-top: 4px; color: var(--text-faint); font-size: 11px; }
+
+        /* Editor picker */
+        .editor-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+        .editor-search { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 200px; padding: 9px 11px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--bg-sunk); color: var(--text-faint); font-size: 12px; }
+        .editor-search svg { width: 15px; height: 15px; flex: none; }
+        .editor-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; }
+        .editor-search kbd { padding: 2px 5px; border: 1px solid var(--panel-border); border-radius: 4px; font: 500 10px var(--font-mono); }
+        .editor-select { padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--input-bg); color: var(--text-dim); font: 600 11px var(--font-sans); }
+        .editor-segment { display: inline-flex; overflow: hidden; border: 1px solid var(--panel-border); border-radius: 6px; }
+        .editor-segment button { padding: 8px 10px; border: 0; background: transparent; color: var(--text-dim); font: 600 11px var(--font-sans); cursor: pointer; }
+        .editor-segment button.active { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); color: var(--accent); }
+        .editor-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+        .editor-card { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); cursor: pointer; }
+        .editor-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--panel-border)); }
+        .editor-preview { height: 118px; padding: 10px; border-bottom: 1px solid var(--panel-border); background: var(--bg-sunk); }
+        .editor-preview-page { height: 100%; padding: 10px 12px; overflow: hidden; border: 1px solid var(--panel-border); border-radius: 4px; background: #ffffff; color: #17213a; }
+        html[data-theme="dark"] .editor-preview-page { background: #0b0b0d; color: #fafafa; }
+        .editor-preview-nav { display: flex; align-items: center; justify-content: space-between; padding-bottom: 5px; border-bottom: 1px solid #edf0f4; color: #5e6a80; font: 500 7px var(--font-mono); }
+        html[data-theme="dark"] .editor-preview-nav { border-bottom-color: #232327; color: #a3a3a3; }
+        .editor-preview-nav b { color: #17213a; font: 700 8px var(--font-sans); letter-spacing: -.02em; }
+        html[data-theme="dark"] .editor-preview-nav b { color: #fafafa; }
+        .editor-preview-hero { margin-top: 8px; color: #17213a; font-size: 12px; font-weight: 700; line-height: 1.1; letter-spacing: -.035em; }
+        html[data-theme="dark"] .editor-preview-hero { color: #fafafa; }
+        .editor-preview-lines { display: grid; gap: 3px; margin-top: 7px; }
+        .editor-preview-lines span { height: 4px; border-radius: 2px; background: #edf0f4; }
+        .editor-preview-lines span:nth-child(2) { width: 68%; }
+        html[data-theme="dark"] .editor-preview-lines span { background: #232327; }
+        .editor-preview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin-top: 8px; }
+        .editor-preview-grid span { height: 16px; border: 1px solid #edf0f4; border-radius: 2px; background: #f6f8fb; }
+        html[data-theme="dark"] .editor-preview-grid span { border-color: #232327; background: #111114; }
+        .editor-card-body { display: flex; flex-direction: column; gap: 7px; padding: 12px 14px 14px; }
+        .editor-card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .editor-card-title b { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+        .editor-card-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--text-faint); font: 500 10px var(--font-mono); }
+        .editor-card-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+        .editor-card-actions .site-action-btn.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
+        .editor-card-actions .site-action-btn.primary:hover { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); filter: brightness(1.06); }
+        .editor-grid.is-list { grid-template-columns: 1fr; }
+        .editor-grid.is-list .editor-card { flex-direction: row; align-items: center; }
+        .editor-grid.is-list .editor-preview { width: 150px; height: 92px; flex: none; border-right: 1px solid var(--panel-border); border-bottom: 0; }
+        .editor-grid.is-list .editor-card-body { flex: 1; flex-direction: row; align-items: center; gap: 16px; padding: 12px 14px; }
+        .editor-grid.is-list .editor-card-actions { margin-left: auto; }
+        .editor-empty { display: grid; place-items: center; gap: 7px; padding: 42px 20px; border: 1px dashed var(--panel-border); border-radius: 8px; background: var(--bg-sunk); text-align: center; }
+        .editor-empty .empty-icon { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); color: var(--text-faint); font: 600 14px var(--font-mono); }
+        .editor-empty b { color: var(--text); font-size: 13px; }
+        .editor-empty p { max-width: 420px; margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.55; }
+        .editor-section-label { margin: 22px 0 9px; color: var(--text); font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
+        .editor-recent { overflow: hidden; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); }
+        .editor-recent-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 110px 120px; gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--panel-border); font-size: 12px; }
+        .editor-recent-row:last-child { border-bottom: 0; }
+        .editor-recent-row > div { min-width: 0; }
+        .editor-recent-row b { display: block; overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+        .editor-recent-row > div span { display: block; overflow: hidden; margin-top: 2px; color: var(--text-faint); font: 500 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+        .editor-recent-row > span { color: var(--text-dim); font: 500 10px var(--font-mono); }
+        .editor-recent-row .site-action-btn { justify-self: end; }
+        .editor-hint { margin: 14px 0 0; color: var(--text-faint); font-size: 11px; line-height: 1.55; }
+        .editor-hint code { font-family: var(--font-mono); font-size: 10px; }
+
+        /* Services */
+        .services-summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--bg-sunk); margin-bottom: 16px; color: var(--text-dim); font: 500 11px var(--font-mono); }
+        .svc-chip { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); }
+        .svc-chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: none; }
+        .svc-chip.running i { background: var(--plak-success); }
+        .svc-chip.stopped i { background: var(--plak-warning); }
+        .svc-summary-text { margin-left: auto; color: var(--text); }
+        .services-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+        .service-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); }
+        .service-head { display: flex; align-items: flex-start; gap: 10px; }
+        .service-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--bg-sunk); color: var(--text); font: 700 11px var(--font-mono); }
+        .service-head b { display: block; color: var(--text); font-size: 13px; letter-spacing: -.02em; }
+        .service-head .role { display: block; margin-top: 2px; color: var(--text-faint); font-size: 10px; }
+        .svc-status { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; flex: none; color: var(--plak-success); font: 600 9px var(--font-mono); text-transform: uppercase; letter-spacing: .03em; }
+        .svc-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .svc-status.stopped { color: var(--plak-warning); }
+        .svc-status.unknown { color: var(--text-faint); }
+        .service-rows { display: grid; gap: 6px; color: var(--text-dim); font: 500 10px var(--font-mono); }
+        .service-row { display: flex; justify-content: space-between; gap: 10px; padding-top: 6px; border-top: 1px solid var(--panel-border); }
+        .service-row span:last-child { color: var(--text); text-align: right; overflow-wrap: anywhere; }
+        .service-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: auto; }
+        .service-actions .site-action-btn.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
+        .service-actions .site-action-btn.primary:hover { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); filter: brightness(1.06); }
+        .service-actions .site-action-btn:disabled { opacity: .42; cursor: not-allowed; }
+        .service-hint { margin: 0; color: var(--plak-warning); font-size: 10px; line-height: 1.5; }
+        .services-stack { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+        .stack-item { padding: 12px 14px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); }
+        .stack-item span { display: block; color: var(--text-faint); font: 500 9px var(--font-mono); text-transform: uppercase; letter-spacing: .05em; }
+        .stack-item b { display: block; margin-top: 5px; color: var(--text); font-size: 12px; font-weight: 600; }
+
+        .ctx-svc.is-running::before { background: var(--plak-success); }
+        .ctx-svc.is-stopped::before { background: var(--plak-warning); }
+        .ctx-svc.is-unknown::before { background: var(--text-faint); }
+        .dot.is-running::before { background: var(--plak-success); }
+        .dot.is-stopped::before { background: var(--plak-warning); }
+        .dot.is-unknown::before { background: var(--text-faint); }
+
+        /* Command palette */
+        .palette-backdrop { align-items: flex-start; padding-top: 10vh; }
+        .palette { display: flex; flex-direction: column; width: min(620px, 92vw); max-height: 80vh; overflow: hidden; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow-lg); }
+        .palette-input-row { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--panel-border); }
+        .palette-input-row svg { width: 18px; height: 18px; flex: none; color: var(--text-faint); }
+        .palette-input-row input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 500 14px var(--font-sans); }
+        .palette-input-row input::placeholder { color: var(--text-faint); }
+        .palette-kbd { padding: 3px 6px; border: 1px solid var(--panel-border); border-radius: 4px; color: var(--text-faint); font: 500 9px var(--font-mono); }
+        .palette-results { overflow: auto; padding: 6px; }
+        .palette-group { padding: 9px 10px 4px; color: var(--text-faint); font: 600 9px var(--font-mono); letter-spacing: .07em; text-transform: uppercase; }
+        .palette-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+        .palette-row:hover, .palette-row.selected { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); color: var(--accent); }
+        .palette-icon { display: grid; place-items: center; width: 22px; height: 22px; flex: none; border: 1px solid var(--panel-border); border-radius: 4px; color: var(--text-dim); font: 600 8px var(--font-mono); }
+        .palette-row b { display: block; font-size: 12px; font-weight: 600; }
+        .palette-row small { display: block; margin-top: 2px; color: var(--text-dim); font-size: 10px; }
+        .palette-row.selected small { color: color-mix(in srgb, var(--accent) 75%, var(--text)); }
+        .palette-hint { margin-left: auto; color: var(--text-faint); font: 500 9px var(--font-mono); white-space: nowrap; }
+        .palette-foot { display: flex; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--panel-border); background: var(--bg-sunk); color: var(--text-faint); font: 500 9px var(--font-mono); }
+        .palette-empty { padding: 26px 18px; color: var(--text-dim); text-align: center; font-size: 12px; }
+
+        /* Shortcuts sheet */
+        .shortcuts-modal { width: min(620px, 92vw); }
+        .shortcut-list { display: grid; gap: 0; margin: 14px 0 0; }
+        .shortcut-list > div { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 9px 0; border-bottom: 1px solid var(--panel-border); font-size: 12px; }
+        .shortcut-list > div:last-child { border-bottom: 0; }
+        .shortcut-list dt { color: var(--text-dim); }
+        .shortcut-list dd { margin: 0; color: var(--text); }
+        .shortcut-list kbd { display: inline-block; margin-left: 4px; padding: 2px 5px; border: 1px solid var(--panel-border); border-radius: 4px; background: var(--bg-sunk); color: var(--text); font: 500 10px var(--font-mono); }
+
+        /* Service log drawer */
+        .logs-modal { display: flex; flex-direction: column; width: min(760px, 94vw); max-height: 86vh; }
+        .logs-modal .logs-file { color: var(--text-faint); font: 500 10px var(--font-mono); margin-bottom: 8px; overflow-wrap: anywhere; }
+        .logs-modal pre { flex: 1; min-height: 180px; max-height: 60vh; overflow: auto; margin: 0; }
+
         @media (max-width: 1180px) {
             .main { padding: 34px 28px 64px; }
             .topbar { padding: 0 24px; }
@@ -3831,22 +4142,42 @@ if (is_file($__plak_connect_file)) {
             .local-context .ctx-services { display: none; }
             .local-context { padding: 0 10px; font-size: 10px; gap: 7px; }
         }
+        @media (max-width: 1180px) {
+            .stats, .services-grid, .editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .editor-recent-row { grid-template-columns: minmax(0, 1fr) 80px 100px 110px; }
+        }
+        @media (max-width: 900px) {
+            .stats, .services-grid, .editor-grid, .services-stack { grid-template-columns: 1fr; }
+            .editor-grid.is-list .editor-card { flex-direction: column; align-items: stretch; }
+            .editor-grid.is-list .editor-preview { width: auto; height: 90px; border-right: 0; border-bottom: 1px solid var(--panel-border); }
+            .editor-grid.is-list .editor-card-body { flex-direction: column; align-items: stretch; gap: 7px; }
+            .editor-grid.is-list .editor-card-actions { margin-left: 0; }
+            .editor-recent-row { grid-template-columns: minmax(0, 1fr) 110px; }
+            .editor-recent-row > span { display: none; }
+        }
         @media (max-width: 620px) {
             .page-head h1 { font-size: 26px; }
             .local-context .ctx-link { font-size: 0; }
             .local-context .ctx-link::after { content: "Cloud ↗"; font-size: 10px; }
+            .editor-toolbar { align-items: stretch; }
+            .editor-search { flex-basis: 100%; }
+            .editor-select, .editor-segment { flex: 1; }
+            .editor-segment button { flex: 1; }
+            .palette { width: 100%; max-height: 86vh; }
+            .palette-backdrop { padding: 6vh 10px 10px; }
+            .shortcut-list > div { align-items: flex-start; flex-direction: column; gap: 5px; }
         }
     </style>
 </head>
-<body x-data="dashboard" x-init="init()">
+<body x-data="dashboard">
     <div class="local-context" aria-label="Local environment">
         <span class="ctx-local"><span class="ctx-dot"></span>LOCAL</span>
         <span class="ctx-host">plak.localhost<?= $__plak_site_port_suffix ?></span>
         <span class="ctx-sep">·</span>
         <span class="ctx-services">
-            <span class="ctx-svc" title="Caddy is serving this dashboard">Caddy</span>
-            <a class="ctx-svc is-link" :href="adminerUrl" target="_blank" rel="noopener">MariaDB</a>
-            <a class="ctx-svc is-link" :href="mailpitUrl" target="_blank" rel="noopener">Mailpit</a>
+            <span class="ctx-svc" :class="'is-' + serviceStatus('caddy')" title="Caddy is serving this dashboard">Caddy</span>
+            <a class="ctx-svc" :class="'is-' + serviceStatus('mariadb')" :href="adminerUrl" target="_blank" rel="noopener">MariaDB</a>
+            <a class="ctx-svc" :class="'is-' + serviceStatus('mailpit')" :href="mailpitUrl" target="_blank" rel="noopener">Mailpit</a>
         </span>
         <a class="ctx-link" href="<?= htmlspecialchars($__plak_panel_url, ENT_QUOTES) ?>" target="_blank" rel="noopener">Open cloud panel ↗</a>
     </div>
@@ -3861,11 +4192,11 @@ if (is_file($__plak_connect_file)) {
             <div class="sidebar-nav">
                 <div class="side-label">Local workspace</div>
                 <nav class="side-nav">
-                    <a class="side-link" :class="{ active: !detailSite }" href="#overview" @click="sidebarOpen = false">
+                    <a class="side-link" :class="{ active: view === 'overview' && !detailSite }" href="#/" @click.prevent="setView('overview')">
                         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
                         <span>Overview</span>
                     </a>
-                    <a class="side-link" :class="{ active: detailSite }" href="#sites" @click="sidebarOpen = false">
+                    <a class="side-link" :class="{ active: view === 'websites' || detailSite }" href="#/websites" @click.prevent="setView('websites')">
                         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
                         <span>Websites</span>
                         <span class="side-count" x-text="sites.length"></span>
@@ -3873,10 +4204,10 @@ if (is_file($__plak_connect_file)) {
                 </nav>
                 <div class="side-label">Tools</div>
                 <nav class="side-nav">
-                    <button class="side-link" type="button" @click="openEditor()">
+                    <a class="side-link" :class="{ active: view === 'editor' }" href="#/editor" @click.prevent="setView('editor')">
                         <svg viewBox="0 0 24 24"><path d="m8 6-6 6 6 6M16 6l6 6-6 6"/></svg>
                         <span>Editor</span>
-                    </button>
+                    </a>
                     <a class="side-link" :href="adminerUrl" target="_blank" rel="noopener">
                         <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="2.5"/><path d="M4 5v14c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5V5"/><path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"/></svg>
                         <span>Database</span>
@@ -3888,18 +4219,22 @@ if (is_file($__plak_connect_file)) {
                 </nav>
                 <div class="side-label">System</div>
                 <nav class="side-nav">
-                    <a class="side-link" href="#services" @click="sidebarOpen = false">
+                    <a class="side-link" :class="{ active: view === 'services' }" href="#/services" @click.prevent="setView('services')">
                         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg>
                         <span>Services</span>
                     </a>
                 </nav>
             </div>
             <div class="sidebar-foot">
-                <a class="workspace-card" href="#overview" @click="sidebarOpen = false">
+                <a class="workspace-card" href="#/" @click.prevent="setView('overview')">
                     <span class="workspace-avatar">L</span>
                     <span class="workspace-meta"><b>Local machine</b><span>plak.localhost</span></span>
                     <span class="workspace-chev">›</span>
                 </a>
+                <button class="side-link" type="button" @click="shortcutsOpen = true">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h6M16 14h1"/></svg>
+                    <span>Keyboard shortcuts</span>
+                </button>
                 <a class="side-cloud" href="<?= htmlspecialchars($__plak_panel_url, ENT_QUOTES) ?>" target="_blank" rel="noopener">Open cloud panel <span>↗</span></a>
             </div>
         </aside>
@@ -3910,29 +4245,68 @@ if (is_file($__plak_connect_file)) {
                     <button type="button" class="top-icon mobile-menu" @click="sidebarOpen = !sidebarOpen" aria-label="Open navigation">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
                     </button>
-                    <span>Plak local</span><span class="crumb-sep">/</span><b x-text="detailSite ? detailSite.name : 'Overview'"></b>
+                    <span>Plak local</span><span class="crumb-sep">/</span><b x-text="crumbLabel"></b>
                 </div>
                 <div class="top-actions">
-                    <button type="button" class="top-search" @click="$refs.filterInput.focus()" aria-label="Search sites">
+                    <button type="button" class="top-search" @click="openPalette()" aria-label="Search sites, services and actions">
                         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 5 5"/></svg>
-                        <span>Search sites...</span><kbd>/</kbd>
+                        <span>Search anything...</span><kbd>⌘K</kbd>
                     </button>
                     <button class="theme-btn" @click="toggleTheme()" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" aria-label="Toggle theme">
                         <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
                         <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
                     </button>
+                    <button class="top-icon" type="button" @click="shortcutsOpen = true" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button>
                     <span class="top-avatar" title="Local environment">L</span>
                 </div>
             </header>
-            <main class="main" id="overview">
-                <div class="page-head">
+            <main class="main">
+                <div class="page-head" x-show="view === 'overview'">
                     <div>
                         <h1>Local overview</h1>
                         <p>Your local WordPress and HTML sites, running on this machine.</p>
                     </div>
                     <button class="pill primary" type="button" @click="toggleAdd()" x-text="adding ? 'Cancel' : '+ Add site'"></button>
                 </div>
-                <section class="card" id="sites">
+                <div class="page-head" x-show="view === 'websites'" x-cloak>
+                    <div>
+                        <h1>Websites</h1>
+                        <p>All local WordPress and static sites.</p>
+                    </div>
+                    <button class="pill primary" type="button" @click="toggleAdd()" x-text="adding ? 'Cancel' : '+ Add site'"></button>
+                </div>
+                <div class="page-head" x-show="view === 'editor'" x-cloak>
+                    <div>
+                        <h1>Editor</h1>
+                        <p>Choose a static site to edit. WordPress sites use the HTML Editor plugin in wp-admin.</p>
+                    </div>
+                    <button class="pill primary" type="button" @click="newStaticSite()">+ New static site</button>
+                </div>
+                <div class="page-head" x-show="view === 'services'" x-cloak>
+                    <div>
+                        <h1>Services</h1>
+                        <p>The local stack running on this machine.</p>
+                    </div>
+                    <button class="pill" type="button" @click="loadServices()" :disabled="servicesLoading" x-text="servicesLoading ? 'refreshing…' : 'refresh'"></button>
+                </div>
+                <div class="stats" x-show="view === 'overview'">
+                    <div class="stat">
+                        <div class="stat-top">Local sites <span>▦</span></div>
+                        <div class="stat-n" x-text="pad2(sites.length)"></div>
+                        <div class="stat-cap"><span x-text="wpCount"></span> WordPress · <span x-text="staticCount"></span> static</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-top">Services <span>◫</span></div>
+                        <div class="stat-n" x-text="servicesData ? runningServices + '/3' : '—'"></div>
+                        <div class="stat-cap" x-text="servicesSummary"></div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-top">Disk <span>▤</span></div>
+                        <div class="stat-n" x-text="formatSize(totalBytes)"></div>
+                        <div class="stat-cap">Across local sites</div>
+                    </div>
+                </div>
+                <section class="card" id="sites" x-show="view === 'overview' || view === 'websites'" x-cloak>
             <header class="card-head">
                 <h2 class="card-title">Websites</h2>
                 <div class="card-actions">
@@ -3986,7 +4360,6 @@ if (is_file($__plak_connect_file)) {
                     @keydown.escape.prevent="filter = ''; $event.target.blur()"
                     aria-label="Filter sites"
                 >
-                <span class="filter-kbd" x-show="!filter && !typeFilter" aria-hidden="true">/</span>
                 <button class="filter-clear" x-show="filter || typeFilter" @click="clearAllFilters(); $refs.filterInput.focus()" aria-label="Clear filter" title="Clear all (Esc)">×</button>
             </div>
 
@@ -4075,9 +4448,9 @@ if (is_file($__plak_connect_file)) {
 
             <footer class="card-foot" id="services">
                 <div class="services">
-                    <span class="dot" title="Caddy is serving this page — it's running">caddy</span>
-                    <button type="button" class="dot link" @click="showDbModal = true" title="Database credentials">mariadb</button>
-                    <a class="dot link" :href="mailpitUrl" target="_blank" rel="noopener" title="Open Mailpit">mailpit</a>
+                    <span class="dot" :class="'is-' + serviceStatus('caddy')" title="Caddy is serving this page — it's running">caddy</span>
+                    <button type="button" class="dot link" :class="'is-' + serviceStatus('mariadb')" @click="showDbModal = true" title="Database credentials">mariadb</button>
+                    <a class="dot link" :class="'is-' + serviceStatus('mailpit')" :href="mailpitUrl" target="_blank" rel="noopener" title="Open Mailpit">mailpit</a>
                 </div>
                 <div class="totals">
                     <span x-text="siteCountLabel"></span>
@@ -4086,6 +4459,141 @@ if (is_file($__plak_connect_file)) {
                 </div>
             </footer>
         </section>
+
+            <section class="editor-view" x-show="view === 'editor'" x-cloak>
+                <div class="editor-toolbar">
+                    <label class="editor-search">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 5 5"/></svg>
+                        <input type="search" x-model="editorFilter" @input="editorSelected = 0" placeholder="Search static sites…" aria-label="Search static sites" autocomplete="off">
+                    </label>
+                    <select class="editor-select" x-model="editorSort" aria-label="Sort static sites">
+                        <option value="recent">Recent</option>
+                        <option value="name">Name</option>
+                    </select>
+                    <div class="editor-segment" role="group" aria-label="View mode">
+                        <button type="button" :class="{ active: editorMode === 'grid' }" @click="editorMode = 'grid'">Grid</button>
+                        <button type="button" :class="{ active: editorMode === 'list' }" @click="editorMode = 'list'">List</button>
+                    </div>
+                </div>
+
+                <div class="editor-empty" x-show="staticLoading">
+                    <div class="empty-icon">…</div>
+                    <b>Loading static sites</b>
+                    <p>Reading the local site folders.</p>
+                </div>
+
+                <div class="editor-grid" :class="{ 'is-list': editorMode === 'list' }" x-show="!staticLoading && editorSites.length">
+                    <template x-for="site in editorSites" :key="site.name">
+                        <article class="editor-card" @click="openEditorSite(site)">
+                            <div class="editor-preview">
+                                <div class="editor-preview-page">
+                                    <div class="editor-preview-nav"><b x-text="site.name"></b><span>Preview</span></div>
+                                    <div class="editor-preview-hero" x-text="site.name + '.localhost'"></div>
+                                    <div class="editor-preview-lines"><span></span><span></span></div>
+                                    <div class="editor-preview-grid"><span></span><span></span><span></span></div>
+                                </div>
+                            </div>
+                            <div class="editor-card-body">
+                                <div class="editor-card-title"><b x-text="site.name + '.localhost'"></b><span class="site-type">STATIC</span></div>
+                                <div class="editor-card-meta"><span x-text="site.html_files + (site.html_files === 1 ? ' HTML file' : ' HTML files')"></span><span x-text="formatRelative(site.modified_at)"></span></div>
+                                <div class="editor-card-actions">
+                                    <button class="site-action-btn primary" type="button" @click.stop="openEditorSite(site)">open editor</button>
+                                    <a class="site-action-btn" :href="site.domain" target="_blank" rel="noopener" @click.stop>open site</a>
+                                </div>
+                            </div>
+                        </article>
+                    </template>
+                </div>
+
+                <div class="editor-empty" x-show="!staticLoading && !editorSites.length">
+                    <div class="empty-icon">&lt;/&gt;</div>
+                    <b x-text="staticSites.length ? 'No static sites match that search' : 'No static sites yet'"></b>
+                    <p x-text="staticSites.length ? 'Try another site name.' : 'Create a static site to edit its HTML files. WordPress sites use the HTML Editor plugin in wp-admin.'"></p>
+                    <button class="pill primary" type="button" x-show="!staticSites.length" @click="newStaticSite()">+ New static site</button>
+                </div>
+
+                <div class="editor-section-label" x-show="!staticLoading && editorSites.length">Recently edited</div>
+                <div class="editor-recent" x-show="!staticLoading && editorSites.length">
+                    <template x-for="site in recentStaticSites" :key="site.name">
+                        <div class="editor-recent-row">
+                            <div><b x-text="site.name + '.localhost'"></b><span x-text="site.display_path"></span></div>
+                            <span x-text="site.html_files + (site.html_files === 1 ? ' file' : ' files')"></span>
+                            <span x-text="formatRelative(site.modified_at)"></span>
+                            <button class="site-action-btn" type="button" @click="openEditorSite(site)">open editor</button>
+                        </div>
+                    </template>
+                </div>
+                <p class="editor-hint">WordPress sites are not listed here. Use the HTML Editor plugin in wp-admin; this picker only opens static sites.</p>
+            </section>
+
+            <section class="services-view" x-show="view === 'services'" x-cloak>
+                <div class="services-summary">
+                    <span class="svc-chip" :class="serviceStatusClass('caddy')"><i></i>Caddy</span>
+                    <span class="svc-chip" :class="serviceStatusClass('mariadb')"><i></i>MariaDB</span>
+                    <span class="svc-chip" :class="serviceStatusClass('mailpit')"><i></i>Mailpit</span>
+                    <span class="svc-summary-text" x-text="servicesSummary"></span>
+                </div>
+
+                <div class="services-grid">
+                    <article class="service-card">
+                        <header class="service-head">
+                            <span class="service-icon">C</span>
+                            <div><b>Caddy</b><span class="role">Web server · PHP</span></div>
+                            <span class="svc-status" :class="serviceStatusClass('caddy')" x-text="serviceStatusLabel('caddy')"></span>
+                        </header>
+                        <div class="service-rows">
+                            <div class="service-row"><span>Version</span><span x-text="serviceVersion('caddy')"></span></div>
+                            <div class="service-row"><span>Address</span><span x-text="serviceAddress('caddy')"></span></div>
+                        </div>
+                        <div class="service-actions">
+                            <button class="site-action-btn primary" type="button" @click="openService('caddy')">open dashboard</button>
+                            <button class="site-action-btn" type="button" @click="openServiceLogs('caddy')">logs</button>
+                        </div>
+                    </article>
+
+                    <article class="service-card">
+                        <header class="service-head">
+                            <span class="service-icon">DB</span>
+                            <div><b>MariaDB</b><span class="role">Database</span></div>
+                            <span class="svc-status" :class="serviceStatusClass('mariadb')" x-text="serviceStatusLabel('mariadb')"></span>
+                        </header>
+                        <div class="service-rows">
+                            <div class="service-row"><span>Version</span><span x-text="serviceVersion('mariadb')"></span></div>
+                            <div class="service-row"><span>Address</span><span x-text="serviceAddress('mariadb')"></span></div>
+                        </div>
+                        <div class="service-actions">
+                            <button class="site-action-btn primary" type="button" @click="openService('mariadb')">open Adminer</button>
+                            <button class="site-action-btn" type="button" @click="showDbModal = true">credentials</button>
+                            <button class="site-action-btn" type="button" @click="openServiceLogs('mariadb')">logs</button>
+                        </div>
+                    </article>
+
+                    <article class="service-card">
+                        <header class="service-head">
+                            <span class="service-icon">M</span>
+                            <div><b>Mailpit</b><span class="role">Mail catcher</span></div>
+                            <span class="svc-status" :class="serviceStatusClass('mailpit')" x-text="serviceStatusLabel('mailpit')"></span>
+                        </header>
+                        <div class="service-rows">
+                            <div class="service-row"><span>Version</span><span x-text="serviceVersion('mailpit')"></span></div>
+                            <div class="service-row"><span>Address</span><span x-text="serviceAddress('mailpit')"></span></div>
+                        </div>
+                        <div class="service-actions">
+                            <button class="site-action-btn primary" type="button" :disabled="serviceStatus('mailpit') === 'stopped'" @click="openService('mailpit')">open Mailpit</button>
+                            <button class="site-action-btn" type="button" @click="openMail('all')">inbox</button>
+                            <button class="site-action-btn" type="button" @click="openServiceLogs('mailpit')">logs</button>
+                        </div>
+                        <p class="service-hint" x-show="serviceStatus('mailpit') === 'stopped'">Mail is not being captured. Start the stack with <code>plak enable</code>.</p>
+                    </article>
+                </div>
+
+                <div class="services-stack">
+                    <div class="stack-item"><span>PHP</span><b x-text="servicesData && servicesData.php_version ? servicesData.php_version : '—'"></b></div>
+                    <div class="stack-item"><span>HTTPS</span><b x-text="serviceAddress('caddy')"></b></div>
+                    <div class="stack-item"><span>Data</span><b>~/Plak</b></div>
+                </div>
+                <p class="editor-hint">Access points, not only status dots. Adminer, Mailpit and the dashboard are one click away. Start/restart remains in the CLI (<code>plak enable</code> / <code>plak reload</code>); the web actions are read-only for now.</p>
+            </section>
 
     <section class="card site-detail" id="site-detail" x-show="detailSite" x-cloak>
         <template x-if="detailSite">
@@ -4435,6 +4943,61 @@ if (is_file($__plak_connect_file)) {
         </div>
     </div>
 
+    <div x-show="paletteOpen" x-cloak class="modal-backdrop palette-backdrop" @click.self="closePalette()">
+        <section class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+            <div class="palette-input-row">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 5 5"/></svg>
+                <input x-ref="paletteInput" x-model="paletteQuery" @input="paletteSelected = 0" @keydown.down.prevent="movePalette(1)" @keydown.up.prevent="movePalette(-1)" @keydown.enter.prevent="runPalette(paletteSelected)" type="text" placeholder="Search sites, services and actions..." autocomplete="off" spellcheck="false" role="combobox" aria-controls="palette-results" aria-expanded="true" :aria-activedescendant="paletteEntries.length ? 'palette-row-' + paletteSelected : undefined" aria-label="Search sites, services and actions">
+                <button type="button" class="palette-kbd" @click="closePalette()">Esc</button>
+            </div>
+            <div class="palette-results" id="palette-results" role="listbox" aria-label="Commands">
+                <template x-for="(entry, index) in paletteEntries" :key="entry.key">
+                    <div>
+                        <div class="palette-group" x-show="index === 0 || entry.group !== paletteEntries[index - 1].group" x-text="entry.group"></div>
+                        <button type="button" class="palette-row" :id="'palette-row-' + index" :class="{ selected: index === paletteSelected }" role="option" :aria-selected="index === paletteSelected" @mouseenter="paletteSelected = index" @click="runPalette(index)">
+                            <span class="palette-icon" x-text="entry.icon"></span>
+                            <span><b x-text="entry.label"></b><small x-text="entry.description"></small></span>
+                            <span class="palette-hint" x-text="entry.hint"></span>
+                        </button>
+                    </div>
+                </template>
+                <p class="palette-empty" x-show="!paletteEntries.length">No matching commands</p>
+            </div>
+            <div class="palette-foot"><span>↑ ↓ Navigate</span><span>↵ Select</span><span>Esc Close</span></div>
+        </section>
+    </div>
+
+    <div x-show="shortcutsOpen" x-cloak class="modal-backdrop" @click.self="shortcutsOpen = false">
+        <section class="modal shortcuts-modal" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+            <h3 id="shortcuts-title">Keyboard shortcuts</h3>
+            <p class="modal-sub">Move around Plak without lifting your hands from the keyboard.</p>
+            <dl class="shortcut-list">
+                <div><dt>Open command palette</dt><dd><kbd>⌘ K</kbd> / <kbd>Ctrl K</kbd></dd></div>
+                <div><dt>Quick search</dt><dd><kbd>/</kbd></dd></div>
+                <div><dt>Go to Overview</dt><dd><kbd>g</kbd> → <kbd>o</kbd></dd></div>
+                <div><dt>Go to Websites</dt><dd><kbd>g</kbd> → <kbd>w</kbd></dd></div>
+                <div><dt>Go to Editor</dt><dd><kbd>g</kbd> → <kbd>e</kbd></dd></div>
+                <div><dt>Go to Services</dt><dd><kbd>g</kbd> → <kbd>s</kbd></dd></div>
+                <div><dt>Add site</dt><dd><kbd>a</kbd></dd></div>
+                <div><dt>Toggle theme</dt><dd><kbd>t</kbd></dd></div>
+                <div><dt>Show shortcuts</dt><dd><kbd>?</kbd></dd></div>
+                <div><dt>Close dialog</dt><dd><kbd>Esc</kbd></dd></div>
+            </dl>
+            <div class="modal-foot"><span>PLAK LOCAL / SHORTCUTS</span><button class="pill" type="button" @click="shortcutsOpen = false">close</button></div>
+        </section>
+    </div>
+
+    <div x-show="serviceLogs.open" x-cloak class="modal-backdrop" @click.self="closeServiceLogs()">
+        <section class="modal logs-modal" role="dialog" aria-modal="true" aria-labelledby="service-logs-title">
+            <h3 id="service-logs-title" x-text="serviceLogs.service ? serviceLogs.service.charAt(0).toUpperCase() + serviceLogs.service.slice(1) + ' logs' : 'Service logs'"></h3>
+            <p class="logs-file" x-text="serviceLogs.file || ''"></p>
+            <p class="comp-error" x-show="serviceLogs.error" x-text="serviceLogs.error"></p>
+            <p class="comp-loading" x-show="serviceLogs.loading">Reading logs…</p>
+            <pre class="console-out" x-show="!serviceLogs.loading && !serviceLogs.error" x-text="(serviceLogs.lines || []).join('\n')"></pre>
+            <div class="modal-foot"><span>PLAK LOCAL / LOGS</span><button class="pill" type="button" @click="closeServiceLogs()">close</button></div>
+        </section>
+    </div>
+
     <div x-show="showDbModal" x-transition.opacity class="modal-backdrop" @click.self="showDbModal = false" @keydown.escape.window="showDbModal = false" style="display: none;">
         <div class="modal">
             <h3>Database credentials</h3>
@@ -4557,6 +5120,20 @@ if (is_file($__plak_connect_file)) {
                 // panel.plak.work. `theme` is kept as a migration fallback.
                 theme: localStorage.getItem('plak-theme') || localStorage.getItem('theme') || 'light',
                 sidebarOpen: false,
+                view: 'overview',
+                staticSites: [],
+                staticLoading: false,
+                editorFilter: '',
+                editorSort: 'recent',
+                editorMode: 'grid',
+                servicesData: null,
+                servicesLoading: false,
+                paletteOpen: false,
+                paletteQuery: '',
+                paletteSelected: 0,
+                shortcutsOpen: false,
+                serviceLogs: { open: false, service: '', file: '', lines: [], loading: false, error: null },
+                pendingGo: 0,
                 sites: [],
                 isLoading: true,
                 adding: false,
@@ -4648,6 +5225,97 @@ if (is_file($__plak_connect_file)) {
                 get mailpitUrl() { return 'https://mail.plak.localhost' + PORT_SUFFIX; },
                 get diagLoading() { return this.logLoading || this.trafficLoading; },
                 get totalBytes() { return this.sites.reduce((t, s) => t + (s.size_bytes || 0), 0); },
+                get dashboardUrl() { return 'https://plak.localhost' + PORT_SUFFIX + '/'; },
+                get dashboardHost() { return 'plak.localhost' + PORT_SUFFIX; },
+                get wpCount() { return this.sites.filter(s => s.type === 'WordPress').length; },
+                get staticCount() { return this.sites.filter(s => s.type !== 'WordPress').length; },
+                get runningServices() {
+                    if (!this.servicesData) return 0;
+                    return ['caddy', 'mariadb', 'mailpit'].filter(name => this.serviceStatus(name) === 'running').length;
+                },
+                get servicesSummary() {
+                    if (!this.servicesData) return this.servicesLoading ? 'Checking services…' : 'Services unavailable';
+                    return this.servicesData.all_running ? 'All systems running' : this.runningServices + ' of 3 running';
+                },
+                get crumbLabel() {
+                    if (this.detailSite) return this.detailSite.name;
+                    return { overview: 'Overview', websites: 'Websites', editor: 'Editor', services: 'Services' }[this.view] || 'Overview';
+                },
+                get editorSites() {
+                    let base = [...this.staticSites];
+                    const q = this.editorFilter.trim().toLowerCase();
+                    if (q) base = base.filter(s => s.name.toLowerCase().includes(q));
+                    if (this.editorSort === 'name') {
+                        base.sort((a, b) => a.name.localeCompare(b.name));
+                    } else {
+                        base.sort((a, b) => (b.modified_at || 0) - (a.modified_at || 0));
+                    }
+                    return base;
+                },
+                get recentStaticSites() {
+                    return [...this.staticSites].sort((a, b) => (b.modified_at || 0) - (a.modified_at || 0)).slice(0, 3);
+                },
+                get paletteEntries() {
+                    const query = this.paletteQuery.trim().toLowerCase();
+                    const match = (...values) => !query || values.some(v => String(v || '').toLowerCase().includes(query));
+                    const entries = [];
+
+                    this.sites.forEach(site => {
+                        const isStatic = site.type !== 'WordPress';
+                        const label = site.name + '.localhost';
+                        const description = isStatic ? 'Static · Edit in HTML editor' : 'WordPress · Open site';
+                        const keywords = [
+                            site.name,
+                            site.type,
+                            isStatic ? 'static html edit editor' : 'wordpress wp open site',
+                        ].join(' ');
+                        if (!match(label, keywords)) return;
+                        entries.push({
+                            key: 'site-' + site.name,
+                            group: 'Sites',
+                            label,
+                            description,
+                            hint: isStatic ? 'Edit ↵' : 'Open',
+                            icon: isStatic ? 'ST' : 'WP',
+                            action: () => {
+                                if (isStatic) this.openEditorSite(site);
+                                else window.open(site.domain, '_blank', 'noopener');
+                            },
+                        });
+                    });
+
+                    [
+                        { key: 'overview', label: 'Overview', description: 'Local sites and services', hint: 'g o', icon: '▦', keywords: 'overview home dashboard sites' },
+                        { key: 'websites', label: 'Websites', description: 'All local sites', hint: 'g w', icon: '◫', keywords: 'websites sites projects' },
+                        { key: 'editor', label: 'Editor', description: 'Choose a static site to edit', hint: 'g e', icon: '<>', keywords: 'editor static html edit' },
+                        { key: 'services', label: 'Services', description: 'Status and access for the local stack', hint: 'g s', icon: '⚙', keywords: 'services stack caddy mariadb mailpit' },
+                    ].forEach(entry => {
+                        if (!match(entry.label, entry.keywords)) return;
+                        entries.push({ ...entry, group: 'Go to', action: () => this.setView(entry.key) });
+                    });
+
+                    [
+                        { label: 'Add site', description: 'WordPress or static', hint: 'a', icon: '+', keywords: 'add create new wordpress site', action: () => this.startAddSite(false) },
+                        { label: 'Add static site', description: 'Create a static site and edit it', hint: 'static', icon: 'ST', keywords: 'add create new static html site', action: () => this.newStaticSite() },
+                        { label: 'Reload stack', description: 'Reload Caddy and the local stack', hint: 'reload', icon: '↻', keywords: 'reload restart caddy stack', action: () => this.reloadStack() },
+                        { label: 'Open cloud panel', description: 'cloud.plak.io', hint: 'External', icon: '↗', keywords: 'cloud panel production', action: () => window.open('https://cloud.plak.io/', '_blank', 'noopener') },
+                        { label: 'Toggle theme', description: this.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode', hint: 't', icon: '◐', keywords: 'theme dark light', action: () => this.toggleTheme() },
+                        { label: 'Keyboard shortcuts', description: 'Search, navigation and actions', hint: '?', icon: '⌘', keywords: 'keyboard shortcuts keys help', action: () => { this.shortcutsOpen = true; } },
+                    ].forEach(entry => {
+                        if (!match(entry.label, entry.keywords)) return;
+                        entries.push({ ...entry, key: 'action-' + entry.label, group: 'Actions' });
+                    });
+
+                    [
+                        { label: 'Adminer', description: 'Open db.plak.localhost', icon: 'DB', keywords: 'adminer db database mysql mariadb', action: () => this.openService('mariadb') },
+                        { label: 'Mailpit', description: 'Open mail.plak.localhost', icon: 'M', keywords: 'mailpit mail email inbox', action: () => this.openService('mailpit') },
+                    ].forEach(entry => {
+                        if (!match(entry.label, entry.keywords)) return;
+                        entries.push({ ...entry, key: 'service-' + entry.label, group: 'Services', hint: 'Open' });
+                    });
+
+                    return entries;
+                },
                 get filteredSites() {
                     // Two independent filters ANDed together: typeFilter (chip,
                     // exact match on site.type) and filter (free text, substring
@@ -4693,17 +5361,9 @@ if (is_file($__plak_connect_file)) {
                     this.applyTheme();
                     this.$watch('theme', () => { this.applyTheme(); localStorage.setItem('plak-theme', this.theme); });
 
-                    // `/` focuses the filter (GitHub-style). Ignored when typing
-                    // in a form field or holding a modifier key.
-                    window.addEventListener('keydown', (e) => {
-                        if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
-                        const el = document.activeElement;
-                        const tag = el && el.tagName;
-                        if (tag === 'INPUT' || tag === 'TEXTAREA' || (el && el.isContentEditable)) return;
-                        e.preventDefault();
-                        this.$refs.filterInput && this.$refs.filterInput.focus();
-                    });
+                    window.addEventListener('keydown', (e) => this.handleShortcuts(e));
 
+                    this.loadServices();
                     this.getSites().then(() => {
                         // If the size cache is empty (fresh install or just deleted),
                         // kick off a background refresh so sizes populate without
@@ -4729,8 +5389,11 @@ if (is_file($__plak_connect_file)) {
 
                 applyHash() {
                     const name = this.parseSiteHash();
-                    const previous = this.detailSite ? this.detailSite.name : null;
+                    const view = this.parseViewHash();
+
                     if (name && this.sites.some(s => s.name === name)) {
+                        this.view = this.view === 'websites' ? 'websites' : 'overview';
+                        const previous = this.detailSite ? this.detailSite.name : null;
                         this.detailSite = this.sites.find(s => s.name === name);
                         if (previous !== name) {
                             // Reset the components panel for the new site.
@@ -4774,17 +5437,22 @@ if (is_file($__plak_connect_file)) {
                                 if (detail) detail.scrollIntoView({ block: 'start' });
                             });
                         }
-                    } else {
-                        this.detailSite = null;
-                        this.detailInfo = null;
-                        this.compItems = [];
+                        return;
                     }
+
+                    this.detailSite = null;
+                    this.detailInfo = null;
+                    this.compItems = [];
+                    this.toolItems = [];
+                    this.view = view || 'overview';
+                    if (this.view === 'editor') this.loadStaticSites();
+                    if (this.view === 'services') this.loadServices();
                 },
 
                 closeSiteDetail() {
                     if (this.parseSiteHash()) {
                         // Clears the hash and fires hashchange, which closes it.
-                        window.location.hash = '';
+                        window.location.hash = this.view === 'websites' ? '#/websites' : '';
                     } else {
                         this.detailSite = null;
                         this.detailInfo = null;
@@ -5313,13 +5981,233 @@ if (is_file($__plak_connect_file)) {
                     }
                 },
 
-                openEditor() {
-                    const site = this.sites.find(s => s.type !== 'WordPress');
-                    if (!site) {
-                        this.showSnack('Create a static site first to use the HTML editor.', true);
+                pad2(value) {
+                    return String(value).padStart(2, '0');
+                },
+
+                setView(view) {
+                    this.sidebarOpen = false;
+                    this.closePalette();
+                    const target = view === 'overview' ? '' : '#/' + view;
+                    this.view = view;
+                    if ((window.location.hash || '') === target) {
+                        this.applyHash();
+                    } else {
+                        window.location.hash = target;
+                    }
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                },
+
+                parseViewHash() {
+                    const match = /^#\/(editor|services|websites)\/?$/.exec(window.location.hash || '');
+                    return match ? match[1] : null;
+                },
+
+                async loadStaticSites() {
+                    this.staticLoading = true;
+                    try {
+                        const res = await fetch('api.php?action=static_sites').then(r => r.json());
+                        this.staticSites = Array.isArray(res) ? res : [];
+                    } catch (e) {
+                        this.staticSites = [];
+                    } finally {
+                        this.staticLoading = false;
+                    }
+                },
+
+                openEditorSite(site) {
+                    if (!site) return;
+                    window.location.href = '/editor/?site=' + encodeURIComponent(site.name);
+                },
+
+                startAddSite(isStatic) {
+                    this.view = 'overview';
+                    this.setView('overview');
+                    this.newSite.isStatic = !!isStatic;
+                    if (!isStatic) this.newSite.agent = false;
+                    this.$nextTick(() => {
+                        if (!this.adding) this.toggleAdd();
+                    });
+                },
+
+                newStaticSite() {
+                    this.startAddSite(true);
+                },
+
+                async loadServices() {
+                    this.servicesLoading = true;
+                    try {
+                        const res = await fetch('api.php?action=services').then(r => r.json());
+                        this.servicesData = res && typeof res === 'object' && !Array.isArray(res) ? res : null;
+                    } catch (e) {
+                        this.servicesData = null;
+                    } finally {
+                        this.servicesLoading = false;
+                    }
+                },
+
+                serviceStatus(name) {
+                    if (!this.servicesData || !this.servicesData[name]) return 'unknown';
+                    return this.servicesData[name].status || 'unknown';
+                },
+
+                serviceStatusClass(name) {
+                    return this.serviceStatus(name);
+                },
+
+                serviceStatusLabel(name) {
+                    return { running: 'Running', stopped: 'Stopped', unknown: 'Unknown' }[this.serviceStatus(name)] || 'Unknown';
+                },
+
+                serviceValue(name, key, fallback = '—') {
+                    if (!this.servicesData || !this.servicesData[name]) return fallback;
+                    const value = this.servicesData[name][key];
+                    return value === null || value === undefined || value === '' ? fallback : value;
+                },
+
+                serviceVersion(name) {
+                    return this.serviceValue(name, 'version');
+                },
+
+                serviceAddress(name) {
+                    const value = this.serviceValue(name, 'address', '');
+                    if (value) return value;
+                    return {
+                        caddy: this.dashboardHost,
+                        mariadb: '127.0.0.1:3306',
+                        mailpit: '127.0.0.1:8025',
+                    }[name] || '—';
+                },
+
+                serviceOpen(name) {
+                    const value = this.serviceValue(name, 'open', '');
+                    if (value) return value;
+                    return {
+                        caddy: this.dashboardUrl,
+                        mariadb: this.adminerUrl,
+                        mailpit: this.mailpitUrl,
+                    }[name] || '';
+                },
+
+                openService(name) {
+                    if (this.serviceStatus(name) === 'stopped') {
+                        this.showSnack(name.charAt(0).toUpperCase() + name.slice(1) + ' is stopped. Run plak enable.', true);
                         return;
                     }
-                    window.open('/editor/?site=' + encodeURIComponent(site.name), '_blank', 'noopener');
+                    const url = this.serviceOpen(name);
+                    if (url) window.open(url, '_blank', 'noopener');
+                },
+
+                async openServiceLogs(name) {
+                    this.serviceLogs = { open: true, service: name, file: '', lines: [], loading: true, error: null };
+                    try {
+                        const res = await fetch('api.php?action=service_logs&service=' + encodeURIComponent(name)).then(r => r.json());
+                        if (!res.success) {
+                            this.serviceLogs.error = res.message || 'Could not read the service log.';
+                        } else {
+                            this.serviceLogs.file = res.file || '';
+                            this.serviceLogs.lines = Array.isArray(res.lines) ? res.lines : [];
+                        }
+                    } catch (e) {
+                        this.serviceLogs.error = 'Could not read the service log.';
+                    } finally {
+                        this.serviceLogs.loading = false;
+                    }
+                },
+
+                closeServiceLogs() {
+                    this.serviceLogs.open = false;
+                },
+
+                openPalette() {
+                    this.shortcutsOpen = false;
+                    this.paletteOpen = true;
+                    this.paletteQuery = '';
+                    this.paletteSelected = 0;
+                    this.$nextTick(() => {
+                        if (this.$refs.paletteInput) this.$refs.paletteInput.focus();
+                    });
+                },
+
+                closePalette() {
+                    this.paletteOpen = false;
+                    this.paletteQuery = '';
+                    this.paletteSelected = 0;
+                },
+
+                movePalette(delta) {
+                    const total = this.paletteEntries.length;
+                    if (!total) return;
+                    this.paletteSelected = Math.max(0, Math.min(total - 1, this.paletteSelected + delta));
+                    this.$nextTick(() => {
+                        const row = document.getElementById('palette-row-' + this.paletteSelected);
+                        if (row) row.scrollIntoView({ block: 'nearest' });
+                    });
+                },
+
+                runPalette(index) {
+                    const entry = this.paletteEntries[index];
+                    if (!entry) return;
+                    this.closePalette();
+                    entry.action();
+                },
+
+                async reloadStack() {
+                    const res = await this.apiPost('reload_server');
+                    if (res && res.success) this.showSnack('Stack reload requested.');
+                    await this.loadServices();
+                },
+
+                handleShortcuts(event) {
+                    if (event.defaultPrevented || event.isComposing || event.altKey) return;
+                    const key = event.key.toLowerCase();
+                    const target = event.target;
+                    const tag = target && target.tagName;
+                    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (target && target.isContentEditable);
+
+                    if (event.key === 'Escape') {
+                        this.closePalette();
+                        this.shortcutsOpen = false;
+                        if (this.serviceLogs.open) this.closeServiceLogs();
+                        this.pendingGo = 0;
+                        return;
+                    }
+                    if ((event.ctrlKey || event.metaKey) && key === 'k') {
+                        event.preventDefault();
+                        this.openPalette();
+                        return;
+                    }
+                    if (event.ctrlKey || event.metaKey || typing) return;
+                    if (this.paletteOpen || this.shortcutsOpen || this.showDbModal || this.showMail || this.showImport || this.serviceLogs.open) return;
+
+                    if (key === '/' || key === '?') {
+                        event.preventDefault();
+                        key === '/' ? this.openPalette() : (this.shortcutsOpen = true);
+                        this.pendingGo = 0;
+                        return;
+                    }
+                    if (this.pendingGo && Date.now() - this.pendingGo < 950) {
+                        this.pendingGo = 0;
+                        const view = { o: 'overview', w: 'websites', e: 'editor', s: 'services' }[key];
+                        if (view) {
+                            event.preventDefault();
+                            this.setView(view);
+                        }
+                        return;
+                    }
+                    if (key === 'g') {
+                        this.pendingGo = Date.now();
+                        return;
+                    }
+                    if (key === 'a') {
+                        event.preventDefault();
+                        this.startAddSite(false);
+                        return;
+                    }
+                    if (key === 't') {
+                        event.preventDefault();
+                        this.toggleTheme();
+                    }
                 },
 
                 formatSize(bytes) {

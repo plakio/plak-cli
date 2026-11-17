@@ -59,7 +59,7 @@ rest of this section.
 Otherwise use the device flow:
 
 ```bash
-plak connect --panel https://panel.plak.work --no-open
+plak connect --panel https://cloud.plak.io --no-open
 ```
 
 This prints an approval URL and a pairing code, then waits for the user to
@@ -71,7 +71,7 @@ If your harness cannot keep a long-running command alive, or the user cannot
 use a browser, use the manual fallback:
 
 ```bash
-echo "$PLAK_API_KEY" | plak connect --manual --panel https://panel.plak.work --token-stdin
+echo "$PLAK_API_KEY" | plak connect --manual --panel https://cloud.plak.io --token-stdin
 ```
 
 The user creates the API key in the panel under Perfil > API Keys. Never pass

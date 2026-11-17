@@ -23,14 +23,14 @@ source ./plak.sh >/dev/null
 fail() { echo "connect test failed: $1" >&2; exit 1; }
 
 # --- URL handling ---
-[ "$(plak_connect_normalize_url 'https://panel.plak.work/')" = "https://panel.plak.work" ] || fail "trailing slash"
+[ "$(plak_connect_normalize_url 'https://cloud.plak.io/')" = "https://cloud.plak.io" ] || fail "trailing slash"
 plak_connect_normalize_url 'ftp://x' 2>/dev/null && fail "non-http accepted"
-[ "$(plak_connect_resolve_panel)" = "https://panel.plak.work" ] || fail "prod default"
+[ "$(plak_connect_resolve_panel)" = "https://cloud.plak.io" ] || fail "prod default"
 [ "$(plak_connect_resolve_panel --panel 'https://staging.example/')" = "https://staging.example" ] || fail "explicit panel"
 PLAK_PANEL_DEV_URL="http://127.0.0.1:9" plak_connect_resolve_panel --dev >/dev/null || fail "dev resolve"
 
 # --- secret never via argv ---
-./plak.sh connect --manual --panel https://panel.plak.work --token abc 2>/dev/null && fail "--token accepted"
+./plak.sh connect --manual --panel https://cloud.plak.io --token abc 2>/dev/null && fail "--token accepted"
 
 # --- stub panel: pair -> pending x1 -> approved; user 401 until approved ---
 cat > "$tmpdir/stub.py" <<'PY'

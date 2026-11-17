@@ -12,7 +12,7 @@
 # - Sin -L en curl para la API: no reenviar el Bearer a otro origen.
 # - Dependencias declaradas: curl + python3 (parser JSON real).
 
-PLAK_CONNECT_PROD_URL="${PLAK_CONNECT_PROD_URL:-https://panel.plak.work}"
+PLAK_CONNECT_PROD_URL="${PLAK_CONNECT_PROD_URL:-https://cloud.plak.io}"
 PLAK_CONNECT_DEV_URL="${PLAK_PANEL_DEV_URL:-http://127.0.0.1:8000}"
 PLAK_CONNECT_DEFAULT_WAIT="${PLAK_CONNECT_DEFAULT_WAIT:-900}"
 PLAK_CONNECT_DEFAULT_POLL="${PLAK_CONNECT_DEFAULT_POLL:-10}"

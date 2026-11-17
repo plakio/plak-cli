@@ -246,11 +246,23 @@
     document.body.classList.add('plak-has-local-bar');
   }
 
+  /* Adminer core appends its own favicon after this theme's head() hook.
+     Keep the Plak favicon by removing competing icons and moving ours last. */
+  function pinFavicon() {
+    var favicon = document.querySelector('link[data-plak-favicon]');
+    if (!favicon) return;
+    document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]').forEach(function (link) {
+      if (link !== favicon) link.remove();
+    });
+    document.head.appendChild(favicon);
+  }
+
   function init() {
     makeLocalBar();
     makeToggle();
     makeResizer();
     retargetBrand();
+    pinFavicon();
   }
 
   if (document.readyState === 'loading') {
