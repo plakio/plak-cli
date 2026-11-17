@@ -32,6 +32,8 @@ When the formula owns `$(brew --prefix)/bin/plak`, `plak upgrade` must not repla
 
 The formula declares `link_overwrite "bin/plak"`, so a `brew upgrade` can recover from an older standalone copy that already replaced the symlink: Homebrew backs the file up and links the new keg. If the installed keg is already current but `bin/plak` is still a regular file, repair it once with `brew link --overwrite plak-cli`.
 
+Homebrew only auto-overwrites a conflicting file when it is owned by the same user as the `brew` executable. If an older `sudo plak upgrade` left a root-owned `bin/plak`, `brew upgrade` reports the executable as shadowed instead of replacing it. Repair that case with `brew link --overwrite plak-cli`; if the prefix is not writable, remove the file with `sudo` first and link again.
+
 `brew upgrade` updates the CLI only. The dashboard, editor and Adminer files are generated in `~/Plak/App/gui` by `plak reload`; Homebrew's sandbox cannot write to the user's home, so run `plak reload` (or `plak upgrade`) after a Homebrew-only upgrade to refresh those assets.
 
 Non-interactive runs use `PLAK_YES=1` (or `--yes`). They install Homebrew on macOS when it is missing, pass `--yes` to `plak install`, and do not prompt. Apple's Command Line Tools installer needs a GUI session, so install them first with `xcode-select --install` on a fresh Mac. `PLAK_CLI_ONLY=1` (or `--cli-only`) keeps the CLI-only behavior.
