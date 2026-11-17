@@ -28,13 +28,13 @@ The universal installer (`install.sh`, served by `https://plak.sh/install`) and 
 
 ### Homebrew ownership of the CLI
 
-When the formula owns `$(brew --prefix)/bin/plak`, `plak upgrade` must not replace that path. Replacing Homebrew's symlink with a regular file leaves the new keg in the Cellar while the old standalone script keeps shadowing it, and the next `brew upgrade` fails at the link step. `plak upgrade` therefore refuses to replace a Homebrew-owned binary and points at `brew upgrade plak-cli`; the universal installer refuses the same destination.
+When the formula owns `$(brew --prefix)/bin/plak`, `plak upgrade` must not replace that path. Replacing Homebrew's symlink with a regular file leaves the new keg in the Cellar while the old standalone script keeps shadowing it, and the next `brew upgrade` fails at the link step. `plak upgrade` therefore hands the CLI update to Homebrew: it repairs the keg link if needed, runs `brew upgrade plak-cli` (`--yes` in non-interactive runs) and then refreshes the UI. The universal installer refuses to replace a Homebrew-owned destination.
 
 The formula declares `link_overwrite "bin/plak"`, so a `brew upgrade` can recover from an older standalone copy that already replaced the symlink: Homebrew backs the file up and links the new keg. If the installed keg is already current but `bin/plak` is still a regular file, repair it once with `brew link --overwrite plak-cli`.
 
 Homebrew only auto-overwrites a conflicting file when it is owned by the same user as the `brew` executable. If an older `sudo plak upgrade` left a root-owned `bin/plak`, `brew upgrade` reports the executable as shadowed instead of replacing it. Repair that case with `brew link --overwrite plak-cli`; if the prefix is not writable, remove the file with `sudo` first and link again.
 
-`brew upgrade` updates the CLI only. The dashboard, editor and Adminer files are generated in `~/Plak/App/gui` by `plak reload`; Homebrew's sandbox cannot write to the user's home, so run `plak reload` (or `plak upgrade`) after a Homebrew-only upgrade to refresh those assets.
+Homebrew's post-install sandbox cannot write to the user's home, so the formula cannot run `plak reload` itself. `plak upgrade` covers that gap by running `brew upgrade` and then `plak reload` in one command. The manual path is `brew upgrade plak-cli` followed by `plak reload`; the dashboard, editor and Adminer files are generated in `~/Plak/App/gui`.
 
 Non-interactive runs use `PLAK_YES=1` (or `--yes`). They install Homebrew on macOS when it is missing, pass `--yes` to `plak install`, and do not prompt. Apple's Command Line Tools installer needs a GUI session, so install them first with `xcode-select --install` on a fresh Mac. `PLAK_CLI_ONLY=1` (or `--cli-only`) keeps the CLI-only behavior.
 

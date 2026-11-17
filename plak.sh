@@ -20869,21 +20869,55 @@ plak_upgrade_homebrew_cli_linked() {
     return 1
 }
 
-# Explain the only safe upgrade path when Homebrew owns the CLI. The broken-link
-# case is common after an old standalone upgrade: the keg is already there, but
-# bin/plak still runs the regular file that replaced the symlink.
-plak_upgrade_homebrew_cli_notice() {
-    local install_path="${1:-}"
-
-    echo "ℹ️  Plak CLI is managed by Homebrew."
-    if plak_upgrade_homebrew_cli_linked "$install_path"; then
-        echo "   Update the CLI with: brew upgrade plak-cli"
-    else
-        echo "   ${install_path} is not linked to Homebrew's plak-cli keg,"
-        echo "   usually because a standalone copy replaced the symlink."
-        echo "   Repair the link with: brew link --overwrite plak-cli"
-        echo "   Then update with: brew upgrade plak-cli"
+# Return the installed formula name. Homebrew resolves the short name for a
+# tapped formula, but the fully qualified name is the fallback when the tap
+# was installed under a different alias.
+plak_upgrade_homebrew_cli_formula() {
+    if brew list --versions plak-cli >/dev/null 2>&1; then
+        printf '%s\n' plak-cli
+        return 0
     fi
+    if brew list --versions plakio/tap/plak-cli >/dev/null 2>&1; then
+        printf '%s\n' plakio/tap/plak-cli
+        return 0
+    fi
+    printf '%s\n' plak-cli
+}
+
+# Restore the keg symlink when an older standalone upgrade replaced it. This
+# also handles a root-owned regular file: Homebrew refuses to include it in
+# `link_overwrite`, but `brew link --overwrite` can unlink it when the prefix
+# directory is writable.
+plak_upgrade_homebrew_cli_relink() {
+    local install_path="${1:-}" formula="${2:-plak-cli}"
+
+    plak_upgrade_homebrew_cli_linked "$install_path" && return 0
+    echo "🔗 Restoring the Homebrew link for ${install_path}..."
+    if brew link --overwrite "$formula"; then
+        return 0
+    fi
+    echo "❌ Could not restore the Homebrew link." >&2
+    echo "   ${install_path} is not linked to Homebrew's plak-cli keg." >&2
+    echo "   Repair it with: brew link --overwrite ${formula}" >&2
+    return 1
+}
+
+# Hand the CLI replacement to Homebrew instead of writing a standalone script
+# over the symlink. `plak upgrade` can then run brew upgrade and reload the UI
+# in one command, just like the universal installer.
+plak_upgrade_homebrew_cli_upgrade() {
+    local auto_yes="${1:-false}" formula="${2:-plak-cli}"
+    local -a args=(upgrade)
+
+    [ "$auto_yes" = true ] && args+=(--yes)
+    args+=("$formula")
+    echo "🍺 Homebrew manages the Plak CLI; running: brew ${args[*]}"
+    if ! brew "${args[@]}"; then
+        echo "❌ Homebrew could not upgrade the Plak CLI." >&2
+        echo "   Run: brew upgrade ${formula}" >&2
+        return 1
+    fi
+    return 0
 }
 
 # Resolve the plak binary inside the Homebrew keg. Unlike bin/plak, this path
@@ -20943,7 +20977,7 @@ plak_site_upgrade() {
     echo "🔎 Checking for the latest stable version of Plak..."
 
     local install_path latest_tag latest_version current_version
-    local homebrew_managed=false
+    local homebrew_managed=false homebrew_formula="" keg_bin="" keg_version=""
 
     # Find the real path of the currently running script
     install_path=$(command -v plak)
@@ -20956,6 +20990,7 @@ plak_site_upgrade() {
     # repair notice must be shown even when there is no new tag to install.
     if plak_upgrade_homebrew_cli_owner "$install_path"; then
         homebrew_managed=true
+        homebrew_formula=$(plak_upgrade_homebrew_cli_formula)
     fi
 
     current_version="${PLAK_VERSION:-}"
@@ -20990,16 +21025,33 @@ plak_site_upgrade() {
         fi
         if [ "$homebrew_managed" = true ] && ! plak_upgrade_homebrew_cli_linked "$install_path"; then
             echo ""
-            plak_upgrade_homebrew_cli_notice "$install_path"
-            echo "   The standalone updater will not replace the Homebrew binary."
+            echo "ℹ️  Plak CLI is managed by Homebrew."
+            plak_upgrade_homebrew_cli_relink "$install_path" "$homebrew_formula" || return 1
         fi
     else
         echo "🚀 Upgrading Plak to version $latest_version ($latest_tag)..."
 
         if [ "$homebrew_managed" = true ]; then
-            plak_upgrade_homebrew_cli_notice "$install_path"
-            echo "   The standalone updater will not replace the Homebrew binary;"
-            echo "   continuing with the runtime, Adminer and UI checks."
+            echo "ℹ️  Plak CLI is managed by Homebrew."
+            plak_upgrade_homebrew_cli_relink "$install_path" "$homebrew_formula" || return 1
+            if ! plak_upgrade_homebrew_cli_upgrade "$auto_yes" "$homebrew_formula"; then
+                return 1
+            fi
+            if ! plak_upgrade_homebrew_cli_linked "$install_path"; then
+                plak_upgrade_homebrew_cli_relink "$install_path" "$homebrew_formula" || return 1
+            fi
+            keg_bin=$(plak_upgrade_homebrew_cli_keg_binary) || keg_bin=""
+            keg_version=""
+            if [ -n "$keg_bin" ]; then
+                keg_version=$("$keg_bin" version 2>/dev/null | awk '{print $2}')
+                keg_version="${keg_version#v}"
+            fi
+            if [ "$keg_version" = "$latest_version" ]; then
+                echo "✅ Homebrew updated the Plak CLI to $keg_version."
+            else
+                echo "⚠️ Homebrew reports Plak ${keg_version:-unknown}; the tap may still be publishing $latest_version."
+                echo "   Run 'brew upgrade ${homebrew_formula}' again shortly."
+            fi
         else
             local install_dir
             install_dir=$(dirname "$install_path")

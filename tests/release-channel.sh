@@ -553,6 +553,25 @@ case "${1:-}" in
             *) exit 1 ;;
         esac
         ;;
+    link)
+        printf 'link %s\n' "$*" >> "${FAKE_BREW_LOG:-/dev/null}"
+        if [ -n "${FAKE_BREW_LINK_TARGET:-}" ] && [ -n "${FAKE_BREW_LINK_PATH:-}" ]; then
+            rm -f "$FAKE_BREW_LINK_PATH"
+            ln -s "$FAKE_BREW_LINK_TARGET" "$FAKE_BREW_LINK_PATH"
+        fi
+        ;;
+    upgrade)
+        printf 'upgrade %s\n' "$*" >> "${FAKE_BREW_LOG:-/dev/null}"
+        if [ -n "${FAKE_BREW_UPGRADE_SOURCE:-}" ] && [ -n "${FAKE_BREW_UPGRADE_KEG:-}" ]; then
+            mkdir -p "$(dirname "$FAKE_BREW_UPGRADE_KEG")"
+            cp "$FAKE_BREW_UPGRADE_SOURCE" "$FAKE_BREW_UPGRADE_KEG"
+            chmod 755 "$FAKE_BREW_UPGRADE_KEG"
+            if [ -n "${FAKE_BREW_LINK_PATH:-}" ]; then
+                rm -f "$FAKE_BREW_LINK_PATH"
+                ln -s "$FAKE_BREW_UPGRADE_KEG" "$FAKE_BREW_LINK_PATH"
+            fi
+        fi
+        ;;
     *) exit 1 ;;
 esac
 FAKE_BREW
@@ -581,10 +600,12 @@ fi
 grep -q 'local-context' "$tmpdir/home/Plak/App/gui/index.php" \
     || fail "upgrade left the old dashboard in place"
 
-# Homebrew owns both the keg and the linked bin/plak. The standalone updater
-# must leave the symlink alone; replacing it with a regular file is what made
-# `brew upgrade` fail at the link step and keep running the old CLI.
+# Homebrew owns both the keg and the linked bin/plak. `plak upgrade` must
+# delegate the CLI update to brew and keep the keg symlink, never replace it
+# with a standalone script.
 homebrew_prefix="$tmpdir/homebrew-linked"
+brew_log="$tmpdir/brew-linked.log"
+: > "$brew_log"
 mkdir -p "$homebrew_prefix/bin" "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin"
 cp "$old_script" "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak"
 chmod 755 "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak"
@@ -594,22 +615,34 @@ PATH="$tmpdir/fakebin:$homebrew_prefix/bin:/usr/bin:/bin" \
 PLAK_NO_PATH_PRELUDE=1 HOME="$tmpdir/home" TMPDIR="$tmpdir/tmp" \
 FAKE_CURL_LOG="$upgrade_log" FAKE_TAGS_JSON="$new_tags" FAKE_PAYLOAD="$new_payload" \
 FAKE_BREW_PREFIX="$homebrew_prefix" FAKE_BREW_VERSION="$old_version" \
+FAKE_BREW_LOG="$brew_log" \
+FAKE_BREW_LINK_PATH="$homebrew_prefix/bin/plak" \
+FAKE_BREW_LINK_TARGET="$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak" \
+FAKE_BREW_UPGRADE_KEG="$homebrew_prefix/Cellar/plak-cli/${new_version}/bin/plak" \
+FAKE_BREW_UPGRADE_SOURCE="$new_payload" \
     "$homebrew_prefix/bin/plak" upgrade > "$tmpdir/upgrade.out" 2>&1 \
     || fail "Homebrew-linked upgrade failed: $(cat "$tmpdir/upgrade.out")"
 [ -L "$homebrew_prefix/bin/plak" ] || fail "upgrade replaced the Homebrew symlink"
-cmp -s "$old_script" "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak" \
-    || fail "upgrade modified the Homebrew keg"
-assert_contains "$tmpdir/upgrade.out" "Plak CLI is managed by Homebrew" "Homebrew owner message"
-assert_contains "$tmpdir/upgrade.out" "brew upgrade plak-cli" "Homebrew upgrade command"
+case "$(readlink "$homebrew_prefix/bin/plak")" in
+    *"Cellar/plak-cli/${new_version}/bin/plak") ;;
+    *) fail "upgrade did not link the new Homebrew keg" ;;
+esac
+cmp -s "$new_payload" "$homebrew_prefix/Cellar/plak-cli/${new_version}/bin/plak" \
+    || fail "Homebrew upgrade did not install the new keg payload"
+assert_contains "$tmpdir/upgrade.out" "Homebrew updated the Plak CLI to ${new_version}" "Homebrew upgrade message"
+assert_contains "$brew_log" "upgrade --yes plak-cli" "Homebrew upgrade command"
 if grep -Eq 'raw\.githubusercontent\.com/plakio/plak-cli/[^/]+/plak\.sh' "$upgrade_log"; then
     fail "Homebrew-linked upgrade downloaded a standalone script"
 fi
 
-# Older standalone upgrades already left a regular file at bin/plak. The next
-# run must not replace it again; it must point at `brew link --overwrite`,
-# which restores the keg symlink that `brew upgrade` expects.
+# Older standalone upgrades already left a regular file at bin/plak. `plak
+# upgrade` must repair the link first, then delegate the upgrade to brew.
 homebrew_prefix="$tmpdir/homebrew-broken"
-mkdir -p "$homebrew_prefix/bin"
+brew_log="$tmpdir/brew-broken.log"
+: > "$brew_log"
+mkdir -p "$homebrew_prefix/bin" "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin"
+cp "$old_script" "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak"
+chmod 755 "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak"
 cp "$old_script" "$homebrew_prefix/bin/plak"
 chmod 755 "$homebrew_prefix/bin/plak"
 : > "$upgrade_log"
@@ -617,19 +650,38 @@ PATH="$tmpdir/fakebin:$homebrew_prefix/bin:/usr/bin:/bin" \
 PLAK_NO_PATH_PRELUDE=1 HOME="$tmpdir/home" TMPDIR="$tmpdir/tmp" \
 FAKE_CURL_LOG="$upgrade_log" FAKE_TAGS_JSON="$new_tags" FAKE_PAYLOAD="$new_payload" \
 FAKE_BREW_PREFIX="$homebrew_prefix" FAKE_BREW_VERSION="$old_version" \
+FAKE_BREW_LOG="$brew_log" \
+FAKE_BREW_LINK_PATH="$homebrew_prefix/bin/plak" \
+FAKE_BREW_LINK_TARGET="$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak" \
+FAKE_BREW_UPGRADE_KEG="$homebrew_prefix/Cellar/plak-cli/${new_version}/bin/plak" \
+FAKE_BREW_UPGRADE_SOURCE="$new_payload" \
     "$homebrew_prefix/bin/plak" upgrade > "$tmpdir/upgrade.out" 2>&1 \
     || fail "Homebrew-broken-link upgrade failed: $(cat "$tmpdir/upgrade.out")"
-[ ! -L "$homebrew_prefix/bin/plak" ] || fail "broken-link test unexpectedly created a symlink"
-cmp -s "$old_script" "$homebrew_prefix/bin/plak" \
-    || fail "upgrade replaced the standalone file shadowing Homebrew"
-assert_contains "$tmpdir/upgrade.out" "not linked to Homebrew's plak-cli keg" "broken-link message"
-assert_contains "$tmpdir/upgrade.out" "brew link --overwrite plak-cli" "broken-link repair command"
+[ -L "$homebrew_prefix/bin/plak" ] || fail "upgrade did not repair the Homebrew symlink"
+case "$(readlink "$homebrew_prefix/bin/plak")" in
+    *"Cellar/plak-cli/${new_version}/bin/plak") ;;
+    *) fail "repaired Homebrew link does not point to the new keg" ;;
+esac
+cmp -s "$new_payload" "$homebrew_prefix/Cellar/plak-cli/${new_version}/bin/plak" \
+    || fail "Homebrew-broken-link upgrade did not install the new keg"
+assert_contains "$tmpdir/upgrade.out" "Restoring the Homebrew link" "broken-link repair message"
+assert_contains "$tmpdir/upgrade.out" "Homebrew updated the Plak CLI to ${new_version}" "broken-link upgrade message"
+assert_contains "$brew_log" "link --overwrite plak-cli" "broken-link repair command"
+assert_contains "$brew_log" "upgrade --yes plak-cli" "broken-link upgrade command"
 if grep -Eq 'raw\.githubusercontent\.com/plakio/plak-cli/[^/]+/plak\.sh' "$upgrade_log"; then
     fail "Homebrew-broken-link upgrade downloaded a standalone script"
 fi
 
-# Already on the latest standalone version but still shadowing a Homebrew keg:
-# `plak upgrade` has no tag to install, yet it must still surface the repair.
+# Already on the latest version but still shadowing a Homebrew keg: no brew
+# upgrade, but `plak upgrade` still repairs the link before the UI refresh.
+homebrew_prefix="$tmpdir/homebrew-broken-current"
+brew_log="$tmpdir/brew-broken-current.log"
+: > "$brew_log"
+mkdir -p "$homebrew_prefix/bin" "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin"
+cp "$old_script" "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak"
+chmod 755 "$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak"
+cp "$old_script" "$homebrew_prefix/bin/plak"
+chmod 755 "$homebrew_prefix/bin/plak"
 same_tags="$tmpdir/same-tags.json"
 tags_json "v${old_version}" > "$same_tags"
 : > "$upgrade_log"
@@ -637,26 +689,41 @@ PATH="$tmpdir/fakebin:$homebrew_prefix/bin:/usr/bin:/bin" \
 PLAK_NO_PATH_PRELUDE=1 HOME="$tmpdir/home" TMPDIR="$tmpdir/tmp" \
 FAKE_CURL_LOG="$upgrade_log" FAKE_TAGS_JSON="$same_tags" FAKE_PAYLOAD="$new_payload" \
 FAKE_BREW_PREFIX="$homebrew_prefix" FAKE_BREW_VERSION="$old_version" \
+FAKE_BREW_LOG="$brew_log" \
+FAKE_BREW_LINK_PATH="$homebrew_prefix/bin/plak" \
+FAKE_BREW_LINK_TARGET="$homebrew_prefix/Cellar/plak-cli/${old_version}/bin/plak" \
     "$homebrew_prefix/bin/plak" upgrade > "$tmpdir/upgrade.out" 2>&1 \
     || fail "already-current Homebrew upgrade failed: $(cat "$tmpdir/upgrade.out")"
+[ -L "$homebrew_prefix/bin/plak" ] || fail "already-current upgrade did not repair the Homebrew symlink"
+case "$(readlink "$homebrew_prefix/bin/plak")" in
+    *"Cellar/plak-cli/${old_version}/bin/plak") ;;
+    *) fail "already-current repaired link points to the wrong keg" ;;
+esac
 assert_contains "$tmpdir/upgrade.out" "already using the latest stable version" "already-current message"
-assert_contains "$tmpdir/upgrade.out" "not linked to Homebrew's plak-cli keg" "already-current broken-link message"
-assert_contains "$tmpdir/upgrade.out" "brew link --overwrite plak-cli" "already-current repair command"
-cmp -s "$old_script" "$homebrew_prefix/bin/plak" \
-    || fail "already-current upgrade replaced the standalone file shadowing Homebrew"
+assert_contains "$tmpdir/upgrade.out" "Restoring the Homebrew link" "already-current repair message"
+assert_contains "$brew_log" "link --overwrite plak-cli" "already-current repair command"
+if grep -Eq '^upgrade ' "$brew_log"; then
+    fail "already-current Homebrew install ran brew upgrade"
+fi
 
 # A standalone install outside Homebrew's prefix must still upgrade even when
 # an unrelated plak-cli formula is installed elsewhere in the prefix.
 reset_upgrade_prior
 : > "$upgrade_log"
+standalone_brew_log="$tmpdir/brew-standalone.log"
+: > "$standalone_brew_log"
 PATH="$tmpdir/fakebin:$tmpdir/upgrade-bin:/usr/bin:/bin" \
 PLAK_NO_PATH_PRELUDE=1 HOME="$tmpdir/home" TMPDIR="$tmpdir/tmp" \
 FAKE_CURL_LOG="$upgrade_log" FAKE_TAGS_JSON="$new_tags" FAKE_PAYLOAD="$new_payload" \
 FAKE_BREW_PREFIX="$tmpdir/homebrew-linked" FAKE_BREW_VERSION="$old_version" \
+FAKE_BREW_LOG="$standalone_brew_log" \
     "$tmpdir/upgrade-bin/plak" upgrade > "$tmpdir/upgrade.out" 2>&1 \
     || fail "standalone upgrade with a Homebrew prefix failed: $(cat "$tmpdir/upgrade.out")"
 cmp -s "$new_payload" "$tmpdir/upgrade-bin/plak" \
     || fail "standalone upgrade outside the Homebrew prefix was skipped"
+if grep -Eq '^(upgrade|link) ' "$standalone_brew_log"; then
+    fail "standalone upgrade outside the Homebrew prefix invoked brew"
+fi
 
 # Already current: no script download; the UI/theme refresh is still allowed.
 reset_upgrade_prior
