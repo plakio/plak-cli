@@ -26,6 +26,14 @@ The universal installer (`install.sh`, served by `https://plak.sh/install`) and 
 6. Optionally run `plak install` to install the local stack. The CLI is already in place at this point, so a stack failure never invalidates the installed executable.
 7. `plak upgrade` refreshes the local UI (dashboard, HTML editor and Adminer theme) through `plak reload`, so the new design appears without a separate command. The refresh also runs when the runtime or Adminer checks are skipped, and the dashboard sends `Cache-Control: no-store` so a normal reload cannot reuse the previous design.
 
+### Homebrew ownership of the CLI
+
+When the formula owns `$(brew --prefix)/bin/plak`, `plak upgrade` must not replace that path. Replacing Homebrew's symlink with a regular file leaves the new keg in the Cellar while the old standalone script keeps shadowing it, and the next `brew upgrade` fails at the link step. `plak upgrade` therefore refuses to replace a Homebrew-owned binary and points at `brew upgrade plak-cli`; the universal installer refuses the same destination.
+
+The formula declares `link_overwrite "bin/plak"`, so a `brew upgrade` can recover from an older standalone copy that already replaced the symlink: Homebrew backs the file up and links the new keg. If the installed keg is already current but `bin/plak` is still a regular file, repair it once with `brew link --overwrite plak-cli`.
+
+`brew upgrade` updates the CLI only. The dashboard, editor and Adminer files are generated in `~/Plak/App/gui` by `plak reload`; Homebrew's sandbox cannot write to the user's home, so run `plak reload` (or `plak upgrade`) after a Homebrew-only upgrade to refresh those assets.
+
 Non-interactive runs use `PLAK_YES=1` (or `--yes`). They install Homebrew on macOS when it is missing, pass `--yes` to `plak install`, and do not prompt. Apple's Command Line Tools installer needs a GUI session, so install them first with `xcode-select --install` on a fresh Mac. `PLAK_CLI_ONLY=1` (or `--cli-only`) keeps the CLI-only behavior.
 
 A download, API, or validation failure leaves the current executable untouched. There is deliberately **no fallback to `main` and no `releases/latest` lookup**.

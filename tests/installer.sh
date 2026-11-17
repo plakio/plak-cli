@@ -63,6 +63,19 @@ cat > "$mac_home/bin/brew" <<'BREW'
 case "${1:-}" in
     --prefix) printf '%s\n' "$TEST_BREW_PREFIX" ;;
     shellenv) printf 'export PATH="%s/bin:$PATH"\n' "$TEST_BREW_PREFIX" ;;
+    list)
+        case "${2:-}" in
+            --versions)
+                [ "${TEST_BREW_FORMULA:-0}" = "1" ] || exit 1
+                case "${3:-}" in
+                    plak-cli|plakio/tap/plak-cli) printf '%s 0.4.66\n' "$3" ;;
+                    *) exit 1 ;;
+                esac
+                ;;
+            *) exit 1 ;;
+        esac
+        ;;
+    *) exit 1 ;;
 esac
 BREW
 chmod +x "$mac_home/bin/brew"
@@ -80,6 +93,43 @@ chmod +x "$mac_home/bin/brew"
     selected=$(plak_installer_choose_dir Linux aarch64)
     [ "$selected" = "/usr/local/bin" ] || exit 1
 ) || { echo 'macOS Homebrew path selection failed' >&2; exit 1; }
+
+# The universal installer must never replace a Homebrew-owned plak. Doing so
+# turns the keg symlink into a regular file and makes every later
+# `brew upgrade` fail at the link step.
+mkdir -p "$mac_home/Cellar/plak-cli/0.4.66/bin"
+cp "$ROOT_DIR/plak.sh" "$mac_home/Cellar/plak-cli/0.4.66/bin/plak"
+ln -s ../Cellar/plak-cli/0.4.66/bin/plak "$mac_home/bin/plak"
+(
+    export PLAK_INSTALLER_LIB_ONLY=1 TEST_BREW_PREFIX="$mac_home" TEST_BREW_FORMULA=1
+    export PATH="$mac_home/bin:/usr/bin:/bin"
+    source "$ROOT_DIR/install.sh"
+    plak_installer_homebrew_owns_destination "$mac_home/bin/plak" || exit 1
+    plak_installer_homebrew_owns_destination "$mac_home/Cellar/plak-cli/0.4.66/bin/plak" || exit 1
+    if plak_installer_homebrew_owns_destination "$tmpdir/bin/plak"; then exit 1; fi
+) || { echo 'Homebrew ownership detection failed' >&2; exit 1; }
+
+broken_home="$tmpdir/homebrew-broken"
+mkdir -p "$broken_home/bin"
+cp "$ROOT_DIR/plak.sh" "$broken_home/bin/plak"
+(
+    export PLAK_INSTALLER_LIB_ONLY=1 TEST_BREW_PREFIX="$broken_home" TEST_BREW_FORMULA=1
+    export PATH="$mac_home/bin:/usr/bin:/bin"
+    source "$ROOT_DIR/install.sh"
+    plak_installer_homebrew_owns_destination "$broken_home/bin/plak" || exit 1
+) || { echo 'broken Homebrew link detection failed' >&2; exit 1; }
+
+if PLAK_INSTALL_DIR="$mac_home/bin" PLAK_INSTALL_URL="file://$ROOT_DIR/plak.sh" \
+    PATH="$mac_home/bin:$PATH" bash "$ROOT_DIR/install.sh" \
+    > "$tmpdir/homebrew-refusal" 2>&1; then
+    echo 'Installer replaced a Homebrew-managed CLI' >&2
+    exit 1
+fi
+grep -q 'managed by Homebrew' "$tmpdir/homebrew-refusal"
+grep -q 'brew link --overwrite plak-cli' "$tmpdir/homebrew-refusal"
+[ -L "$mac_home/bin/plak" ] || { echo 'Installer replaced the Homebrew symlink' >&2; exit 1; }
+cmp -s "$ROOT_DIR/plak.sh" "$mac_home/Cellar/plak-cli/0.4.66/bin/plak" \
+    || { echo 'Installer modified the Homebrew keg' >&2; exit 1; }
 
 # Homebrew requires the Xcode Command Line Tools. An installed toolchain is
 # accepted silently; when it is missing, non-interactive runs fail with the

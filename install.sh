@@ -484,6 +484,69 @@ plak_installer_choose_dir() {
     printf '%s\n' "$dir"
 }
 
+# Resolve a path through symlinks without requiring GNU readlink -f. Homebrew
+# links prefix/bin/plak into Cellar, and the installer must not replace that
+# link with a regular file.
+plak_installer_resolve_path() {
+    local path="$1" target dir hops=0
+
+    [ -e "$path" ] || { printf '%s\n' "$path"; return 0; }
+    while [ -L "$path" ]; do
+        hops=$((hops + 1))
+        [ "$hops" -le 40 ] || break
+        target=$(readlink "$path" 2>/dev/null) || break
+        case "$target" in
+            /*) path="$target" ;;
+            *) path="$(dirname "$path")/$target" ;;
+        esac
+    done
+    dir=$(cd "$(dirname "$path")" 2>/dev/null && pwd -P) || dir=""
+    if [ -n "$dir" ]; then
+        printf '%s\n' "$dir/$(basename "$path")"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
+# Homebrew owns the CLI when the destination resolves into a Keg, or when the
+# plak-cli formula is installed and the destination is its linked bin/plak.
+# The standalone installer must not replace either: doing so makes the next
+# `brew upgrade` fail at the link step.
+plak_installer_homebrew_owns_destination() {
+    local destination="$1" prefix resolved
+
+    [ -n "$destination" ] || return 1
+    resolved=$(plak_installer_resolve_path "$destination") || resolved="$destination"
+    case "$resolved" in
+        */Cellar/*|*/Caskroom/*) return 0 ;;
+    esac
+
+    command -v brew >/dev/null 2>&1 || return 1
+    prefix=$(brew --prefix 2>/dev/null) || return 1
+    [ -n "$prefix" ] || return 1
+    prefix=$(cd "$prefix" 2>/dev/null && pwd -P) || return 1
+    case "$destination" in
+        "$prefix"/bin/plak|"$prefix"/sbin/plak)
+            if brew list --versions plak-cli >/dev/null 2>&1 ||
+                brew list --versions plakio/tap/plak-cli >/dev/null 2>&1; then
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+plak_installer_assert_not_homebrew_destination() {
+    local destination="$1"
+
+    plak_installer_homebrew_owns_destination "$destination" || return 0
+    echo "Error: Plak CLI is managed by Homebrew at $destination." >&2
+    echo "Update it with: brew upgrade plak-cli" >&2
+    echo "If Homebrew reports a link conflict, run: brew link --overwrite plak-cli" >&2
+    echo "Nothing was installed or replaced." >&2
+    exit 1
+}
+
 # Sourced by tests to exercise path selection without running the installer.
 if [ "${PLAK_INSTALLER_LIB_ONLY:-0}" = "1" ]; then
     return 0 2>/dev/null || exit 0
@@ -524,6 +587,10 @@ if [ -z "$install_dir" ]; then
 fi
 
 destination="$install_dir/plak"
+
+# Never replace a binary Homebrew owns. `plak upgrade` already refuses this;
+# the universal installer must do the same or it breaks the next brew upgrade.
+plak_installer_assert_not_homebrew_destination "$destination"
 
 needs_sudo=false
 if [ "$(id -u)" -ne 0 ]; then
