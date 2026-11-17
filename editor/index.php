@@ -54,6 +54,7 @@ header('Referrer-Policy: no-referrer');
   }
 })();
 </script>
+<script src="/i18n.js?v=<?= (int) @filemtime(__DIR__ . '/../i18n.js') ?>"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700;750&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -85,6 +86,14 @@ header('Referrer-Policy: no-referrer');
     <button type="button" id="undo" class="icon" disabled title="Undo" aria-label="Undo">↶</button>
     <button type="button" id="redo" class="icon" disabled title="Redo" aria-label="Redo">↷</button>
     <button type="button" id="theme-toggle" class="icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    <label class="lang-select-wrap" title="Language">
+      <select data-lang-select aria-label="Language">
+        <option value="en">EN</option>
+        <option value="es">ES</option>
+        <option value="pt">PT</option>
+        <option value="fr">FR</option>
+      </select>
+    </label>
     <button type="button" id="code-toggle">Code</button>
     <button type="button" id="save" class="primary" disabled title="Save (⌘S)">Save</button>
     <span id="status" class="status">Loading…</span>

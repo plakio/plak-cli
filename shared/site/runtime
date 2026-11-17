@@ -960,6 +960,14 @@ deploy_adminer_theme() {
     echo "⚙️ Writing Adminer entry point..."
     cat > "$adminer_dir/index.php" << 'ADMINER_INDEX_EOF'
 <?php
+// Follow the local dashboard language without adding a URL parameter.
+// Adminer reads adminer_lang; plak_lang is the shared preference cookie.
+if (!isset($_COOKIE['adminer_lang']) && isset($_COOKIE['plak_lang'])) {
+    $plak_lang = (string) $_COOKIE['plak_lang'];
+    if (in_array($plak_lang, ['en', 'es', 'pt', 'fr'], true)) {
+        $_COOKIE['adminer_lang'] = $plak_lang;
+    }
+}
 // This is the custom entry point for Adminer with autologin.
 function adminer_object() {
     // Adminer 5.x uses the Adminer namespace
@@ -1519,6 +1527,7 @@ EOM
 # --- GUI Generation ---
 create_gui_file() {
     echo "🎨 Creating Plak dashboard files..."
+    deploy_i18n_assets "$GUI_DIR" || return 1
     mkdir -p "$GUI_DIR"
 
     # Both the first HTML response and the API need the same token. Generating
@@ -2979,6 +2988,7 @@ if (is_file($__plak_connect_file)) {
     <title>Plak local — sites</title>
     <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAD/h4/MvwAAAAlwSFlzAAAOwwAADsMBx2+oZAAAAAd0SU1FB+oLEQEQDz/B9lgAAAL+elRYdFJhdyBwcm9maWxlIHR5cGUgeG1wAABIiZVWSbbcIAzc6xQ5AkhC4OM4HnZ5L8scPyU8u3H37/bz0CBUUmkA+vfnL/3CL0rOJEMu0udiYw42WspqkYP/t8GmLD4nI7NFU5uNLUm/jO/SMzMHOtRg8LcvSUXHFDio2JyxkIMYTxLqzTKFnoNfMIGh3KRPrEpqN/xl0m0oWXEF6YE55/rjKUOIpwqReZYonV88kwRhDDCe46IEb8kd1MLsXHh0AJ8+bLlbpGqJsphgoKuudWBhgoWrAHhhYIMJtxBEXBSdr1zo5JQrspZb1abpoBvf4M9GOLyucddiJXF+j3fAQZk0GETUEhwZDvpcEM+EhckD7FzBnrkCxmdAuiNqrEhgzfjZyUPGGXRuCeTuHjsLO/oX7vo3AesbcgusCWeoLSnoioPc2GLXpy5BSXYVw+aATTIhAU2GI2KLJLVEWw5dIMorBD1gNETfQ9CyUOcag7QWxuFGvAI8yYWeWgg16fpaOqmKY3nbmqPqaG0EAkfiO+F7oSL0nUw6J1HRCLLRd0pKiP3MIQUMQZWOPqXdIqRDde+i4BWQDqxD+J19LtdynZ7EF2GnEzfq7occaUSY9VuOtkLxf4RCmCx7mdRuiF6HOMecXLEXgA4IcIbxAkUjVDGyrsFZI/yvnL2zd+OMPvMgw6W1uFr0iLssXZf8JG7tFbSStv7FJhkzo8Y8tbAhwErf6da6q90Uc687yksbeXInea4kKCk7wATawc8mR8+Cn9y6QtJO4ZGnybTieaiVR7xLfdrZgvsqWpZ9h76rSRktWjvXAEVSBDscbpxOQOQoODMIG7Zw1KzPulWd54qPoXCKZIz78g5jijeylRrmnnB+bildVMCyRQEQud7m2OiTijvjyy0MDXCjbenn1Hvfk+hJ+FNPupcNtepmT/96krukBoA853x3QWcQ7x3Z/LBIXDcetBLkj4tn5qVNfFByP3TRqVlorajbset8Zjw5jlMj8gFzCyiK9nqerS3qP6vvdH+7Z5pHAAACN0lEQVRYw+2VPWgUQRTH/2/2zJ13uYjk85AUEQwBQQ8OOcVCxUaRGBuLBIWIYhcUUqogkiJNCkmR2AmCWKQStBIsREQlCiYpEo1WBvVSSNTDmJ15Fru3t7M7exyXQJp91c6bmd/+38fMUBqbM7HJ/TEgBsSAGLB1gEQdaxigxgHMCoKZBDUGYNVVOND+9+PrJdtqBKAyg1f6koD69nhy2SiCal7rqnVsqMn9fn/tjUmDtaOW/tTYJU9iLv9iVdQLYJZSMVT/zWTVmUs9k+EgjCEotPV00fflPw/O+N2lgXfhIAxJZLXn4rmeNJU/zxa1ifYjs6gDwOroeEEAaMkfDEztE0wRAAZ7+g9N9VbiCyzOGsJ1AGw1VxLMmVu9iLBcft4OFoLSAFhdGPEAyb2RleXS/Ym1AMENgTy1tL7g/K0zDKCOUboTKKVTRrayBICl55dnp5tgsNXzr/RSOgpI/mSAO0/t9HJ5zHxK2k6/ZCFCABAIsI/fq9XYjg0kfj/64iP4O1F1nEgxDR/Wd9gb2lCIf1dnfOr8QsWPh4BMF7Us/bo9F8ja+hwkAPdwJ3Q6YD29vF8TsLISLH03AZBfyxQMAQDAavBuiyah7B9ZXr+MTwqC4SyQmNl9o9XnyGoN/GHJDUgtUiiJFTadvF7MGEsgn49+ciWwJIoAgNWuQqE7CQZ5bUFggv32SamakEgFAFjCdIOyEqFLzdxvlKgeb7/bClMjr/Xot0i37X9cY0AMiAExoGL/Ad87lyvXdI4wAAAAIHRFWHR4bXA6Q3JlYXRvclRvb2wAQ2FudmEgKFJlbmRlcmVyKc95fYMAAAAASUVORK5CYII=">
     <link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAD/h4/MvwAAAAlwSFlzAAAOwwAADsMBx2+oZAAAAAd0SU1FB+oLEQEQDz/B9lgAAAL+elRYdFJhdyBwcm9maWxlIHR5cGUgeG1wAABIiZVWSbbcIAzc6xQ5AkhC4OM4HnZ5L8scPyU8u3H37/bz0CBUUmkA+vfnL/3CL0rOJEMu0udiYw42WspqkYP/t8GmLD4nI7NFU5uNLUm/jO/SMzMHOtRg8LcvSUXHFDio2JyxkIMYTxLqzTKFnoNfMIGh3KRPrEpqN/xl0m0oWXEF6YE55/rjKUOIpwqReZYonV88kwRhDDCe46IEb8kd1MLsXHh0AJ8+bLlbpGqJsphgoKuudWBhgoWrAHhhYIMJtxBEXBSdr1zo5JQrspZb1abpoBvf4M9GOLyucddiJXF+j3fAQZk0GETUEhwZDvpcEM+EhckD7FzBnrkCxmdAuiNqrEhgzfjZyUPGGXRuCeTuHjsLO/oX7vo3AesbcgusCWeoLSnoioPc2GLXpy5BSXYVw+aATTIhAU2GI2KLJLVEWw5dIMorBD1gNETfQ9CyUOcag7QWxuFGvAI8yYWeWgg16fpaOqmKY3nbmqPqaG0EAkfiO+F7oSL0nUw6J1HRCLLRd0pKiP3MIQUMQZWOPqXdIqRDde+i4BWQDqxD+J19LtdynZ7EF2GnEzfq7occaUSY9VuOtkLxf4RCmCx7mdRuiF6HOMecXLEXgA4IcIbxAkUjVDGyrsFZI/yvnL2zd+OMPvMgw6W1uFr0iLssXZf8JG7tFbSStv7FJhkzo8Y8tbAhwErf6da6q90Uc687yksbeXInea4kKCk7wATawc8mR8+Cn9y6QtJO4ZGnybTieaiVR7xLfdrZgvsqWpZ9h76rSRktWjvXAEVSBDscbpxOQOQoODMIG7Zw1KzPulWd54qPoXCKZIz78g5jijeylRrmnnB+bildVMCyRQEQud7m2OiTijvjyy0MDXCjbenn1Hvfk+hJ+FNPupcNtepmT/96krukBoA853x3QWcQ7x3Z/LBIXDcetBLkj4tn5qVNfFByP3TRqVlorajbset8Zjw5jlMj8gFzCyiK9nqerS3qP6vvdH+7Z5pHAAACN0lEQVRYw+2VPWgUQRTH/2/2zJ13uYjk85AUEQwBQQ8OOcVCxUaRGBuLBIWIYhcUUqogkiJNCkmR2AmCWKQStBIsREQlCiYpEo1WBvVSSNTDmJ15Fru3t7M7exyXQJp91c6bmd/+38fMUBqbM7HJ/TEgBsSAGLB1gEQdaxigxgHMCoKZBDUGYNVVOND+9+PrJdtqBKAyg1f6koD69nhy2SiCal7rqnVsqMn9fn/tjUmDtaOW/tTYJU9iLv9iVdQLYJZSMVT/zWTVmUs9k+EgjCEotPV00fflPw/O+N2lgXfhIAxJZLXn4rmeNJU/zxa1ifYjs6gDwOroeEEAaMkfDEztE0wRAAZ7+g9N9VbiCyzOGsJ1AGw1VxLMmVu9iLBcft4OFoLSAFhdGPEAyb2RleXS/Ym1AMENgTy1tL7g/K0zDKCOUboTKKVTRrayBICl55dnp5tgsNXzr/RSOgpI/mSAO0/t9HJ5zHxK2k6/ZCFCABAIsI/fq9XYjg0kfj/64iP4O1F1nEgxDR/Wd9gb2lCIf1dnfOr8QsWPh4BMF7Us/bo9F8ja+hwkAPdwJ3Q6YD29vF8TsLISLH03AZBfyxQMAQDAavBuiyah7B9ZXr+MTwqC4SyQmNl9o9XnyGoN/GHJDUgtUiiJFTadvF7MGEsgn49+ciWwJIoAgNWuQqE7CQZ5bUFggv32SamakEgFAFjCdIOyEqFLzdxvlKgeb7/bClMjr/Xot0i37X9cY0AMiAExoGL/Ad87lyvXdI4wAAAAIHRFWHR4bXA6Q3JlYXRvclRvb2wAQ2FudmEgKFJlbmRlcmVyKc95fYMAAAAASUVORK5CYII=">
+    <script src="/i18n.js?v=<?= (int) @filemtime(__DIR__ . '/i18n.js') ?>"></script>
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
         // theme's background is used from the very first frame (no FOUC).
@@ -3285,6 +3295,9 @@ if (is_file($__plak_connect_file)) {
         }
 
         [x-cloak] { display: none !important; }
+        /* Avoid an English flash when a non-English locale is restored before
+           the first pass. i18n.js removes the attribute after translating. */
+        html[data-i18n-pending] body { visibility: hidden; }
         .site-detail { margin-top: 1rem; padding: 1.1rem 1.25rem; }
         .detail-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
         .detail-title { margin: 0; font-family: var(--font-serif); font-size: 1.3rem; }
@@ -3723,6 +3736,29 @@ if (is_file($__plak_connect_file)) {
         }
         .theme-btn:hover { border-color: var(--panel-border); background: var(--panel-hover); color: var(--text); }
 
+        /* Language switcher. Text-only addition: same tokens and button size
+           as the existing topbar controls, no changes to the panel palette. */
+        .lang-wrap { position: relative; }
+        .lang-btn { display: inline-flex; align-items: center; gap: 5px; width: auto; padding: 0 8px; }
+        .lang-btn svg { width: 14px; height: 14px; }
+        .lang-code { color: var(--text-dim); font: 650 9px var(--font-mono); letter-spacing: .04em; }
+        .lang-menu {
+            position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
+            width: 184px; padding: 5px; border: 1px solid var(--panel-border);
+            border-radius: 8px; background: var(--panel); box-shadow: var(--shadow-lg);
+        }
+        .lang-menu[hidden] { display: none !important; }
+        .lang-option {
+            display: flex; align-items: center; gap: 8px; width: 100%;
+            padding: 8px 9px; border: 0; border-radius: 5px; background: transparent;
+            color: var(--text-dim); text-align: left; font: 500 12px var(--font-sans); cursor: pointer;
+        }
+        .lang-option:hover { background: var(--panel-hover); color: var(--text); }
+        .lang-option.active { background: color-mix(in srgb, var(--accent) 9%, var(--panel)); color: var(--accent); }
+        .lang-option-code { margin-left: auto; color: var(--text-faint); font: 600 9px var(--font-mono); }
+        .lang-option.active .lang-option-code { color: var(--accent); }
+        .lang-check { width: 12px; color: var(--accent); font-size: 10px; }
+
         .main { width: 100%; max-width: 1490px; margin: 0 auto; padding: 40px 48px 72px; }
         .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 33px; }
         .page-head h1 { margin: 0 0 8px; font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -.045em; }
@@ -4157,6 +4193,8 @@ if (is_file($__plak_connect_file)) {
         }
         @media (max-width: 620px) {
             .page-head h1 { font-size: 26px; }
+            .lang-btn { padding: 0 6px; }
+            .lang-btn .lang-code { display: none; }
             .local-context .ctx-link { font-size: 0; }
             .local-context .ctx-link::after { content: "Cloud ↗"; font-size: 10px; }
             .editor-toolbar { align-items: stretch; }
@@ -4256,6 +4294,18 @@ if (is_file($__plak_connect_file)) {
                         <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
                         <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
                     </button>
+                    <div class="lang-wrap" data-lang-wrap>
+                        <button class="top-icon lang-btn" type="button" data-lang-toggle aria-haspopup="true" aria-expanded="false" title="Language" aria-label="Language">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+                            <span class="lang-code" data-lang-code>EN</span>
+                        </button>
+                        <div class="lang-menu" data-lang-menu role="menu" aria-label="Language" hidden>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="en"><span class="lang-check">✓</span>English<span class="lang-option-code">EN</span></button>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="es"><span class="lang-check">✓</span>Español<span class="lang-option-code">ES</span></button>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="pt"><span class="lang-check">✓</span>Português<span class="lang-option-code">PT</span></button>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="fr"><span class="lang-check">✓</span>Français<span class="lang-option-code">FR</span></button>
+                        </div>
+                    </div>
                     <button class="top-icon" type="button" @click="shortcutsOpen = true" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button>
                     <span class="top-avatar" title="Local environment">L</span>
                 </div>
@@ -4293,7 +4343,7 @@ if (is_file($__plak_connect_file)) {
                     <div class="stat">
                         <div class="stat-top">Local sites <span>▦</span></div>
                         <div class="stat-n" x-text="pad2(sites.length)"></div>
-                        <div class="stat-cap"><span x-text="wpCount"></span> WordPress · <span x-text="staticCount"></span> static</div>
+                        <div class="stat-cap"><span x-text="wpCount"></span> WordPress · <span x-text="staticCount"></span> <span x-text="staticLabel"></span></div>
                     </div>
                     <div class="stat">
                         <div class="stat-top">Services <span>◫</span></div>
@@ -4403,7 +4453,7 @@ if (is_file($__plak_connect_file)) {
                             <span class="site-path" x-text="site.display_path"></span>
                         </span>
                         <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.multisite_mode ? 'NETWORK' : (site.type === 'WordPress' ? 'WP' : 'STATIC')"></span>
-                        <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
+                        <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString(locale || undefined) : ''"></span>
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
                         <div class="site-actions">
                             <template x-if="site.type === 'WordPress' && !site.agent_ready">
@@ -4613,7 +4663,7 @@ if (is_file($__plak_connect_file)) {
                     <dt>Size</dt>
                     <dd x-text="formatSize(detailSite.size_bytes)"></dd>
                     <dt>Modified</dt>
-                    <dd x-text="detailSite.modified_at ? new Date(detailSite.modified_at * 1000).toLocaleString() : '—'"></dd>
+                    <dd x-text="detailSite.modified_at ? new Date(detailSite.modified_at * 1000).toLocaleString(locale || undefined) : '—'"></dd>
                     <template x-if="detailSite.type === 'WordPress'">
                         <template x-if="detailInfo">
                             <template>
@@ -4914,7 +4964,7 @@ if (is_file($__plak_connect_file)) {
                         <template x-for="s in snapshots" :key="s.id">
                             <li class="comp-row">
                                 <div class="comp-main">
-                                    <span class="comp-title" x-text="s.note || '(no note)'"></span>
+                                    <span class="comp-title" x-text="s.note || (locale && window.PlakI18n ? window.PlakI18n.t('(no note)') : '(no note)')"></span>
                                     <span class="comp-slug" x-text="s.id"></span>
                                     <span class="comp-badge" x-text="s.type"></span>
                                     <span class="comp-version" x-text="formatSize((s.files_bytes || 0) + (s.db_bytes || 0))"></span>
@@ -5050,7 +5100,7 @@ if (is_file($__plak_connect_file)) {
                                 <div class="mail-row-meta">
                                     <span class="comp-badge" x-show="m.site" x-cloak x-text="m.site"></span>
                                     <span class="comp-badge" x-show="m.attachments" x-cloak x-text="'📎 ' + m.attachments"></span>
-                                    <span class="mail-date" x-text="m.created ? new Date(m.created).toLocaleString() : ''"></span>
+                                    <span class="mail-date" x-text="m.created ? new Date(m.created).toLocaleString(locale || undefined) : ''"></span>
                                     <button type="button" class="site-action-btn" @click="toggleSeen(m)" x-text="m.read ? 'unread' : 'read'"></button>
                                     <button type="button" class="site-action-btn danger" @click="deleteMail(m.id)">delete</button>
                                 </div>
@@ -5119,6 +5169,7 @@ if (is_file($__plak_connect_file)) {
                 // Follow the saved panel theme; first visits start light like
                 // panel.plak.work. `theme` is kept as a migration fallback.
                 theme: localStorage.getItem('plak-theme') || localStorage.getItem('theme') || 'light',
+                locale: window.PlakI18n ? window.PlakI18n.locale : 'en',
                 sidebarOpen: false,
                 view: 'overview',
                 staticSites: [],
@@ -5229,6 +5280,14 @@ if (is_file($__plak_connect_file)) {
                 get dashboardHost() { return 'plak.localhost' + PORT_SUFFIX; },
                 get wpCount() { return this.sites.filter(s => s.type === 'WordPress').length; },
                 get staticCount() { return this.sites.filter(s => s.type !== 'WordPress').length; },
+                get staticLabel() {
+                    // Reading locale makes Alpine re-evaluate this getter when
+                    // the language switcher dispatches plak:locale.
+                    void this.locale;
+                    return window.PlakI18n
+                        ? window.PlakI18n.t(this.staticCount === 1 ? 'static' : 'static_plural')
+                        : 'static';
+                },
                 get runningServices() {
                     if (!this.servicesData) return 0;
                     return ['caddy', 'mariadb', 'mailpit'].filter(name => this.serviceStatus(name) === 'running').length;
@@ -5358,6 +5417,11 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 init() {
+                    window.addEventListener('plak:locale', (event) => {
+                        this.locale = event && event.detail && event.detail.locale
+                            ? event.detail.locale
+                            : (window.PlakI18n ? window.PlakI18n.locale : 'en');
+                    });
                     this.applyTheme();
                     this.$watch('theme', () => { this.applyTheme(); localStorage.setItem('plak-theme', this.theme); });
 
@@ -5810,7 +5874,7 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 async deleteMail(id) {
-                    if (!confirm('Delete this message?')) return;
+                    if (!confirm(window.PlakI18n ? window.PlakI18n.t('Delete this message?') : 'Delete this message?')) return;
                     const res = await this.apiPost('mail_delete', { ids: [id] });
                     if (res.success) {
                         this.mailMessages = this.mailMessages.filter(m => m.id !== id);
@@ -6282,6 +6346,7 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 showSnack(msg, isError = false) {
+                    if (window.PlakI18n) msg = window.PlakI18n.translateText(msg);
                     if (this.snackbar.timer) clearTimeout(this.snackbar.timer);
                     this.snackbar = { visible: true, message: msg, isError, timer: null };
                     this.snackbar.timer = setTimeout(() => { this.snackbar.visible = false; }, 3500);
@@ -6383,7 +6448,7 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 async deleteSite(name) {
-                    if (!confirm(`Delete ${name}? This removes its files and database.`)) return;
+                    if (!confirm(window.PlakI18n ? window.PlakI18n.t('Delete :name? This removes its files and database.', { name }) : `Delete ${name}? This removes its files and database.`)) return;
 
                     // Optimistic: pull from the local list immediately so the UI feels
                     // instant, and enqueue the backend work. processDeleteQueue below

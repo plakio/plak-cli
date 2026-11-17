@@ -121,6 +121,7 @@ bash ./tests/clone.sh
 bash ./tests/static-transfer.sh
 bash ./tests/dashboard.sh
 bash ./tests/html-editor.sh
+bash ./tests/i18n.sh
 bash ./tests/install-db-port.sh
 bash ./tests/db-port.sh
 bash ./tests/path-prelude.sh

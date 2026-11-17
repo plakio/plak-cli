@@ -13,6 +13,45 @@
   var MIN_W = 180, MAX_W = 480;
   var html = document.documentElement;
 
+  /* Adminer already ships its own translations. This small map only covers
+     the local Plak bar and controls that Adminer does not own. */
+  var I18N = {
+    es: {
+      'Toggle theme': 'Cambiar tema',
+      'Switch to light theme': 'Cambiar a tema claro',
+      'Switch to dark theme': 'Cambiar a tema oscuro',
+      'Drag to resize · double-click to reset': 'Arrastra para redimensionar · doble clic para restablecer',
+      'Local environment': 'Entorno local',
+      'Back to dashboard ↗': 'Volver al dashboard ↗'
+    },
+    pt: {
+      'Toggle theme': 'Alternar tema',
+      'Switch to light theme': 'Mudar para tema claro',
+      'Switch to dark theme': 'Mudar para tema escuro',
+      'Drag to resize · double-click to reset': 'Arraste para redimensionar · clique duplo para redefinir',
+      'Local environment': 'Ambiente local',
+      'Back to dashboard ↗': 'Voltar ao painel ↗'
+    },
+    fr: {
+      'Toggle theme': 'Changer de thème',
+      'Switch to light theme': 'Passer au thème clair',
+      'Switch to dark theme': 'Passer au thème sombre',
+      'Drag to resize · double-click to reset': 'Glissez pour redimensionner · double-clic pour réinitialiser',
+      'Local environment': 'Environnement local',
+      'Back to dashboard ↗': 'Retour au tableau de bord ↗'
+    }
+  };
+  function cookieLang() {
+    var match = document.cookie.match(/(?:^|; )plak_lang=([^;]+)/);
+    var lang = match ? decodeURIComponent(match[1]) : (document.documentElement.lang || 'en');
+    lang = String(lang).toLowerCase().split('-')[0];
+    return I18N[lang] ? lang : 'en';
+  }
+  var LANG = cookieLang();
+  function t(key) {
+    return (I18N[LANG] && I18N[LANG][key]) || key;
+  }
+
   /* ---------- Theme ---------- */
   function readTheme() {
     try {
@@ -29,7 +68,7 @@
     if (btn) {
       btn.setAttribute(
         'aria-label',
-        t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
+        t === 'dark' ? t('Switch to light theme') : t('Switch to dark theme')
       );
     }
   }
@@ -68,7 +107,7 @@
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'plak-theme-toggle';
-    btn.setAttribute('aria-label', 'Toggle theme');
+    btn.setAttribute('aria-label', t('Toggle theme'));
     btn.innerHTML = SUN + MOON;
     btn.addEventListener('click', function () {
       var current = html.getAttribute('data-theme') || 'light';
@@ -90,7 +129,7 @@
     var handle = document.createElement('div');
     handle.className = 'plak-menu-resize';
     handle.setAttribute('aria-hidden', 'true');
-    handle.title = 'Drag to resize · double-click to reset';
+    handle.title = t('Drag to resize · double-click to reset');
     document.body.appendChild(handle);
 
     var active = false;
@@ -211,7 +250,7 @@
 
     var bar = document.createElement('div');
     bar.className = 'plak-local-context';
-    bar.setAttribute('aria-label', 'Local environment');
+    bar.setAttribute('aria-label', t('Local environment'));
 
     var local = document.createElement('span');
     local.className = 'ctx-local';
@@ -235,7 +274,7 @@
     var link = document.createElement('a');
     link.className = 'ctx-link';
     link.href = dash;
-    link.textContent = 'Back to dashboard ↗';
+    link.textContent = t('Back to dashboard ↗');
 
     bar.appendChild(local);
     bar.appendChild(hostEl);

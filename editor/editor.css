@@ -180,6 +180,20 @@ a { color: inherit; }
   border-color: var(--action-border);
   color: var(--action-fg);
 }
+.lang-select-wrap { display: inline-flex; align-items: center; }
+.lang-select-wrap select {
+  min-height: 32px;
+  padding: .35rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lang-select-wrap select:hover { border-color: var(--accent); color: var(--accent); }
 .status {
   min-width: 6rem;
   color: var(--accent);
@@ -485,3 +499,5 @@ html[data-theme="light"] .status { color: var(--muted); }
 
 /* `hidden` must win over the flex button rule: Close is embed-only. */
 .actions [hidden] { display: none !important; }
+
+html[data-i18n-pending] body { visibility: hidden; }

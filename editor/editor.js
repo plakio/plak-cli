@@ -567,7 +567,7 @@
       button.type = 'button';
       button.textContent = 'Reload file';
       button.addEventListener('click', () => {
-        if (confirm('Discard your unsaved changes and reload the file?')) {
+        if (confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes and reload the file?') : 'Discard your unsaved changes and reload the file?')) {
           loadFile(state.file, true).catch((error) => showBanner(error.message, true));
         }
       });
@@ -856,7 +856,7 @@
       const data = await upload(file);
       imageUrl.value = data.url;
       updateImagePreview();
-      imageUploadStatus.textContent = `Uploaded ${data.path}`;
+      imageUploadStatus.textContent = window.PlakI18n ? window.PlakI18n.t('Uploaded :path', { path: data.path }) : `Uploaded ${data.path}`;
     } catch (error) {
       imageUploadStatus.textContent = error.message;
     } finally {
@@ -865,7 +865,7 @@
   }
 
   async function loadFile(file, force = false) {
-    if (!force && state.dirty && !confirm('Discard your unsaved changes?')) return;
+    if (!force && state.dirty && !confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes?') : 'Discard your unsaved changes?')) return;
     state.loading = true;
     updateChrome();
     showBanner('');
@@ -948,7 +948,7 @@
   fileSelect.addEventListener('change', () => {
     const next = fileSelect.value;
     if (next === state.file) return;
-    if (state.dirty && !confirm('Discard your unsaved changes?')) {
+    if (state.dirty && !confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes?') : 'Discard your unsaved changes?')) {
       fileSelect.value = state.file;
       return;
     }
@@ -1003,7 +1003,7 @@
 
   function requestClose() {
     if (!embed || window.parent === window) return;
-    if (state.dirty && !confirm('Discard your unsaved changes?')) return;
+    if (state.dirty && !confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes?') : 'Discard your unsaved changes?')) return;
     window.parent.postMessage({ type: 'plak-editor-close' }, '*');
   }
 

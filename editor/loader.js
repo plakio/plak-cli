@@ -12,6 +12,23 @@
   const file = page === '/' ? 'index.html' : page.replace(/^\/+/, '');
   const editorUrl = `${editorOrigin}/editor/?site=${encodeURIComponent(site)}&embed=1&file=${encodeURIComponent(file)}`;
 
+  // The launcher runs on the site's own origin, so the dashboard's localStorage
+  // preference is not available. Follow the browser language for this label.
+  const loaderLang = (() => {
+    const candidates = navigator.languages || [navigator.language];
+    for (const value of candidates) {
+      const code = String(value || '').toLowerCase().split('-')[0];
+      if (['en', 'es', 'pt', 'fr'].includes(code)) return code;
+    }
+    return 'en';
+  })();
+  const loaderLabel = {
+    en: 'Edit site',
+    es: 'Editar sitio',
+    pt: 'Editar site',
+    fr: 'Modifier le site'
+  }[loaderLang] || 'Edit site';
+
   const hostElement = document.createElement('div');
   hostElement.id = 'plak-editor-host';
   hostElement.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
@@ -78,7 +95,7 @@
         .launcher { right: 14px; bottom: 14px; }
       }
     </style>
-    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&lt;/&gt;</span> Edit site</button>
+    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&lt;/&gt;</span> ${loaderLabel}</button>
     <div class="overlay" id="plak-edit-overlay" hidden>
       <div class="frame-wrap">
         <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>

@@ -6,6 +6,7 @@ Plak CLI is a Bash + [gum](https://github.com/charmbracelet/gum) tool for everyd
 - Local domain entries in `/etc/hosts`
 - SSH keys in `~/.ssh`
 - Local WordPress and static HTML sites served through Caddy/FrankenPHP
+- Local dashboard, editor and Adminer in English, Spanish, Portuguese and French ([docs](docs/i18n.md))
 
 It follows a modular structure: source files are compiled into a single distributable `plak.sh` script.
 

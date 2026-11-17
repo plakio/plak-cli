@@ -3726,6 +3726,14 @@ deploy_adminer_theme() {
     echo "⚙️ Writing Adminer entry point..."
     cat > "$adminer_dir/index.php" << 'ADMINER_INDEX_EOF'
 <?php
+// Follow the local dashboard language without adding a URL parameter.
+// Adminer reads adminer_lang; plak_lang is the shared preference cookie.
+if (!isset($_COOKIE['adminer_lang']) && isset($_COOKIE['plak_lang'])) {
+    $plak_lang = (string) $_COOKIE['plak_lang'];
+    if (in_array($plak_lang, ['en', 'es', 'pt', 'fr'], true)) {
+        $_COOKIE['adminer_lang'] = $plak_lang;
+    }
+}
 // This is the custom entry point for Adminer with autologin.
 function adminer_object() {
     // Adminer 5.x uses the Adminer namespace
@@ -4285,6 +4293,7 @@ EOM
 # --- GUI Generation ---
 create_gui_file() {
     echo "🎨 Creating Plak dashboard files..."
+    deploy_i18n_assets "$GUI_DIR" || return 1
     mkdir -p "$GUI_DIR"
 
     # Both the first HTML response and the API need the same token. Generating
@@ -5745,6 +5754,7 @@ if (is_file($__plak_connect_file)) {
     <title>Plak local — sites</title>
     <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAD/h4/MvwAAAAlwSFlzAAAOwwAADsMBx2+oZAAAAAd0SU1FB+oLEQEQDz/B9lgAAAL+elRYdFJhdyBwcm9maWxlIHR5cGUgeG1wAABIiZVWSbbcIAzc6xQ5AkhC4OM4HnZ5L8scPyU8u3H37/bz0CBUUmkA+vfnL/3CL0rOJEMu0udiYw42WspqkYP/t8GmLD4nI7NFU5uNLUm/jO/SMzMHOtRg8LcvSUXHFDio2JyxkIMYTxLqzTKFnoNfMIGh3KRPrEpqN/xl0m0oWXEF6YE55/rjKUOIpwqReZYonV88kwRhDDCe46IEb8kd1MLsXHh0AJ8+bLlbpGqJsphgoKuudWBhgoWrAHhhYIMJtxBEXBSdr1zo5JQrspZb1abpoBvf4M9GOLyucddiJXF+j3fAQZk0GETUEhwZDvpcEM+EhckD7FzBnrkCxmdAuiNqrEhgzfjZyUPGGXRuCeTuHjsLO/oX7vo3AesbcgusCWeoLSnoioPc2GLXpy5BSXYVw+aATTIhAU2GI2KLJLVEWw5dIMorBD1gNETfQ9CyUOcag7QWxuFGvAI8yYWeWgg16fpaOqmKY3nbmqPqaG0EAkfiO+F7oSL0nUw6J1HRCLLRd0pKiP3MIQUMQZWOPqXdIqRDde+i4BWQDqxD+J19LtdynZ7EF2GnEzfq7occaUSY9VuOtkLxf4RCmCx7mdRuiF6HOMecXLEXgA4IcIbxAkUjVDGyrsFZI/yvnL2zd+OMPvMgw6W1uFr0iLssXZf8JG7tFbSStv7FJhkzo8Y8tbAhwErf6da6q90Uc687yksbeXInea4kKCk7wATawc8mR8+Cn9y6QtJO4ZGnybTieaiVR7xLfdrZgvsqWpZ9h76rSRktWjvXAEVSBDscbpxOQOQoODMIG7Zw1KzPulWd54qPoXCKZIz78g5jijeylRrmnnB+bildVMCyRQEQud7m2OiTijvjyy0MDXCjbenn1Hvfk+hJ+FNPupcNtepmT/96krukBoA853x3QWcQ7x3Z/LBIXDcetBLkj4tn5qVNfFByP3TRqVlorajbset8Zjw5jlMj8gFzCyiK9nqerS3qP6vvdH+7Z5pHAAACN0lEQVRYw+2VPWgUQRTH/2/2zJ13uYjk85AUEQwBQQ8OOcVCxUaRGBuLBIWIYhcUUqogkiJNCkmR2AmCWKQStBIsREQlCiYpEo1WBvVSSNTDmJ15Fru3t7M7exyXQJp91c6bmd/+38fMUBqbM7HJ/TEgBsSAGLB1gEQdaxigxgHMCoKZBDUGYNVVOND+9+PrJdtqBKAyg1f6koD69nhy2SiCal7rqnVsqMn9fn/tjUmDtaOW/tTYJU9iLv9iVdQLYJZSMVT/zWTVmUs9k+EgjCEotPV00fflPw/O+N2lgXfhIAxJZLXn4rmeNJU/zxa1ifYjs6gDwOroeEEAaMkfDEztE0wRAAZ7+g9N9VbiCyzOGsJ1AGw1VxLMmVu9iLBcft4OFoLSAFhdGPEAyb2RleXS/Ym1AMENgTy1tL7g/K0zDKCOUboTKKVTRrayBICl55dnp5tgsNXzr/RSOgpI/mSAO0/t9HJ5zHxK2k6/ZCFCABAIsI/fq9XYjg0kfj/64iP4O1F1nEgxDR/Wd9gb2lCIf1dnfOr8QsWPh4BMF7Us/bo9F8ja+hwkAPdwJ3Q6YD29vF8TsLISLH03AZBfyxQMAQDAavBuiyah7B9ZXr+MTwqC4SyQmNl9o9XnyGoN/GHJDUgtUiiJFTadvF7MGEsgn49+ciWwJIoAgNWuQqE7CQZ5bUFggv32SamakEgFAFjCdIOyEqFLzdxvlKgeb7/bClMjr/Xot0i37X9cY0AMiAExoGL/Ad87lyvXdI4wAAAAIHRFWHR4bXA6Q3JlYXRvclRvb2wAQ2FudmEgKFJlbmRlcmVyKc95fYMAAAAASUVORK5CYII=">
     <link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAD/h4/MvwAAAAlwSFlzAAAOwwAADsMBx2+oZAAAAAd0SU1FB+oLEQEQDz/B9lgAAAL+elRYdFJhdyBwcm9maWxlIHR5cGUgeG1wAABIiZVWSbbcIAzc6xQ5AkhC4OM4HnZ5L8scPyU8u3H37/bz0CBUUmkA+vfnL/3CL0rOJEMu0udiYw42WspqkYP/t8GmLD4nI7NFU5uNLUm/jO/SMzMHOtRg8LcvSUXHFDio2JyxkIMYTxLqzTKFnoNfMIGh3KRPrEpqN/xl0m0oWXEF6YE55/rjKUOIpwqReZYonV88kwRhDDCe46IEb8kd1MLsXHh0AJ8+bLlbpGqJsphgoKuudWBhgoWrAHhhYIMJtxBEXBSdr1zo5JQrspZb1abpoBvf4M9GOLyucddiJXF+j3fAQZk0GETUEhwZDvpcEM+EhckD7FzBnrkCxmdAuiNqrEhgzfjZyUPGGXRuCeTuHjsLO/oX7vo3AesbcgusCWeoLSnoioPc2GLXpy5BSXYVw+aATTIhAU2GI2KLJLVEWw5dIMorBD1gNETfQ9CyUOcag7QWxuFGvAI8yYWeWgg16fpaOqmKY3nbmqPqaG0EAkfiO+F7oSL0nUw6J1HRCLLRd0pKiP3MIQUMQZWOPqXdIqRDde+i4BWQDqxD+J19LtdynZ7EF2GnEzfq7occaUSY9VuOtkLxf4RCmCx7mdRuiF6HOMecXLEXgA4IcIbxAkUjVDGyrsFZI/yvnL2zd+OMPvMgw6W1uFr0iLssXZf8JG7tFbSStv7FJhkzo8Y8tbAhwErf6da6q90Uc687yksbeXInea4kKCk7wATawc8mR8+Cn9y6QtJO4ZGnybTieaiVR7xLfdrZgvsqWpZ9h76rSRktWjvXAEVSBDscbpxOQOQoODMIG7Zw1KzPulWd54qPoXCKZIz78g5jijeylRrmnnB+bildVMCyRQEQud7m2OiTijvjyy0MDXCjbenn1Hvfk+hJ+FNPupcNtepmT/96krukBoA853x3QWcQ7x3Z/LBIXDcetBLkj4tn5qVNfFByP3TRqVlorajbset8Zjw5jlMj8gFzCyiK9nqerS3qP6vvdH+7Z5pHAAACN0lEQVRYw+2VPWgUQRTH/2/2zJ13uYjk85AUEQwBQQ8OOcVCxUaRGBuLBIWIYhcUUqogkiJNCkmR2AmCWKQStBIsREQlCiYpEo1WBvVSSNTDmJ15Fru3t7M7exyXQJp91c6bmd/+38fMUBqbM7HJ/TEgBsSAGLB1gEQdaxigxgHMCoKZBDUGYNVVOND+9+PrJdtqBKAyg1f6koD69nhy2SiCal7rqnVsqMn9fn/tjUmDtaOW/tTYJU9iLv9iVdQLYJZSMVT/zWTVmUs9k+EgjCEotPV00fflPw/O+N2lgXfhIAxJZLXn4rmeNJU/zxa1ifYjs6gDwOroeEEAaMkfDEztE0wRAAZ7+g9N9VbiCyzOGsJ1AGw1VxLMmVu9iLBcft4OFoLSAFhdGPEAyb2RleXS/Ym1AMENgTy1tL7g/K0zDKCOUboTKKVTRrayBICl55dnp5tgsNXzr/RSOgpI/mSAO0/t9HJ5zHxK2k6/ZCFCABAIsI/fq9XYjg0kfj/64iP4O1F1nEgxDR/Wd9gb2lCIf1dnfOr8QsWPh4BMF7Us/bo9F8ja+hwkAPdwJ3Q6YD29vF8TsLISLH03AZBfyxQMAQDAavBuiyah7B9ZXr+MTwqC4SyQmNl9o9XnyGoN/GHJDUgtUiiJFTadvF7MGEsgn49+ciWwJIoAgNWuQqE7CQZ5bUFggv32SamakEgFAFjCdIOyEqFLzdxvlKgeb7/bClMjr/Xot0i37X9cY0AMiAExoGL/Ad87lyvXdI4wAAAAIHRFWHR4bXA6Q3JlYXRvclRvb2wAQ2FudmEgKFJlbmRlcmVyKc95fYMAAAAASUVORK5CYII=">
+    <script src="/i18n.js?v=<?= (int) @filemtime(__DIR__ . '/i18n.js') ?>"></script>
     <script>
         // Set data-theme synchronously before any CSS paints, so the correct
         // theme's background is used from the very first frame (no FOUC).
@@ -6051,6 +6061,9 @@ if (is_file($__plak_connect_file)) {
         }
 
         [x-cloak] { display: none !important; }
+        /* Avoid an English flash when a non-English locale is restored before
+           the first pass. i18n.js removes the attribute after translating. */
+        html[data-i18n-pending] body { visibility: hidden; }
         .site-detail { margin-top: 1rem; padding: 1.1rem 1.25rem; }
         .detail-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
         .detail-title { margin: 0; font-family: var(--font-serif); font-size: 1.3rem; }
@@ -6489,6 +6502,29 @@ if (is_file($__plak_connect_file)) {
         }
         .theme-btn:hover { border-color: var(--panel-border); background: var(--panel-hover); color: var(--text); }
 
+        /* Language switcher. Text-only addition: same tokens and button size
+           as the existing topbar controls, no changes to the panel palette. */
+        .lang-wrap { position: relative; }
+        .lang-btn { display: inline-flex; align-items: center; gap: 5px; width: auto; padding: 0 8px; }
+        .lang-btn svg { width: 14px; height: 14px; }
+        .lang-code { color: var(--text-dim); font: 650 9px var(--font-mono); letter-spacing: .04em; }
+        .lang-menu {
+            position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
+            width: 184px; padding: 5px; border: 1px solid var(--panel-border);
+            border-radius: 8px; background: var(--panel); box-shadow: var(--shadow-lg);
+        }
+        .lang-menu[hidden] { display: none !important; }
+        .lang-option {
+            display: flex; align-items: center; gap: 8px; width: 100%;
+            padding: 8px 9px; border: 0; border-radius: 5px; background: transparent;
+            color: var(--text-dim); text-align: left; font: 500 12px var(--font-sans); cursor: pointer;
+        }
+        .lang-option:hover { background: var(--panel-hover); color: var(--text); }
+        .lang-option.active { background: color-mix(in srgb, var(--accent) 9%, var(--panel)); color: var(--accent); }
+        .lang-option-code { margin-left: auto; color: var(--text-faint); font: 600 9px var(--font-mono); }
+        .lang-option.active .lang-option-code { color: var(--accent); }
+        .lang-check { width: 12px; color: var(--accent); font-size: 10px; }
+
         .main { width: 100%; max-width: 1490px; margin: 0 auto; padding: 40px 48px 72px; }
         .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 33px; }
         .page-head h1 { margin: 0 0 8px; font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -.045em; }
@@ -6923,6 +6959,8 @@ if (is_file($__plak_connect_file)) {
         }
         @media (max-width: 620px) {
             .page-head h1 { font-size: 26px; }
+            .lang-btn { padding: 0 6px; }
+            .lang-btn .lang-code { display: none; }
             .local-context .ctx-link { font-size: 0; }
             .local-context .ctx-link::after { content: "Cloud ↗"; font-size: 10px; }
             .editor-toolbar { align-items: stretch; }
@@ -7022,6 +7060,18 @@ if (is_file($__plak_connect_file)) {
                         <svg class="icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.2A5.5 5.5 0 0 1 6.8 2.5a5.75 5.75 0 1 0 6.7 6.7Z"/></svg>
                         <svg class="icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M2.6 2.6l1.3 1.3M12.1 12.1l1.3 1.3M1.5 8h1.8M12.7 8h1.8M2.6 13.4l1.3-1.3M12.1 3.9l1.3-1.3"/></svg>
                     </button>
+                    <div class="lang-wrap" data-lang-wrap>
+                        <button class="top-icon lang-btn" type="button" data-lang-toggle aria-haspopup="true" aria-expanded="false" title="Language" aria-label="Language">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+                            <span class="lang-code" data-lang-code>EN</span>
+                        </button>
+                        <div class="lang-menu" data-lang-menu role="menu" aria-label="Language" hidden>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="en"><span class="lang-check">✓</span>English<span class="lang-option-code">EN</span></button>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="es"><span class="lang-check">✓</span>Español<span class="lang-option-code">ES</span></button>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="pt"><span class="lang-check">✓</span>Português<span class="lang-option-code">PT</span></button>
+                            <button class="lang-option" type="button" role="menuitemradio" data-lang-option="fr"><span class="lang-check">✓</span>Français<span class="lang-option-code">FR</span></button>
+                        </div>
+                    </div>
                     <button class="top-icon" type="button" @click="shortcutsOpen = true" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button>
                     <span class="top-avatar" title="Local environment">L</span>
                 </div>
@@ -7059,7 +7109,7 @@ if (is_file($__plak_connect_file)) {
                     <div class="stat">
                         <div class="stat-top">Local sites <span>▦</span></div>
                         <div class="stat-n" x-text="pad2(sites.length)"></div>
-                        <div class="stat-cap"><span x-text="wpCount"></span> WordPress · <span x-text="staticCount"></span> static</div>
+                        <div class="stat-cap"><span x-text="wpCount"></span> WordPress · <span x-text="staticCount"></span> <span x-text="staticLabel"></span></div>
                     </div>
                     <div class="stat">
                         <div class="stat-top">Services <span>◫</span></div>
@@ -7169,7 +7219,7 @@ if (is_file($__plak_connect_file)) {
                             <span class="site-path" x-text="site.display_path"></span>
                         </span>
                         <span class="site-type" :class="site.type === 'WordPress' ? 'wp' : 'static'" @click.stop="typeFilter = site.type" :title="'Filter to ' + (site.type === 'WordPress' ? 'WordPress' : 'static') + ' sites'" x-text="site.multisite_mode ? 'NETWORK' : (site.type === 'WordPress' ? 'WP' : 'STATIC')"></span>
-                        <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString() : ''"></span>
+                        <span class="site-modified" x-text="formatRelative(site.modified_at)" :title="site.modified_at ? new Date(site.modified_at * 1000).toLocaleString(locale || undefined) : ''"></span>
                         <span class="site-size" x-text="formatSize(site.size_bytes)"></span>
                         <div class="site-actions">
                             <template x-if="site.type === 'WordPress' && !site.agent_ready">
@@ -7379,7 +7429,7 @@ if (is_file($__plak_connect_file)) {
                     <dt>Size</dt>
                     <dd x-text="formatSize(detailSite.size_bytes)"></dd>
                     <dt>Modified</dt>
-                    <dd x-text="detailSite.modified_at ? new Date(detailSite.modified_at * 1000).toLocaleString() : '—'"></dd>
+                    <dd x-text="detailSite.modified_at ? new Date(detailSite.modified_at * 1000).toLocaleString(locale || undefined) : '—'"></dd>
                     <template x-if="detailSite.type === 'WordPress'">
                         <template x-if="detailInfo">
                             <template>
@@ -7680,7 +7730,7 @@ if (is_file($__plak_connect_file)) {
                         <template x-for="s in snapshots" :key="s.id">
                             <li class="comp-row">
                                 <div class="comp-main">
-                                    <span class="comp-title" x-text="s.note || '(no note)'"></span>
+                                    <span class="comp-title" x-text="s.note || (locale && window.PlakI18n ? window.PlakI18n.t('(no note)') : '(no note)')"></span>
                                     <span class="comp-slug" x-text="s.id"></span>
                                     <span class="comp-badge" x-text="s.type"></span>
                                     <span class="comp-version" x-text="formatSize((s.files_bytes || 0) + (s.db_bytes || 0))"></span>
@@ -7816,7 +7866,7 @@ if (is_file($__plak_connect_file)) {
                                 <div class="mail-row-meta">
                                     <span class="comp-badge" x-show="m.site" x-cloak x-text="m.site"></span>
                                     <span class="comp-badge" x-show="m.attachments" x-cloak x-text="'📎 ' + m.attachments"></span>
-                                    <span class="mail-date" x-text="m.created ? new Date(m.created).toLocaleString() : ''"></span>
+                                    <span class="mail-date" x-text="m.created ? new Date(m.created).toLocaleString(locale || undefined) : ''"></span>
                                     <button type="button" class="site-action-btn" @click="toggleSeen(m)" x-text="m.read ? 'unread' : 'read'"></button>
                                     <button type="button" class="site-action-btn danger" @click="deleteMail(m.id)">delete</button>
                                 </div>
@@ -7885,6 +7935,7 @@ if (is_file($__plak_connect_file)) {
                 // Follow the saved panel theme; first visits start light like
                 // panel.plak.work. `theme` is kept as a migration fallback.
                 theme: localStorage.getItem('plak-theme') || localStorage.getItem('theme') || 'light',
+                locale: window.PlakI18n ? window.PlakI18n.locale : 'en',
                 sidebarOpen: false,
                 view: 'overview',
                 staticSites: [],
@@ -7995,6 +8046,14 @@ if (is_file($__plak_connect_file)) {
                 get dashboardHost() { return 'plak.localhost' + PORT_SUFFIX; },
                 get wpCount() { return this.sites.filter(s => s.type === 'WordPress').length; },
                 get staticCount() { return this.sites.filter(s => s.type !== 'WordPress').length; },
+                get staticLabel() {
+                    // Reading locale makes Alpine re-evaluate this getter when
+                    // the language switcher dispatches plak:locale.
+                    void this.locale;
+                    return window.PlakI18n
+                        ? window.PlakI18n.t(this.staticCount === 1 ? 'static' : 'static_plural')
+                        : 'static';
+                },
                 get runningServices() {
                     if (!this.servicesData) return 0;
                     return ['caddy', 'mariadb', 'mailpit'].filter(name => this.serviceStatus(name) === 'running').length;
@@ -8124,6 +8183,11 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 init() {
+                    window.addEventListener('plak:locale', (event) => {
+                        this.locale = event && event.detail && event.detail.locale
+                            ? event.detail.locale
+                            : (window.PlakI18n ? window.PlakI18n.locale : 'en');
+                    });
                     this.applyTheme();
                     this.$watch('theme', () => { this.applyTheme(); localStorage.setItem('plak-theme', this.theme); });
 
@@ -8576,7 +8640,7 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 async deleteMail(id) {
-                    if (!confirm('Delete this message?')) return;
+                    if (!confirm(window.PlakI18n ? window.PlakI18n.t('Delete this message?') : 'Delete this message?')) return;
                     const res = await this.apiPost('mail_delete', { ids: [id] });
                     if (res.success) {
                         this.mailMessages = this.mailMessages.filter(m => m.id !== id);
@@ -9048,6 +9112,7 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 showSnack(msg, isError = false) {
+                    if (window.PlakI18n) msg = window.PlakI18n.translateText(msg);
                     if (this.snackbar.timer) clearTimeout(this.snackbar.timer);
                     this.snackbar = { visible: true, message: msg, isError, timer: null };
                     this.snackbar.timer = setTimeout(() => { this.snackbar.visible = false; }, 3500);
@@ -9149,7 +9214,7 @@ if (is_file($__plak_connect_file)) {
                 },
 
                 async deleteSite(name) {
-                    if (!confirm(`Delete ${name}? This removes its files and database.`)) return;
+                    if (!confirm(window.PlakI18n ? window.PlakI18n.t('Delete :name? This removes its files and database.', { name }) : `Delete ${name}? This removes its files and database.`)) return;
 
                     // Optimistic: pull from the local list immediately so the UI feels
                     // instant, and enqueue the backend work. processDeleteQueue below
@@ -22401,6 +22466,1707 @@ plak_version() {
     fi
 }
 
+# --- Local i18n Assets ---
+deploy_i18n_assets() {
+    local gui_dir="${1:-$GUI_DIR}"
+    mkdir -p "$gui_dir" || return 1
+    {
+        printf "window.PLAK_I18N = \n";
+        cat <<'PLAK_I18N_DICT_EOF'
+{
+  "en": {
+    "static_plural": "static"
+  },
+  "es": {
+    "(no note)": "(sin nota)",
+    "); the web actions are read-only for now.": "); las acciones web son de solo lectura por ahora.",
+    "+ Add site": "+ Añadir sitio",
+    "+ New static site": "+ Nuevo sitio estático",
+    "+ add site": "+ añadir sitio",
+    "Access points, not only status dots. Adminer, Mailpit and the dashboard are one click away. Start/restart remains in the CLI (": "Puntos de acceso, no solo indicadores de estado. Adminer, Mailpit y el dashboard están a un clic. Iniciar/reiniciar sigue en la CLI (",
+    "Across local sites": "En todos los sitios locales",
+    "Actions": "Acciones",
+    "Active theme · cannot delete": "Tema activo · no se puede eliminar",
+    "Active type filter": "Filtro de tipo activo",
+    "Add site": "Añadir sitio",
+    "Add static site": "Añadir sitio estático",
+    "Address": "Dirección",
+    "Agent preparation failed.": "La preparación del agente falló.",
+    "Agent ready.": "Agente listo.",
+    "Agent-ready (WP-MCP)": "Listo para agentes (WP-MCP)",
+    "Aggregating…": "Agregando…",
+    "All": "Todos",
+    "All due events": "Todos los eventos pendientes",
+    "All local WordPress and static sites.": "Todos los sitios WordPress y estáticos locales.",
+    "All local sites": "Todos los sitios locales",
+    "All mail": "Todo el correo",
+    "All systems running": "Todo funcionando",
+    "Alt text": "Texto alternativo",
+    "An error occurred.": "Ocurrió un error.",
+    "An unknown error occurred.": "Ocurrió un error desconocido.",
+    "Apply": "Aplicar",
+    "Argument too long.": "El argumento es demasiado largo.",
+    "Ask WordPress.org for available updates": "Preguntar a WordPress.org por actualizaciones disponibles",
+    "Back": "Volver",
+    "Back to dashboard ↗": "Volver al dashboard ↗",
+    "Back to sites": "Volver a sitios",
+    "Back to the Plak dashboard": "Volver al dashboard de Plak",
+    "Backups": "Copias de seguridad",
+    "Caddy is serving this dashboard": "Caddy está sirviendo este dashboard",
+    "Caddy is serving this page — it's running": "Caddy está sirviendo esta página — está en ejecución",
+    "Cancel": "Cancelar",
+    "Checking services…": "Comprobando servicios…",
+    "Choose a backup file.": "Elige un archivo de copia.",
+    "Choose a static site to edit": "Elige un sitio estático para editar",
+    "Choose a static site to edit. WordPress sites use the HTML Editor plugin in wp-admin.": "Elige un sitio estático para editar. Los sitios WordPress usan el plugin HTML Editor en wp-admin.",
+    "Choose image…": "Elegir imagen…",
+    "Clear all (Esc)": "Limpiar todo (Esc)",
+    "Clear filter": "Limpiar filtro",
+    "Click": "Clic",
+    "Close": "Cerrar",
+    "Close dialog": "Cerrar diálogo",
+    "Close image editor": "Cerrar editor de imagen",
+    "Close link editor": "Cerrar editor de enlace",
+    "Code": "Código",
+    "Command palette": "Paleta de comandos",
+    "Commands": "Comandos",
+    "Console": "Consola",
+    "Copy": "Copiar",
+    "Copy path": "Copiar ruta",
+    "Copy site path to clipboard": "Copiar la ruta del sitio al portapapeles",
+    "Could not copy link.": "No se pudo copiar el enlace.",
+    "Could not copy path.": "No se pudo copiar la ruta.",
+    "Could not create site.": "No se pudo crear el sitio.",
+    "Could not delete the snapshot.": "No se pudo eliminar la copia.",
+    "Could not export the snapshot.": "No se pudo exportar la copia.",
+    "Could not fetch sites.": "No se pudieron cargar los sitios.",
+    "Could not generate a login link.": "No se pudo generar el enlace de acceso.",
+    "Could not list snapshots.": "No se pudieron listar las copias.",
+    "Could not load": "No se pudo cargar",
+    "Could not read logs.": "No se pudieron leer los registros.",
+    "Could not read mail.": "No se pudo leer el correo.",
+    "Could not read the message.": "No se pudo leer el mensaje.",
+    "Could not read the service log.": "No se pudo leer el registro del servicio.",
+    "Could not read traffic.": "No se pudo leer el tráfico.",
+    "Could not store the upload.": "No se pudo guardar el archivo subido.",
+    "Create": "Crear",
+    "Create a new site from a Plak, Local or hosting backup (zip, tar.gz, tgz or tar).": "Crea un sitio nuevo desde una copia de Plak, Local o hosting (zip, tar.gz, tgz o tar).",
+    "Create a site from a backup archive": "Crear un sitio desde una copia de seguridad",
+    "Create a static site and edit it": "Crea un sitio estático y edítalo",
+    "Create a static site to edit its HTML files. WordPress sites use the HTML Editor plugin in wp-admin.": "Crea un sitio estático para editar sus archivos HTML. Los sitios WordPress usan el plugin HTML Editor en wp-admin.",
+    "Create snapshot": "Crear copia",
+    "Created": "Creado",
+    "Creation error details": "Detalles del error de creación",
+    "Cron": "Cron",
+    "Cron event run.": "Evento cron ejecutado.",
+    "Cron run failed.": "La ejecución del cron falló.",
+    "Cross-origin request blocked.": "Solicitud de otro origen bloqueada.",
+    "Dashboard": "Dashboard",
+    "Dashboard CLI launcher is unavailable. Run plak reload and refresh this page.": "El lanzador de la CLI del dashboard no está disponible. Ejecuta plak reload y refresca esta página.",
+    "Data": "Datos",
+    "Database": "Base de datos",
+    "Database credentials": "Credenciales de la base de datos",
+    "Delete": "Eliminar",
+    "Delete :name? This removes its files and database.": "¿Eliminar :name? Esto borra sus archivos y su base de datos.",
+    "Delete snapshot": "Eliminar copia",
+    "Delete this message?": "¿Eliminar este mensaje?",
+    "Details": "Detalles",
+    "Discard your unsaved changes and reload the file?": "¿Descartar los cambios sin guardar y recargar el archivo?",
+    "Discard your unsaved changes?": "¿Descartar los cambios sin guardar?",
+    "Disk": "Disco",
+    "Disk sizes updated.": "Tamaños de disco actualizados.",
+    "Dismiss": "Descartar",
+    "Done.": "Hecho.",
+    "Download": "Descargar",
+    "Download as a full backup": "Descargar como copia completa",
+    "Download snapshot": "Descargar copia",
+    "Edit HTML": "Editar HTML",
+    "Edit ↵": "Editar ↵",
+    "Editor": "Editor",
+    "Editor · Plak": "Editor · Plak",
+    "Enter an image URL or upload a file.": "Introduce una URL de imagen o sube un archivo.",
+    "Esc Close": "Esc Cerrar",
+    "External": "Externo",
+    "Failed to generate login link.": "No se pudo generar el enlace de acceso.",
+    "Failed.": "Falló.",
+    "File": "Archivo",
+    "Filter sites": "Filtrar sitios",
+    "Filter to WordPress sites": "Filtrar a sitios WordPress",
+    "Filter to static sites": "Filtrar a sitios estáticos",
+    "Go to": "Ir a",
+    "Go to Editor": "Ir al Editor",
+    "Go to Overview": "Ir a Resumen",
+    "Go to Services": "Ir a Servicios",
+    "Go to Websites": "Ir a Sitios web",
+    "Grid": "Cuadrícula",
+    "HTML file": "Archivo HTML",
+    "HTML files": "Archivos HTML",
+    "Image": "Imagen",
+    "Image URL": "URL de la imagen",
+    "Import a backup": "Importar una copia",
+    "Import could not start.": "La importación no pudo iniciarse.",
+    "Install WP-MCP and register the site with wp-mcp-cli": "Instala WP-MCP y registra el sitio con wp-mcp-cli",
+    "Invalid arguments.": "Argumentos no válidos.",
+    "Invalid cron hook.": "Hook de cron no válido.",
+    "Invalid message id.": "ID de mensaje no válido.",
+    "Invalid operation.": "Operación no válida.",
+    "Invalid or missing CSRF token.": "Token CSRF no válido o ausente.",
+    "Invalid or missing token.": "Token no válido o ausente.",
+    "Invalid request.": "Solicitud no válida.",
+    "Invalid server response (:status).": "Respuesta no válida del servidor (:status).",
+    "Invalid site name.": "Nombre de sitio no válido.",
+    "Invalid snapshot id.": "ID de copia no válido.",
+    "Invalid upload.": "Subida no válida.",
+    "Invalid user.": "Usuario no válido.",
+    "Keyboard shortcuts": "Atajos de teclado",
+    "Language": "Idioma",
+    "Language: English": "Idioma: English",
+    "Language: Español": "Idioma: Español",
+    "Language: Français": "Idioma: Français",
+    "Language: Português": "Idioma: Português",
+    "Link": "Enlace",
+    "Link URL": "URL del enlace",
+    "Link copied.": "Enlace copiado.",
+    "List": "Lista",
+    "Loading sites…": "Cargando sitios…",
+    "Loading static sites": "Cargando sitios estáticos",
+    "Loading…": "Cargando…",
+    "Local environment": "Entorno local",
+    "Local machine": "Máquina local",
+    "Local overview": "Vista local",
+    "Local request metrics from the site access log — not unique visitors or production analytics.": "Métricas de solicitudes locales del log de acceso del sitio — no son visitantes únicos ni analítica de producción.",
+    "Local sites": "Sitios locales",
+    "Local sites and services": "Sitios y servicios locales",
+    "Local workspace": "Espacio local",
+    "Log reading is unavailable on this PHP build.": "La lectura de registros no está disponible en esta compilación de PHP.",
+    "Login link opened in a new tab.": "Enlace de acceso abierto en una pestaña nueva.",
+    "Logs": "Registros",
+    "Mail": "Correo",
+    "Mail catcher": "Capturador de correo",
+    "Mail is not being captured. Start the stack with": "El correo no se está capturando. Inicia el stack con",
+    "Mailpit is not reachable.": "No se puede acceder a Mailpit.",
+    "Mailpit is not reachable. Start it with": "No se puede acceder a Mailpit. Inícialo con",
+    "Mailpit keeps up to its configured maximum (default 500 messages).": "Mailpit conserva hasta su máximo configurado (500 mensajes por defecto).",
+    "Message deleted.": "Mensaje eliminado.",
+    "Method Not Allowed": "Método no permitido",
+    "Minimum level": "Nivel mínimo",
+    "Modified": "Modificado",
+    "Move around Plak without lifting your hands from the keyboard.": "Muévete por Plak sin levantar las manos del teclado.",
+    "Multisite": "Multisitio",
+    "Must-use plugins cannot be deactivated.": "Los plugins must-use no se pueden desactivar.",
+    "Name": "Nombre",
+    "Network error.": "Error de red.",
+    "No": "No",
+    "No HTML files": "No hay archivos HTML",
+    "No backup file uploaded.": "No se subió ningún archivo de copia.",
+    "No command provided.": "No se proporcionó ningún comando.",
+    "No entries.": "No hay entradas.",
+    "No log file found for this service yet.": "Aún no se encontró un archivo de registro para este servicio.",
+    "No matches for": "Sin coincidencias para",
+    "No matching commands": "No hay comandos coincidentes",
+    "No messages selected.": "No hay mensajes seleccionados.",
+    "No messages.": "No hay mensajes.",
+    "No requests.": "No hay solicitudes.",
+    "No scheduled events.": "No hay eventos programados.",
+    "No sites yet.": "Aún no hay sitios.",
+    "No snapshots yet.": "Aún no hay copias.",
+    "No static sites match that search": "Ningún sitio estático coincide con esa búsqueda",
+    "No static sites yet": "Aún no hay sitios estáticos",
+    "No users.": "No hay usuarios.",
+    "Not a WordPress site.": "No es un sitio WordPress.",
+    "Note": "Nota",
+    "Open": "Abrir",
+    "Open Adminer": "Abrir Adminer",
+    "Open Mailpit": "Abrir Mailpit",
+    "Open cloud panel": "Abrir panel cloud",
+    "Open cloud panel ↗": "Abrir panel cloud ↗",
+    "Open command palette": "Abrir paleta de comandos",
+    "Open db.plak.localhost": "Abrir db.plak.localhost",
+    "Open in a new tab": "Abrir en una pestaña nueva",
+    "Open mail.plak.localhost": "Abrir mail.plak.localhost",
+    "Open navigation": "Abrir navegación",
+    "Operation completed successfully.": "Operación completada correctamente.",
+    "Overview": "Resumen",
+    "PLAK LOCAL / LOGS": "PLAK LOCAL / REGISTROS",
+    "PLAK LOCAL / SHORTCUTS": "PLAK LOCAL / ATAJOS",
+    "Path": "Ruta",
+    "Path copied to clipboard.": "Ruta copiada al portapapeles.",
+    "Plak local": "Plak local",
+    "Plak local — sites": "Plak local — sitios",
+    "Plak uses these to create new WordPress databases.": "Plak usa estos datos para crear nuevas bases de datos de WordPress.",
+    "Plugins": "Complementos",
+    "Press Esc to clear.": "Pulsa Esc para limpiar.",
+    "Preview": "Vista previa",
+    "Quick search": "Búsqueda rápida",
+    "Read captured mail in the dashboard": "Leer el correo capturado en el dashboard",
+    "Reading": "Leyendo",
+    "Reading logs…": "Leyendo registros…",
+    "Reading the local site folders.": "Leyendo las carpetas locales de sitios.",
+    "Recent": "Recientes",
+    "Recently edited": "Editados recientemente",
+    "Redo": "Rehacer",
+    "Refresh": "Refrescar",
+    "Refresh info": "Refrescar información",
+    "Reload Caddy and the local stack": "Recarga Caddy y el stack local",
+    "Reload file": "Recargar archivo",
+    "Reload stack": "Recargar stack",
+    "Remove": "Quitar",
+    "Remove type filter": "Quitar filtro de tipo",
+    "Request failed (:status).": "La solicitud falló (:status).",
+    "Requests": "Solicitudes",
+    "Restore": "Restaurar",
+    "Restore snapshot": "Restaurar copia",
+    "Retry": "Reintentar",
+    "Running": "En ejecución",
+    "Runs WP-CLI inside this site. Arguments are passed to WP-CLI, not to a shell.": "Ejecuta WP-CLI dentro de este sitio. Los argumentos se pasan a WP-CLI, no a un shell.",
+    "Save": "Guardar",
+    "Save (⌘S)": "Guardar (⌘S)",
+    "Saved": "Guardado",
+    "Saving…": "Guardando…",
+    "Search anything...": "Buscar cualquier cosa...",
+    "Search sites, services and actions": "Buscar sitios, servicios y acciones",
+    "Search sites, services and actions...": "Buscar sitios, servicios y acciones...",
+    "Search static sites": "Buscar sitios estáticos",
+    "Search static sites…": "Buscar sitios estáticos…",
+    "Search, navigation and actions": "Búsqueda, navegación y acciones",
+    "Server reload initiated.": "Recarga del servidor iniciada.",
+    "Services": "Servicios",
+    "Services unavailable": "Servicios no disponibles",
+    "Show shortcuts": "Mostrar atajos",
+    "Showing the tail of a large log file.": "Mostrando el final de un archivo de registro grande.",
+    "Site": "Sitio",
+    "Site created.": "Sitio creado.",
+    "Site deleted.": "Sitio eliminado.",
+    "Site mail": "Correo del sitio",
+    "Site not found.": "Sitio no encontrado.",
+    "Site preview": "Vista previa del sitio",
+    "Sites": "Sitios",
+    "Size": "Tamaño",
+    "Slowest": "Más lentas",
+    "Snapshot deleted.": "Copia eliminada.",
+    "Snapshot not found.": "Copia no encontrada.",
+    "Snapshots": "Copias de seguridad",
+    "Sort by — click to cycle": "Ordenar por — clic para cambiar",
+    "Sort static sites": "Ordenar sitios estáticos",
+    "Stack reload requested.": "Recarga del stack solicitada.",
+    "Static site not found": "Sitio estático no encontrado",
+    "Static · Edit in HTML editor": "Estático · Editar en el editor HTML",
+    "Status": "Estado",
+    "Status and access for the local stack": "Estado y acceso del stack local",
+    "Stopped": "Detenido",
+    "Switch to dark mode": "Cambiar a modo oscuro",
+    "Switch to light mode": "Cambiar a modo claro",
+    "System": "Sistema",
+    "The HTML editor only opens static sites. If this is a WordPress site, use its HTML Editor plugin.": "El editor HTML solo abre sitios estáticos. Si es un sitio WordPress, usa su plugin HTML Editor.",
+    "The local stack running on this machine.": "El stack local que se ejecuta en esta máquina.",
+    "Themes": "Temas",
+    "This answers only on the machine running Plak.": "Esto solo responde en la máquina que ejecuta Plak.",
+    "This operation has no network/subsite scope. Use plak wp with explicit --url/--network options. No data was modified.": "Esta operación no tiene alcance de red/sub sitio. Usa plak wp con las opciones --url/--network explícitas. No se modificaron datos.",
+    "Toggle theme": "Cambiar tema",
+    "Tools": "Herramientas",
+    "Top paths": "Rutas principales",
+    "Traffic": "Tráfico",
+    "Try another site name.": "Prueba con otro nombre de sitio.",
+    "Type": "Tipo",
+    "Undo": "Deshacer",
+    "Unknown": "Desconocido",
+    "Unknown job.": "Trabajo desconocido.",
+    "Unknown log source.": "Origen de registro desconocido.",
+    "Unknown service.": "Servicio desconocido.",
+    "Unsaved changes": "Cambios sin guardar",
+    "Unsupported archive. Use zip, tar.gz, tgz or tar.": "Archivo no compatible. Usa zip, tar.gz, tgz o tar.",
+    "Update": "Actualizar",
+    "Update check run against WordPress.org.": "Comprobación de actualizaciones ejecutada contra WordPress.org.",
+    "Updated": "Actualizado",
+    "Upload failed. Check the connection and try again.": "La subida falló. Revisa la conexión e inténtalo de nuevo.",
+    "Upload from computer": "Subir desde el ordenador",
+    "Uploaded :path": "Subido :path",
+    "Uploading…": "Subiendo…",
+    "Users": "Usuarios",
+    "Version": "Versión",
+    "View mode": "Modo de vista",
+    "WP version": "Versión de WP",
+    "WP-CLI command": "Comando WP-CLI",
+    "Web server · PHP": "Servidor web · PHP",
+    "Websites": "Sitios web",
+    "WordPress installation failed — check the logs.": "La instalación de WordPress falló — revisa los registros.",
+    "WordPress or static": "WordPress o estático",
+    "WordPress sites are not listed here. Use the HTML Editor plugin in wp-admin; this picker only opens static sites.": "Los sitios WordPress no aparecen aquí. Usa el plugin HTML Editor en wp-admin; este selector solo abre sitios estáticos.",
+    "WordPress · Open site": "WordPress · Abrir sitio",
+    "Your local WordPress and HTML sites, running on this machine.": "Tus sitios WordPress y HTML locales, ejecutándose en esta máquina.",
+    "access": "acceso",
+    "activate": "activar",
+    "active theme · cannot delete": "tema activo · no se puede eliminar",
+    "agent": "agente",
+    "agent ✓": "agente ✓",
+    "agent-ready (MCP)": "listo para agentes (MCP)",
+    "all levels": "todos los niveles",
+    "avg": "prom",
+    "backups": "copias",
+    "check updates": "buscar actualizaciones",
+    "checking…": "comprobando…",
+    "close": "cerrar",
+    "confirm delete?": "¿confirmar eliminación?",
+    "confirm restore?": "¿confirmar restauración?",
+    "console": "consola",
+    "copy": "copiar",
+    "create": "crear",
+    "create snapshot": "crear copia",
+    "creating…": "creando…",
+    "credentials": "credenciales",
+    "database": "base de datos",
+    "db": "bd",
+    "deactivate": "desactivar",
+    "delete": "eliminar",
+    "download": "descargar",
+    "download snapshot": "descargar copia",
+    "edit": "editar",
+    "errors": "errores",
+    "exit": "salir",
+    "fatal only": "solo fatales",
+    "files": "archivos",
+    "filter sites by name or type…": "filtrar sitios por nombre o tipo…",
+    "filter…": "filtrar…",
+    "full": "completa",
+    "import": "importar",
+    "inbox": "bandeja",
+    "is ready.": "está listo.",
+    "load remote images": "cargar imágenes remotas",
+    "loading…": "cargando…",
+    "login": "entrar",
+    "logs": "registros",
+    "mail": "correo",
+    "max": "máx",
+    "must-use · cannot deactivate": "must-use · no se puede desactivar",
+    "new-site-name": "nombre-del-sitio",
+    "open Adminer": "abrir Adminer",
+    "open Mailpit": "abrir Mailpit",
+    "open dashboard": "abrir dashboard",
+    "open editor": "abrir editor",
+    "open site": "abrir sitio",
+    "open site ↗": "abrir sitio ↗",
+    "password": "contraseña",
+    "path": "ruta",
+    "php errors": "errores PHP",
+    "plugins": "complementos",
+    "preparing…": "preparando…",
+    "refresh": "refrescar",
+    "refresh info": "refrescar info",
+    "refreshing…": "refrescando…",
+    "reload": "recargar",
+    "requests": "solicitudes",
+    "restore": "restaurar",
+    "restore snapshot": "restaurar copia",
+    "run": "ejecutar",
+    "run due now": "ejecutar pendientes ahora",
+    "search mail…": "buscar correo…",
+    "site-name": "nombre-del-sitio",
+    "snapshot note (optional)": "nota de la copia (opcional)",
+    "sort: modified": "orden: modificado",
+    "sort: name": "orden: nombre",
+    "sort: size": "orden: tamaño",
+    "static": "estático",
+    "static (no WordPress)": "estático (sin WordPress)",
+    "static_plural": "estáticos",
+    "stored in": "guardado en",
+    "themes": "temas",
+    "trace": "traza",
+    "traffic": "tráfico",
+    "type: WordPress": "tipo: WordPress",
+    "type: static": "tipo: estático",
+    "type: wp": "tipo: wp",
+    "update": "actualizar",
+    "user": "usuario",
+    "users": "usuarios",
+    "warning+": "advertencia+",
+    "working…": "trabajando…",
+    "wp-cli failed.": "wp-cli falló.",
+    "← back": "← volver",
+    "↑ ↓ Navigate": "↑ ↓ Navegar",
+    "↵ Select": "↵ Seleccionar"
+  },
+  "fr": {
+    "(no note)": "(sans note)",
+    "); the web actions are read-only for now.": "); les actions web sont en lecture seule pour l’instant.",
+    "+ Add site": "+ Ajouter un site",
+    "+ New static site": "+ Nouveau site statique",
+    "+ add site": "+ ajouter un site",
+    "Access points, not only status dots. Adminer, Mailpit and the dashboard are one click away. Start/restart remains in the CLI (": "Points d’accès, pas seulement des indicateurs d’état. Adminer, Mailpit et le tableau de bord sont à un clic. Le démarrage/redémarrage reste dans la CLI (",
+    "Across local sites": "Sur tous les sites locaux",
+    "Actions": "Actions",
+    "Active theme · cannot delete": "Thème actif · suppression impossible",
+    "Active type filter": "Filtre de type actif",
+    "Add site": "Ajouter un site",
+    "Add static site": "Ajouter un site statique",
+    "Address": "Adresse",
+    "Agent preparation failed.": "La préparation de l’agent a échoué.",
+    "Agent ready.": "Agent prêt.",
+    "Agent-ready (WP-MCP)": "Prêt pour les agents (WP-MCP)",
+    "Aggregating…": "Agrégation…",
+    "All": "Tous",
+    "All due events": "Tous les événements dus",
+    "All local WordPress and static sites.": "Tous les sites WordPress et statiques locaux.",
+    "All local sites": "Tous les sites locaux",
+    "All mail": "Tout le courrier",
+    "All systems running": "Tout fonctionne",
+    "Alt text": "Texte alternatif",
+    "An error occurred.": "Une erreur est survenue.",
+    "An unknown error occurred.": "Une erreur inconnue est survenue.",
+    "Apply": "Appliquer",
+    "Argument too long.": "L’argument est trop long.",
+    "Ask WordPress.org for available updates": "Demander à WordPress.org les mises à jour disponibles",
+    "Back": "Retour",
+    "Back to dashboard ↗": "Retour au tableau de bord ↗",
+    "Back to sites": "Retour aux sites",
+    "Back to the Plak dashboard": "Retour au tableau de bord Plak",
+    "Backups": "Sauvegardes",
+    "Caddy is serving this dashboard": "Caddy sert ce tableau de bord",
+    "Caddy is serving this page — it's running": "Caddy sert cette page — il est en cours d’exécution",
+    "Cancel": "Annuler",
+    "Checking services…": "Vérification des services…",
+    "Choose a backup file.": "Choisissez un fichier de sauvegarde.",
+    "Choose a static site to edit": "Choisissez un site statique à modifier",
+    "Choose a static site to edit. WordPress sites use the HTML Editor plugin in wp-admin.": "Choisissez un site statique à modifier. Les sites WordPress utilisent l’extension HTML Editor dans wp-admin.",
+    "Choose image…": "Choisir une image…",
+    "Clear all (Esc)": "Tout effacer (Esc)",
+    "Clear filter": "Effacer le filtre",
+    "Click": "Cliquez",
+    "Close": "Fermer",
+    "Close dialog": "Fermer la boîte de dialogue",
+    "Close image editor": "Fermer l’éditeur d’image",
+    "Close link editor": "Fermer l’éditeur de lien",
+    "Code": "Code",
+    "Command palette": "Palette de commandes",
+    "Commands": "Commandes",
+    "Console": "Console",
+    "Copy": "Copier",
+    "Copy path": "Copier le chemin",
+    "Copy site path to clipboard": "Copier le chemin du site dans le presse-papiers",
+    "Could not copy link.": "Impossible de copier le lien.",
+    "Could not copy path.": "Impossible de copier le chemin.",
+    "Could not create site.": "Impossible de créer le site.",
+    "Could not delete the snapshot.": "Impossible de supprimer la sauvegarde.",
+    "Could not export the snapshot.": "Impossible d’exporter la sauvegarde.",
+    "Could not fetch sites.": "Impossible de charger les sites.",
+    "Could not generate a login link.": "Impossible de générer le lien de connexion.",
+    "Could not list snapshots.": "Impossible de lister les sauvegardes.",
+    "Could not load": "Impossible de charger",
+    "Could not read logs.": "Impossible de lire les journaux.",
+    "Could not read mail.": "Impossible de lire le courrier.",
+    "Could not read the message.": "Impossible de lire le message.",
+    "Could not read the service log.": "Impossible de lire le journal du service.",
+    "Could not read traffic.": "Impossible de lire le trafic.",
+    "Could not store the upload.": "Impossible de stocker le fichier téléversé.",
+    "Create": "Créer",
+    "Create a new site from a Plak, Local or hosting backup (zip, tar.gz, tgz or tar).": "Créez un site à partir d’une sauvegarde Plak, Local ou d’hébergement (zip, tar.gz, tgz ou tar).",
+    "Create a site from a backup archive": "Créer un site à partir d’une sauvegarde",
+    "Create a static site and edit it": "Créez un site statique et modifiez-le",
+    "Create a static site to edit its HTML files. WordPress sites use the HTML Editor plugin in wp-admin.": "Créez un site statique pour modifier ses fichiers HTML. Les sites WordPress utilisent l’extension HTML Editor dans wp-admin.",
+    "Create snapshot": "Créer une sauvegarde",
+    "Created": "Créé",
+    "Creation error details": "Détails de l’erreur de création",
+    "Cron": "Cron",
+    "Cron event run.": "Événement cron exécuté.",
+    "Cron run failed.": "L’exécution du cron a échoué.",
+    "Cross-origin request blocked.": "Requête cross-origin bloquée.",
+    "Dashboard": "Tableau de bord",
+    "Dashboard CLI launcher is unavailable. Run plak reload and refresh this page.": "Le lanceur CLI du tableau de bord est indisponible. Exécutez plak reload et actualisez cette page.",
+    "Data": "Données",
+    "Database": "Base de données",
+    "Database credentials": "Identifiants de la base de données",
+    "Delete": "Supprimer",
+    "Delete :name? This removes its files and database.": "Supprimer :name ? Cela supprime ses fichiers et sa base de données.",
+    "Delete snapshot": "Supprimer la sauvegarde",
+    "Delete this message?": "Supprimer ce message ?",
+    "Details": "Détails",
+    "Discard your unsaved changes and reload the file?": "Abandonner les modifications non enregistrées et recharger le fichier ?",
+    "Discard your unsaved changes?": "Abandonner les modifications non enregistrées ?",
+    "Disk": "Disque",
+    "Disk sizes updated.": "Tailles de disque mises à jour.",
+    "Dismiss": "Ignorer",
+    "Done.": "Terminé.",
+    "Download": "Télécharger",
+    "Download as a full backup": "Télécharger comme sauvegarde complète",
+    "Download snapshot": "Télécharger la sauvegarde",
+    "Edit HTML": "Modifier le HTML",
+    "Edit ↵": "Modifier ↵",
+    "Editor": "Éditeur",
+    "Editor · Plak": "Éditeur · Plak",
+    "Enter an image URL or upload a file.": "Saisissez une URL d’image ou téléversez un fichier.",
+    "Esc Close": "Esc Fermer",
+    "External": "Externe",
+    "Failed to generate login link.": "Impossible de générer le lien de connexion.",
+    "Failed.": "Échec.",
+    "File": "Fichier",
+    "Filter sites": "Filtrer les sites",
+    "Filter to WordPress sites": "Filtrer les sites WordPress",
+    "Filter to static sites": "Filtrer les sites statiques",
+    "Go to": "Aller à",
+    "Go to Editor": "Aller à l’Éditeur",
+    "Go to Overview": "Aller à Aperçu",
+    "Go to Services": "Aller aux Services",
+    "Go to Websites": "Aller aux Sites web",
+    "Grid": "Grille",
+    "HTML file": "Fichier HTML",
+    "HTML files": "Fichiers HTML",
+    "Image": "Image",
+    "Image URL": "URL de l’image",
+    "Import a backup": "Importer une sauvegarde",
+    "Import could not start.": "L’importation n’a pas pu démarrer.",
+    "Install WP-MCP and register the site with wp-mcp-cli": "Installez WP-MCP et enregistrez le site avec wp-mcp-cli",
+    "Invalid arguments.": "Arguments invalides.",
+    "Invalid cron hook.": "Hook cron invalide.",
+    "Invalid message id.": "ID de message invalide.",
+    "Invalid operation.": "Opération invalide.",
+    "Invalid or missing CSRF token.": "Jeton CSRF invalide ou manquant.",
+    "Invalid or missing token.": "Jeton invalide ou manquant.",
+    "Invalid request.": "Requête invalide.",
+    "Invalid server response (:status).": "Réponse du serveur invalide (:status).",
+    "Invalid site name.": "Nom de site invalide.",
+    "Invalid snapshot id.": "ID de sauvegarde invalide.",
+    "Invalid upload.": "Téléversement invalide.",
+    "Invalid user.": "Utilisateur invalide.",
+    "Keyboard shortcuts": "Raccourcis clavier",
+    "Language": "Langue",
+    "Language: English": "Langue : English",
+    "Language: Español": "Langue : Español",
+    "Language: Français": "Langue : Français",
+    "Language: Português": "Langue : Português",
+    "Link": "Lien",
+    "Link URL": "URL du lien",
+    "Link copied.": "Lien copié.",
+    "List": "Liste",
+    "Loading sites…": "Chargement des sites…",
+    "Loading static sites": "Chargement des sites statiques",
+    "Loading…": "Chargement…",
+    "Local environment": "Environnement local",
+    "Local machine": "Machine locale",
+    "Local overview": "Vue locale",
+    "Local request metrics from the site access log — not unique visitors or production analytics.": "Métriques de requêtes locales issues du journal d’accès du site — pas des visiteurs uniques ni de l’analytique de production.",
+    "Local sites": "Sites locaux",
+    "Local sites and services": "Sites et services locaux",
+    "Local workspace": "Espace local",
+    "Log reading is unavailable on this PHP build.": "La lecture des journaux n’est pas disponible dans cette version de PHP.",
+    "Login link opened in a new tab.": "Lien de connexion ouvert dans un nouvel onglet.",
+    "Logs": "Journaux",
+    "Mail": "Courrier",
+    "Mail catcher": "Captureur de courrier",
+    "Mail is not being captured. Start the stack with": "Le courrier n’est pas capturé. Démarrez la stack avec",
+    "Mailpit is not reachable.": "Mailpit est inaccessible.",
+    "Mailpit is not reachable. Start it with": "Mailpit est inaccessible. Démarrez-le avec",
+    "Mailpit keeps up to its configured maximum (default 500 messages).": "Mailpit conserve jusqu’à son maximum configuré (500 messages par défaut).",
+    "Message deleted.": "Message supprimé.",
+    "Method Not Allowed": "Méthode non autorisée",
+    "Minimum level": "Niveau minimum",
+    "Modified": "Modifié",
+    "Move around Plak without lifting your hands from the keyboard.": "Parcourez Plak sans quitter le clavier.",
+    "Multisite": "Multisite",
+    "Must-use plugins cannot be deactivated.": "Les extensions must-use ne peuvent pas être désactivées.",
+    "Name": "Nom",
+    "Network error.": "Erreur réseau.",
+    "No": "Non",
+    "No HTML files": "Aucun fichier HTML",
+    "No backup file uploaded.": "Aucun fichier de sauvegarde téléversé.",
+    "No command provided.": "Aucune commande fournie.",
+    "No entries.": "Aucune entrée.",
+    "No log file found for this service yet.": "Aucun fichier journal trouvé pour ce service.",
+    "No matches for": "Aucun résultat pour",
+    "No matching commands": "Aucune commande correspondante",
+    "No messages selected.": "Aucun message sélectionné.",
+    "No messages.": "Aucun message.",
+    "No requests.": "Aucune requête.",
+    "No scheduled events.": "Aucun événement planifié.",
+    "No sites yet.": "Aucun site pour l’instant.",
+    "No snapshots yet.": "Aucune sauvegarde pour l’instant.",
+    "No static sites match that search": "Aucun site statique ne correspond à cette recherche",
+    "No static sites yet": "Aucun site statique pour l’instant",
+    "No users.": "Aucun utilisateur.",
+    "Not a WordPress site.": "Ce n’est pas un site WordPress.",
+    "Note": "Note",
+    "Open": "Ouvrir",
+    "Open Adminer": "Ouvrir Adminer",
+    "Open Mailpit": "Ouvrir Mailpit",
+    "Open cloud panel": "Ouvrir le panneau cloud",
+    "Open cloud panel ↗": "Ouvrir le panneau cloud ↗",
+    "Open command palette": "Ouvrir la palette de commandes",
+    "Open db.plak.localhost": "Ouvrir db.plak.localhost",
+    "Open in a new tab": "Ouvrir dans un nouvel onglet",
+    "Open mail.plak.localhost": "Ouvrir mail.plak.localhost",
+    "Open navigation": "Ouvrir la navigation",
+    "Operation completed successfully.": "Opération terminée avec succès.",
+    "Overview": "Aperçu",
+    "PLAK LOCAL / LOGS": "PLAK LOCAL / JOURNAUX",
+    "PLAK LOCAL / SHORTCUTS": "PLAK LOCAL / RACCOURCIS",
+    "Path": "Chemin",
+    "Path copied to clipboard.": "Chemin copié dans le presse-papiers.",
+    "Plak local": "Plak local",
+    "Plak local — sites": "Plak local — sites",
+    "Plak uses these to create new WordPress databases.": "Plak utilise ces informations pour créer de nouvelles bases de données WordPress.",
+    "Plugins": "Plugins",
+    "Press Esc to clear.": "Appuyez sur Esc pour effacer.",
+    "Preview": "Aperçu",
+    "Quick search": "Recherche rapide",
+    "Read captured mail in the dashboard": "Lire le courrier capturé dans le tableau de bord",
+    "Reading": "Lecture",
+    "Reading logs…": "Lecture des journaux…",
+    "Reading the local site folders.": "Lecture des dossiers de sites locaux.",
+    "Recent": "Récents",
+    "Recently edited": "Modifiés récemment",
+    "Redo": "Rétablir",
+    "Refresh": "Rafraîchir",
+    "Refresh info": "Rafraîchir les informations",
+    "Reload Caddy and the local stack": "Rechargez Caddy et la stack locale",
+    "Reload file": "Recharger le fichier",
+    "Reload stack": "Recharger la stack",
+    "Remove": "Retirer",
+    "Remove type filter": "Retirer le filtre de type",
+    "Request failed (:status).": "La requête a échoué (:status).",
+    "Requests": "Requêtes",
+    "Restore": "Restaurer",
+    "Restore snapshot": "Restaurer la sauvegarde",
+    "Retry": "Réessayer",
+    "Running": "En cours",
+    "Runs WP-CLI inside this site. Arguments are passed to WP-CLI, not to a shell.": "Exécute WP-CLI dans ce site. Les arguments sont transmis à WP-CLI, pas à un shell.",
+    "Save": "Enregistrer",
+    "Save (⌘S)": "Enregistrer (⌘S)",
+    "Saved": "Enregistré",
+    "Saving…": "Enregistrement…",
+    "Search anything...": "Rechercher...",
+    "Search sites, services and actions": "Rechercher des sites, services et actions",
+    "Search sites, services and actions...": "Rechercher des sites, services et actions...",
+    "Search static sites": "Rechercher des sites statiques",
+    "Search static sites…": "Rechercher des sites statiques…",
+    "Search, navigation and actions": "Recherche, navigation et actions",
+    "Server reload initiated.": "Rechargement du serveur lancé.",
+    "Services": "Services",
+    "Services unavailable": "Services indisponibles",
+    "Show shortcuts": "Afficher les raccourcis",
+    "Showing the tail of a large log file.": "Affichage de la fin d’un fichier journal volumineux.",
+    "Site": "Site",
+    "Site created.": "Site créé.",
+    "Site deleted.": "Site supprimé.",
+    "Site mail": "Courrier du site",
+    "Site not found.": "Site introuvable.",
+    "Site preview": "Aperçu du site",
+    "Sites": "Sites",
+    "Size": "Taille",
+    "Slowest": "Les plus lentes",
+    "Snapshot deleted.": "Sauvegarde supprimée.",
+    "Snapshot not found.": "Sauvegarde introuvable.",
+    "Snapshots": "Sauvegardes",
+    "Sort by — click to cycle": "Trier par — cliquez pour changer",
+    "Sort static sites": "Trier les sites statiques",
+    "Stack reload requested.": "Rechargement de la stack demandé.",
+    "Static site not found": "Site statique introuvable",
+    "Static · Edit in HTML editor": "Statique · Modifier dans l’éditeur HTML",
+    "Status": "Statut",
+    "Status and access for the local stack": "État et accès de la stack locale",
+    "Stopped": "Arrêté",
+    "Switch to dark mode": "Passer en mode sombre",
+    "Switch to light mode": "Passer en mode clair",
+    "System": "Système",
+    "The HTML editor only opens static sites. If this is a WordPress site, use its HTML Editor plugin.": "L’éditeur HTML n’ouvre que les sites statiques. S’il s’agit d’un site WordPress, utilisez son extension HTML Editor.",
+    "The local stack running on this machine.": "La stack locale exécutée sur cette machine.",
+    "Themes": "Thèmes",
+    "This answers only on the machine running Plak.": "Cela ne répond que sur la machine qui exécute Plak.",
+    "This operation has no network/subsite scope. Use plak wp with explicit --url/--network options. No data was modified.": "Cette opération n’a pas de portée réseau/sous-site. Utilisez plak wp avec les options --url/--network explicites. Aucune donnée n’a été modifiée.",
+    "Toggle theme": "Changer de thème",
+    "Tools": "Outils",
+    "Top paths": "Chemins principaux",
+    "Traffic": "Trafic",
+    "Try another site name.": "Essayez un autre nom de site.",
+    "Type": "Type",
+    "Undo": "Annuler",
+    "Unknown": "Inconnu",
+    "Unknown job.": "Tâche inconnue.",
+    "Unknown log source.": "Source de journal inconnue.",
+    "Unknown service.": "Service inconnu.",
+    "Unsaved changes": "Modifications non enregistrées",
+    "Unsupported archive. Use zip, tar.gz, tgz or tar.": "Archive non prise en charge. Utilisez zip, tar.gz, tgz ou tar.",
+    "Update": "Mettre à jour",
+    "Update check run against WordPress.org.": "Vérification des mises à jour effectuée sur WordPress.org.",
+    "Updated": "Mis à jour",
+    "Upload failed. Check the connection and try again.": "Le téléversement a échoué. Vérifiez la connexion et réessayez.",
+    "Upload from computer": "Importer depuis l’ordinateur",
+    "Uploaded :path": "Téléversé :path",
+    "Uploading…": "Téléversement…",
+    "Users": "Utilisateurs",
+    "Version": "Version",
+    "View mode": "Mode d’affichage",
+    "WP version": "Version de WP",
+    "WP-CLI command": "Commande WP-CLI",
+    "Web server · PHP": "Serveur web · PHP",
+    "Websites": "Sites web",
+    "WordPress installation failed — check the logs.": "L’installation de WordPress a échoué — consultez les journaux.",
+    "WordPress or static": "WordPress ou statique",
+    "WordPress sites are not listed here. Use the HTML Editor plugin in wp-admin; this picker only opens static sites.": "Les sites WordPress ne figurent pas ici. Utilisez l’extension HTML Editor dans wp-admin ; ce sélecteur n’ouvre que les sites statiques.",
+    "WordPress · Open site": "WordPress · Ouvrir le site",
+    "Your local WordPress and HTML sites, running on this machine.": "Vos sites WordPress et HTML locaux, exécutés sur cette machine.",
+    "access": "accès",
+    "activate": "activer",
+    "active theme · cannot delete": "thème actif · suppression impossible",
+    "agent": "agent",
+    "agent ✓": "agent ✓",
+    "agent-ready (MCP)": "prêt pour les agents (MCP)",
+    "all levels": "tous les niveaux",
+    "avg": "moy",
+    "backups": "sauvegardes",
+    "check updates": "vérifier les mises à jour",
+    "checking…": "vérification…",
+    "close": "fermer",
+    "confirm delete?": "Confirmer la suppression ?",
+    "confirm restore?": "Confirmer la restauration ?",
+    "console": "console",
+    "copy": "copier",
+    "create": "créer",
+    "create snapshot": "créer une sauvegarde",
+    "creating…": "création…",
+    "credentials": "identifiants",
+    "database": "base de données",
+    "db": "bd",
+    "deactivate": "désactiver",
+    "delete": "supprimer",
+    "download": "télécharger",
+    "download snapshot": "télécharger la sauvegarde",
+    "edit": "modifier",
+    "errors": "erreurs",
+    "exit": "quitter",
+    "fatal only": "fatal uniquement",
+    "files": "fichiers",
+    "filter sites by name or type…": "filtrer les sites par nom ou type…",
+    "filter…": "filtrer…",
+    "full": "complète",
+    "import": "importer",
+    "inbox": "boîte",
+    "is ready.": "est prêt.",
+    "load remote images": "charger les images distantes",
+    "loading…": "chargement…",
+    "login": "connexion",
+    "logs": "journaux",
+    "mail": "courrier",
+    "max": "max",
+    "must-use · cannot deactivate": "must-use · désactivation impossible",
+    "new-site-name": "nom-du-site",
+    "open Adminer": "ouvrir Adminer",
+    "open Mailpit": "ouvrir Mailpit",
+    "open dashboard": "ouvrir le tableau de bord",
+    "open editor": "ouvrir l’éditeur",
+    "open site": "ouvrir le site",
+    "open site ↗": "ouvrir le site ↗",
+    "password": "mot de passe",
+    "path": "chemin",
+    "php errors": "erreurs PHP",
+    "plugins": "plugins",
+    "preparing…": "préparation…",
+    "refresh": "rafraîchir",
+    "refresh info": "rafraîchir les infos",
+    "refreshing…": "rafraîchissement…",
+    "reload": "recharger",
+    "requests": "requêtes",
+    "restore": "restaurer",
+    "restore snapshot": "restaurer la sauvegarde",
+    "run": "exécuter",
+    "run due now": "exécuter les échéances",
+    "search mail…": "rechercher dans le courrier…",
+    "site-name": "nom-du-site",
+    "snapshot note (optional)": "note de sauvegarde (facultatif)",
+    "sort: modified": "tri : modifié",
+    "sort: name": "tri : nom",
+    "sort: size": "tri : taille",
+    "static": "statique",
+    "static (no WordPress)": "statique (sans WordPress)",
+    "static_plural": "statiques",
+    "stored in": "stocké dans",
+    "themes": "thèmes",
+    "trace": "trace",
+    "traffic": "trafic",
+    "type: WordPress": "type : WordPress",
+    "type: static": "type : statique",
+    "type: wp": "type : wp",
+    "update": "mettre à jour",
+    "user": "utilisateur",
+    "users": "utilisateurs",
+    "warning+": "avertissement+",
+    "working…": "traitement…",
+    "wp-cli failed.": "wp-cli a échoué.",
+    "← back": "← retour",
+    "↑ ↓ Navigate": "↑ ↓ Naviguer",
+    "↵ Select": "↵ Sélectionner"
+  },
+  "pt": {
+    "(no note)": "(sem nota)",
+    "); the web actions are read-only for now.": "); as ações web são somente leitura por enquanto.",
+    "+ Add site": "+ Adicionar site",
+    "+ New static site": "+ Novo site estático",
+    "+ add site": "+ adicionar site",
+    "Access points, not only status dots. Adminer, Mailpit and the dashboard are one click away. Start/restart remains in the CLI (": "Pontos de acesso, não apenas indicadores de status. Adminer, Mailpit e o painel estão a um clique. Iniciar/reiniciar continua na CLI (",
+    "Across local sites": "Em todos os sites locais",
+    "Actions": "Ações",
+    "Active theme · cannot delete": "Tema ativo · não é possível excluir",
+    "Active type filter": "Filtro de tipo ativo",
+    "Add site": "Adicionar site",
+    "Add static site": "Adicionar site estático",
+    "Address": "Endereço",
+    "Agent preparation failed.": "A preparação do agente falhou.",
+    "Agent ready.": "Agente pronto.",
+    "Agent-ready (WP-MCP)": "Pronto para agentes (WP-MCP)",
+    "Aggregating…": "Agregando…",
+    "All": "Todos",
+    "All due events": "Todos os eventos pendentes",
+    "All local WordPress and static sites.": "Todos os sites WordPress e estáticos locais.",
+    "All local sites": "Todos os sites locais",
+    "All mail": "Todo o correio",
+    "All systems running": "Tudo funcionando",
+    "Alt text": "Texto alternativo",
+    "An error occurred.": "Ocorreu um erro.",
+    "An unknown error occurred.": "Ocorreu um erro desconhecido.",
+    "Apply": "Aplicar",
+    "Argument too long.": "O argumento é muito longo.",
+    "Ask WordPress.org for available updates": "Perguntar ao WordPress.org por atualizações disponíveis",
+    "Back": "Voltar",
+    "Back to dashboard ↗": "Voltar ao painel ↗",
+    "Back to sites": "Voltar para sites",
+    "Back to the Plak dashboard": "Voltar ao painel do Plak",
+    "Backups": "Backups",
+    "Caddy is serving this dashboard": "O Caddy está servindo este painel",
+    "Caddy is serving this page — it's running": "O Caddy está servindo esta página — está em execução",
+    "Cancel": "Cancelar",
+    "Checking services…": "Verificando serviços…",
+    "Choose a backup file.": "Escolha um arquivo de backup.",
+    "Choose a static site to edit": "Escolha um site estático para editar",
+    "Choose a static site to edit. WordPress sites use the HTML Editor plugin in wp-admin.": "Escolha um site estático para editar. Os sites WordPress usam o plugin HTML Editor no wp-admin.",
+    "Choose image…": "Escolher imagem…",
+    "Clear all (Esc)": "Limpar tudo (Esc)",
+    "Clear filter": "Limpar filtro",
+    "Click": "Clique",
+    "Close": "Fechar",
+    "Close dialog": "Fechar diálogo",
+    "Close image editor": "Fechar editor de imagem",
+    "Close link editor": "Fechar editor de link",
+    "Code": "Código",
+    "Command palette": "Paleta de comandos",
+    "Commands": "Comandos",
+    "Console": "Console",
+    "Copy": "Copiar",
+    "Copy path": "Copiar caminho",
+    "Copy site path to clipboard": "Copiar o caminho do site para a área de transferência",
+    "Could not copy link.": "Não foi possível copiar o link.",
+    "Could not copy path.": "Não foi possível copiar o caminho.",
+    "Could not create site.": "Não foi possível criar o site.",
+    "Could not delete the snapshot.": "Não foi possível excluir o backup.",
+    "Could not export the snapshot.": "Não foi possível exportar o backup.",
+    "Could not fetch sites.": "Não foi possível carregar os sites.",
+    "Could not generate a login link.": "Não foi possível gerar o link de acesso.",
+    "Could not list snapshots.": "Não foi possível listar os backups.",
+    "Could not load": "Não foi possível carregar",
+    "Could not read logs.": "Não foi possível ler os logs.",
+    "Could not read mail.": "Não foi possível ler o correio.",
+    "Could not read the message.": "Não foi possível ler a mensagem.",
+    "Could not read the service log.": "Não foi possível ler o log do serviço.",
+    "Could not read traffic.": "Não foi possível ler o tráfego.",
+    "Could not store the upload.": "Não foi possível armazenar o upload.",
+    "Create": "Criar",
+    "Create a new site from a Plak, Local or hosting backup (zip, tar.gz, tgz or tar).": "Crie um site novo a partir de um backup do Plak, Local ou hospedagem (zip, tar.gz, tgz ou tar).",
+    "Create a site from a backup archive": "Criar um site a partir de um backup",
+    "Create a static site and edit it": "Crie um site estático e edite-o",
+    "Create a static site to edit its HTML files. WordPress sites use the HTML Editor plugin in wp-admin.": "Crie um site estático para editar seus arquivos HTML. Os sites WordPress usam o plugin HTML Editor no wp-admin.",
+    "Create snapshot": "Criar backup",
+    "Created": "Criado",
+    "Creation error details": "Detalhes do erro de criação",
+    "Cron": "Cron",
+    "Cron event run.": "Evento cron executado.",
+    "Cron run failed.": "A execução do cron falhou.",
+    "Cross-origin request blocked.": "Solicitação de outra origem bloqueada.",
+    "Dashboard": "Painel",
+    "Dashboard CLI launcher is unavailable. Run plak reload and refresh this page.": "O launcher da CLI do painel não está disponível. Execute plak reload e atualize esta página.",
+    "Data": "Dados",
+    "Database": "Banco de dados",
+    "Database credentials": "Credenciais do banco de dados",
+    "Delete": "Excluir",
+    "Delete :name? This removes its files and database.": "Excluir :name? Isso remove os arquivos e o banco de dados.",
+    "Delete snapshot": "Excluir backup",
+    "Delete this message?": "Excluir esta mensagem?",
+    "Details": "Detalhes",
+    "Discard your unsaved changes and reload the file?": "Descartar as alterações não salvas e recarregar o arquivo?",
+    "Discard your unsaved changes?": "Descartar as alterações não salvas?",
+    "Disk": "Disco",
+    "Disk sizes updated.": "Tamanhos de disco atualizados.",
+    "Dismiss": "Dispensar",
+    "Done.": "Concluído.",
+    "Download": "Baixar",
+    "Download as a full backup": "Baixar como backup completo",
+    "Download snapshot": "Baixar backup",
+    "Edit HTML": "Editar HTML",
+    "Edit ↵": "Editar ↵",
+    "Editor": "Editor",
+    "Editor · Plak": "Editor · Plak",
+    "Enter an image URL or upload a file.": "Insira uma URL de imagem ou envie um arquivo.",
+    "Esc Close": "Esc Fechar",
+    "External": "Externo",
+    "Failed to generate login link.": "Falha ao gerar o link de acesso.",
+    "Failed.": "Falhou.",
+    "File": "Arquivo",
+    "Filter sites": "Filtrar sites",
+    "Filter to WordPress sites": "Filtrar sites WordPress",
+    "Filter to static sites": "Filtrar sites estáticos",
+    "Go to": "Ir para",
+    "Go to Editor": "Ir para o Editor",
+    "Go to Overview": "Ir para Visão geral",
+    "Go to Services": "Ir para Serviços",
+    "Go to Websites": "Ir para Sites",
+    "Grid": "Grade",
+    "HTML file": "Arquivo HTML",
+    "HTML files": "Arquivos HTML",
+    "Image": "Imagem",
+    "Image URL": "URL da imagem",
+    "Import a backup": "Importar um backup",
+    "Import could not start.": "A importação não pôde iniciar.",
+    "Install WP-MCP and register the site with wp-mcp-cli": "Instale o WP-MCP e registre o site com wp-mcp-cli",
+    "Invalid arguments.": "Argumentos inválidos.",
+    "Invalid cron hook.": "Hook de cron inválido.",
+    "Invalid message id.": "ID de mensagem inválido.",
+    "Invalid operation.": "Operação inválida.",
+    "Invalid or missing CSRF token.": "Token CSRF inválido ou ausente.",
+    "Invalid or missing token.": "Token inválido ou ausente.",
+    "Invalid request.": "Solicitação inválida.",
+    "Invalid server response (:status).": "Resposta inválida do servidor (:status).",
+    "Invalid site name.": "Nome de site inválido.",
+    "Invalid snapshot id.": "ID de backup inválido.",
+    "Invalid upload.": "Upload inválido.",
+    "Invalid user.": "Usuário inválido.",
+    "Keyboard shortcuts": "Atalhos de teclado",
+    "Language": "Idioma",
+    "Language: English": "Idioma: English",
+    "Language: Español": "Idioma: Español",
+    "Language: Français": "Idioma: Français",
+    "Language: Português": "Idioma: Português",
+    "Link": "Link",
+    "Link URL": "URL do link",
+    "Link copied.": "Link copiado.",
+    "List": "Lista",
+    "Loading sites…": "Carregando sites…",
+    "Loading static sites": "Carregando sites estáticos",
+    "Loading…": "Carregando…",
+    "Local environment": "Ambiente local",
+    "Local machine": "Máquina local",
+    "Local overview": "Visão local",
+    "Local request metrics from the site access log — not unique visitors or production analytics.": "Métricas de solicitações locais do log de acesso do site — não são visitantes únicos nem análise de produção.",
+    "Local sites": "Sites locais",
+    "Local sites and services": "Sites e serviços locais",
+    "Local workspace": "Espaço local",
+    "Log reading is unavailable on this PHP build.": "A leitura de logs não está disponível nesta compilação do PHP.",
+    "Login link opened in a new tab.": "Link de acesso aberto em uma nova aba.",
+    "Logs": "Logs",
+    "Mail": "Correio",
+    "Mail catcher": "Capturador de e-mail",
+    "Mail is not being captured. Start the stack with": "O correio não está sendo capturado. Inicie a stack com",
+    "Mailpit is not reachable.": "Não é possível acessar o Mailpit.",
+    "Mailpit is not reachable. Start it with": "Não é possível acessar o Mailpit. Inicie-o com",
+    "Mailpit keeps up to its configured maximum (default 500 messages).": "O Mailpit mantém até o máximo configurado (500 mensagens por padrão).",
+    "Message deleted.": "Mensagem excluída.",
+    "Method Not Allowed": "Método não permitido",
+    "Minimum level": "Nível mínimo",
+    "Modified": "Modificado",
+    "Move around Plak without lifting your hands from the keyboard.": "Navegue pelo Plak sem tirar as mãos do teclado.",
+    "Multisite": "Multissite",
+    "Must-use plugins cannot be deactivated.": "Plug-ins must-use não podem ser desativados.",
+    "Name": "Nome",
+    "Network error.": "Erro de rede.",
+    "No": "Não",
+    "No HTML files": "Nenhum arquivo HTML",
+    "No backup file uploaded.": "Nenhum arquivo de backup foi enviado.",
+    "No command provided.": "Nenhum comando fornecido.",
+    "No entries.": "Nenhuma entrada.",
+    "No log file found for this service yet.": "Ainda não foi encontrado um arquivo de log para este serviço.",
+    "No matches for": "Sem resultados para",
+    "No matching commands": "Nenhum comando correspondente",
+    "No messages selected.": "Nenhuma mensagem selecionada.",
+    "No messages.": "Nenhuma mensagem.",
+    "No requests.": "Nenhuma solicitação.",
+    "No scheduled events.": "Nenhum evento agendado.",
+    "No sites yet.": "Ainda não há sites.",
+    "No snapshots yet.": "Ainda não há backups.",
+    "No static sites match that search": "Nenhum site estático corresponde a essa pesquisa",
+    "No static sites yet": "Ainda não há sites estáticos",
+    "No users.": "Nenhum usuário.",
+    "Not a WordPress site.": "Não é um site WordPress.",
+    "Note": "Nota",
+    "Open": "Abrir",
+    "Open Adminer": "Abrir Adminer",
+    "Open Mailpit": "Abrir Mailpit",
+    "Open cloud panel": "Abrir painel cloud",
+    "Open cloud panel ↗": "Abrir painel cloud ↗",
+    "Open command palette": "Abrir paleta de comandos",
+    "Open db.plak.localhost": "Abrir db.plak.localhost",
+    "Open in a new tab": "Abrir em uma nova aba",
+    "Open mail.plak.localhost": "Abrir mail.plak.localhost",
+    "Open navigation": "Abrir navegação",
+    "Operation completed successfully.": "Operação concluída com sucesso.",
+    "Overview": "Visão geral",
+    "PLAK LOCAL / LOGS": "PLAK LOCAL / LOGS",
+    "PLAK LOCAL / SHORTCUTS": "PLAK LOCAL / ATALHOS",
+    "Path": "Caminho",
+    "Path copied to clipboard.": "Caminho copiado para a área de transferência.",
+    "Plak local": "Plak local",
+    "Plak local — sites": "Plak local — sites",
+    "Plak uses these to create new WordPress databases.": "O Plak usa estes dados para criar novos bancos de dados WordPress.",
+    "Plugins": "Plug-ins",
+    "Press Esc to clear.": "Pressione Esc para limpar.",
+    "Preview": "Pré-visualização",
+    "Quick search": "Pesquisa rápida",
+    "Read captured mail in the dashboard": "Ler o correio capturado no painel",
+    "Reading": "Lendo",
+    "Reading logs…": "Lendo logs…",
+    "Reading the local site folders.": "Lendo as pastas locais de sites.",
+    "Recent": "Recentes",
+    "Recently edited": "Editados recentemente",
+    "Redo": "Refazer",
+    "Refresh": "Atualizar",
+    "Refresh info": "Atualizar informações",
+    "Reload Caddy and the local stack": "Recarregue o Caddy e a stack local",
+    "Reload file": "Recarregar arquivo",
+    "Reload stack": "Recarregar stack",
+    "Remove": "Remover",
+    "Remove type filter": "Remover filtro de tipo",
+    "Request failed (:status).": "A solicitação falhou (:status).",
+    "Requests": "Solicitações",
+    "Restore": "Restaurar",
+    "Restore snapshot": "Restaurar backup",
+    "Retry": "Tentar novamente",
+    "Running": "Em execução",
+    "Runs WP-CLI inside this site. Arguments are passed to WP-CLI, not to a shell.": "Executa WP-CLI dentro deste site. Os argumentos são passados ao WP-CLI, não a um shell.",
+    "Save": "Salvar",
+    "Save (⌘S)": "Salvar (⌘S)",
+    "Saved": "Salvo",
+    "Saving…": "Salvando…",
+    "Search anything...": "Pesquisar qualquer coisa...",
+    "Search sites, services and actions": "Pesquisar sites, serviços e ações",
+    "Search sites, services and actions...": "Pesquisar sites, serviços e ações...",
+    "Search static sites": "Pesquisar sites estáticos",
+    "Search static sites…": "Pesquisar sites estáticos…",
+    "Search, navigation and actions": "Pesquisa, navegação e ações",
+    "Server reload initiated.": "Recarga do servidor iniciada.",
+    "Services": "Serviços",
+    "Services unavailable": "Serviços indisponíveis",
+    "Show shortcuts": "Mostrar atalhos",
+    "Showing the tail of a large log file.": "Mostrando o final de um arquivo de log grande.",
+    "Site": "Site",
+    "Site created.": "Site criado.",
+    "Site deleted.": "Site excluído.",
+    "Site mail": "Correio do site",
+    "Site not found.": "Site não encontrado.",
+    "Site preview": "Pré-visualização do site",
+    "Sites": "Sites",
+    "Size": "Tamanho",
+    "Slowest": "Mais lentas",
+    "Snapshot deleted.": "Backup excluído.",
+    "Snapshot not found.": "Backup não encontrado.",
+    "Snapshots": "Backups",
+    "Sort by — click to cycle": "Ordenar por — clique para alternar",
+    "Sort static sites": "Ordenar sites estáticos",
+    "Stack reload requested.": "Recarga da stack solicitada.",
+    "Static site not found": "Site estático não encontrado",
+    "Static · Edit in HTML editor": "Estático · Editar no editor HTML",
+    "Status": "Status",
+    "Status and access for the local stack": "Status e acesso da stack local",
+    "Stopped": "Parado",
+    "Switch to dark mode": "Mudar para modo escuro",
+    "Switch to light mode": "Mudar para modo claro",
+    "System": "Sistema",
+    "The HTML editor only opens static sites. If this is a WordPress site, use its HTML Editor plugin.": "O editor HTML abre apenas sites estáticos. Se for um site WordPress, use o plugin HTML Editor.",
+    "The local stack running on this machine.": "A stack local em execução nesta máquina.",
+    "Themes": "Temas",
+    "This answers only on the machine running Plak.": "Isto responde apenas na máquina que executa o Plak.",
+    "This operation has no network/subsite scope. Use plak wp with explicit --url/--network options. No data was modified.": "Esta operação não tem escopo de rede/subsite. Use plak wp com as opções --url/--network explícitas. Nenhum dado foi modificado.",
+    "Toggle theme": "Alternar tema",
+    "Tools": "Ferramentas",
+    "Top paths": "Caminhos principais",
+    "Traffic": "Tráfego",
+    "Try another site name.": "Tente outro nome de site.",
+    "Type": "Tipo",
+    "Undo": "Desfazer",
+    "Unknown": "Desconhecido",
+    "Unknown job.": "Job desconhecido.",
+    "Unknown log source.": "Origem de log desconhecida.",
+    "Unknown service.": "Serviço desconhecido.",
+    "Unsaved changes": "Alterações não salvas",
+    "Unsupported archive. Use zip, tar.gz, tgz or tar.": "Arquivo não suportado. Use zip, tar.gz, tgz ou tar.",
+    "Update": "Atualizar",
+    "Update check run against WordPress.org.": "Verificação de atualizações executada no WordPress.org.",
+    "Updated": "Atualizado",
+    "Upload failed. Check the connection and try again.": "O upload falhou. Verifique a conexão e tente novamente.",
+    "Upload from computer": "Enviar do computador",
+    "Uploaded :path": "Enviado :path",
+    "Uploading…": "Enviando…",
+    "Users": "Usuários",
+    "Version": "Versão",
+    "View mode": "Modo de visualização",
+    "WP version": "Versão do WP",
+    "WP-CLI command": "Comando WP-CLI",
+    "Web server · PHP": "Servidor web · PHP",
+    "Websites": "Sites",
+    "WordPress installation failed — check the logs.": "A instalação do WordPress falhou — verifique os logs.",
+    "WordPress or static": "WordPress ou estático",
+    "WordPress sites are not listed here. Use the HTML Editor plugin in wp-admin; this picker only opens static sites.": "Os sites WordPress não aparecem aqui. Use o plugin HTML Editor no wp-admin; este seletor abre apenas sites estáticos.",
+    "WordPress · Open site": "WordPress · Abrir site",
+    "Your local WordPress and HTML sites, running on this machine.": "Seus sites WordPress e HTML locais, rodando nesta máquina.",
+    "access": "acesso",
+    "activate": "ativar",
+    "active theme · cannot delete": "tema ativo · não é possível excluir",
+    "agent": "agente",
+    "agent ✓": "agente ✓",
+    "agent-ready (MCP)": "pronto para agentes (MCP)",
+    "all levels": "todos os níveis",
+    "avg": "méd",
+    "backups": "backups",
+    "check updates": "verificar atualizações",
+    "checking…": "verificando…",
+    "close": "fechar",
+    "confirm delete?": "Confirmar exclusão?",
+    "confirm restore?": "Confirmar restauração?",
+    "console": "console",
+    "copy": "copiar",
+    "create": "criar",
+    "create snapshot": "criar backup",
+    "creating…": "criando…",
+    "credentials": "credenciais",
+    "database": "banco de dados",
+    "db": "bd",
+    "deactivate": "desativar",
+    "delete": "excluir",
+    "download": "baixar",
+    "download snapshot": "baixar backup",
+    "edit": "editar",
+    "errors": "erros",
+    "exit": "sair",
+    "fatal only": "apenas fatais",
+    "files": "arquivos",
+    "filter sites by name or type…": "filtrar sites por nome ou tipo…",
+    "filter…": "filtrar…",
+    "full": "completo",
+    "import": "importar",
+    "inbox": "caixa de entrada",
+    "is ready.": "está pronto.",
+    "load remote images": "carregar imagens remotas",
+    "loading…": "carregando…",
+    "login": "entrar",
+    "logs": "logs",
+    "mail": "correio",
+    "max": "máx",
+    "must-use · cannot deactivate": "must-use · não é possível desativar",
+    "new-site-name": "nome-do-site",
+    "open Adminer": "abrir Adminer",
+    "open Mailpit": "abrir Mailpit",
+    "open dashboard": "abrir painel",
+    "open editor": "abrir editor",
+    "open site": "abrir site",
+    "open site ↗": "abrir site ↗",
+    "password": "senha",
+    "path": "caminho",
+    "php errors": "erros PHP",
+    "plugins": "plug-ins",
+    "preparing…": "preparando…",
+    "refresh": "atualizar",
+    "refresh info": "atualizar info",
+    "refreshing…": "atualizando…",
+    "reload": "recarregar",
+    "requests": "solicitações",
+    "restore": "restaurar",
+    "restore snapshot": "restaurar backup",
+    "run": "executar",
+    "run due now": "executar pendentes agora",
+    "search mail…": "pesquisar correio…",
+    "site-name": "nome-do-site",
+    "snapshot note (optional)": "nota do backup (opcional)",
+    "sort: modified": "ordem: modificado",
+    "sort: name": "ordem: nome",
+    "sort: size": "ordem: tamanho",
+    "static": "estático",
+    "static (no WordPress)": "estático (sem WordPress)",
+    "static_plural": "estáticos",
+    "stored in": "armazenado em",
+    "themes": "temas",
+    "trace": "rastreamento",
+    "traffic": "tráfego",
+    "type: WordPress": "tipo: WordPress",
+    "type: static": "tipo: estático",
+    "type: wp": "tipo: wp",
+    "update": "atualizar",
+    "user": "usuário",
+    "users": "usuários",
+    "warning+": "aviso+",
+    "working…": "trabalhando…",
+    "wp-cli failed.": "wp-cli falhou.",
+    "← back": "← voltar",
+    "↑ ↓ Navigate": "↑ ↓ Navegar",
+    "↵ Select": "↵ Selecionar"
+  }
+}
+PLAK_I18N_DICT_EOF
+        printf ";\n";
+        cat <<'PLAK_I18N_RUNTIME_EOF'
+/* Plak local i18n runtime.
+ *
+ * The dictionary is injected before this file as `window.PLAK_I18N`.
+ * Locale preference lives in localStorage and in the `plak_lang` cookie
+ * (domain-wide so db.plak.localhost can follow it). The URL never changes.
+ */
+(function () {
+  'use strict';
+
+  var DICT = window.PLAK_I18N || {};
+  var SUPPORTED = ['en', 'es', 'pt', 'fr'];
+  var NAMES = { en: 'English', es: 'Español', pt: 'Português', fr: 'Français' };
+  var STORAGE_KEY = 'plak-lang';
+  var COOKIE = 'plak_lang';
+  var ATTRS = ['placeholder', 'title', 'aria-label', 'alt'];
+  var current = detect();
+  var originalTitle = typeof document !== 'undefined' ? document.title : '';
+  var observer = null;
+  var started = false;
+
+  function normalize(value) {
+    var code = String(value || '').toLowerCase().split('-')[0];
+    return SUPPORTED.indexOf(code) === -1 ? null : code;
+  }
+
+  function readCookie(name) {
+    var parts = String(document.cookie || '').split(';');
+    var found = null;
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i].replace(/^\s+/, '');
+      if (part.indexOf(name + '=') === 0) {
+        found = decodeURIComponent(part.slice(name.length + 1));
+      }
+    }
+    return found;
+  }
+
+  function writeCookie(name, value) {
+    var maxAge = 60 * 60 * 24 * 365;
+    var base = '; path=/; max-age=' + maxAge + '; SameSite=Lax';
+    try {
+      document.cookie = name + '=' + encodeURIComponent(value) + base;
+      document.cookie = name + '=' + encodeURIComponent(value) + base + '; Domain=.plak.localhost';
+      document.cookie = 'adminer_lang=' + encodeURIComponent(value) + base + '; Domain=.plak.localhost';
+    } catch (error) {}
+  }
+
+  function detect() {
+    try {
+      var stored = normalize(localStorage.getItem(STORAGE_KEY));
+      if (stored) return stored;
+    } catch (error) {}
+    var cookie = normalize(readCookie(COOKIE));
+    if (cookie) return cookie;
+    var candidates = navigator.languages || [navigator.language];
+    for (var i = 0; i < candidates.length; i++) {
+      var candidate = normalize(candidates[i]);
+      if (candidate) return candidate;
+    }
+    return 'en';
+  }
+
+  function map(locale) {
+    return DICT[locale] || {};
+  }
+
+  function interpolate(value, replace) {
+    if (!replace) return value;
+    Object.keys(replace).forEach(function (key) {
+      value = value.split(':' + key).join(String(replace[key]));
+    });
+    return value;
+  }
+
+  function exact(value) {
+    var translated = map(current)[value];
+    return typeof translated === 'string' ? translated : null;
+  }
+
+  function countForm(singular, plural, count) {
+    return count === 1 ? singular : plural;
+  }
+
+  function patterns(value) {
+    var m;
+    if (current === 'en') return null;
+
+    // Relative times keep the compact dashboard format.
+    if (value === 'now') return { es: 'ahora', pt: 'agora', fr: 'maintenant' }[current];
+    if ((m = /^(\d+)m$/.exec(value))) return m[1] + ' min';
+    if ((m = /^(\d+)h$/.exec(value))) return m[1] + ' h';
+    if ((m = /^(\d+)d$/.exec(value))) return m[1] + ' d';
+    if ((m = /^(\d+)mo$/.exec(value))) {
+      return m[1] + ({ es: ' mes', pt: ' mês', fr: ' mois' }[current]);
+    }
+    if ((m = /^(\d+)y$/.exec(value))) {
+      return m[1] + ({ es: ' a', pt: ' a', fr: ' an' }[current]);
+    }
+
+    // Counts and plurals.
+    if ((m = /^(\d+) HTML files?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'archivo HTML', pt: 'arquivo HTML', fr: 'fichier HTML' }[current], { es: 'archivos HTML', pt: 'arquivos HTML', fr: 'fichiers HTML' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) files?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'archivo', pt: 'arquivo', fr: 'fichier' }[current], { es: 'archivos', pt: 'arquivos', fr: 'fichiers' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) sites?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'sitio', pt: 'site', fr: 'site' }[current], { es: 'sitios', pt: 'sites', fr: 'sites' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) of (\d+) sites?$/.exec(value))) {
+      return m[1] + ' ' + ({ es: 'de', pt: 'de', fr: 'sur' }[current]) + ' ' + m[2] + ' ' + countForm({ es: 'sitio', pt: 'site', fr: 'site' }[current], { es: 'sitios', pt: 'sites', fr: 'sites' }[current], Number(m[2]));
+    }
+    if ((m = /^(\d+) entries?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'entrada', pt: 'entrada', fr: 'entrée' }[current], { es: 'entradas', pt: 'entradas', fr: 'entrées' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) requests?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'solicitud', pt: 'solicitação', fr: 'requête' }[current], { es: 'solicitudes', pt: 'solicitações', fr: 'requêtes' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) users?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'usuario', pt: 'usuário', fr: 'utilisateur' }[current], { es: 'usuarios', pt: 'usuários', fr: 'utilisateurs' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) plugins?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'complemento', pt: 'plug-in', fr: 'plugin' }[current], { es: 'complementos', pt: 'plug-ins', fr: 'plugins' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) themes?$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'tema', pt: 'tema', fr: 'thème' }[current], { es: 'temas', pt: 'temas', fr: 'thèmes' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) installed$/.exec(value))) {
+      return m[1] + ' ' + countForm({ es: 'instalado', pt: 'instalado', fr: 'installé' }[current], { es: 'instalados', pt: 'instalados', fr: 'installés' }[current], Number(m[1]));
+    }
+    if ((m = /^(\d+) of 3 running$/.exec(value))) {
+      return m[1] + ' ' + ({ es: 'de 3 en ejecución', pt: 'de 3 em execução', fr: 'sur 3 en cours' }[current]);
+    }
+
+    // Dynamic messages from the dashboard and the API.
+    if ((m = /^(.+) finished\.$/.exec(value))) {
+      return translateText(m[1]) + ({ es: ' finalizado.', pt: ' concluído.', fr: ' terminé.' }[current]);
+    }
+    if ((m = /^(.+) failed — check the log and retry from the CLI if needed\.$/.exec(value))) {
+      return translateText(m[1]) + ({ es: ' falló — revisa el registro y reintenta desde la CLI si es necesario.', pt: ' falhou — verifique o log e tente novamente pela CLI se necessário.', fr: ' a échoué — consultez le journal et réessayez depuis la CLI si nécessaire.' }[current]);
+    }
+    if ((m = /^Snapshot of (.+)$/.exec(value))) {
+      return { es: 'Copia de ', pt: 'Backup de ', fr: 'Sauvegarde de ' }[current] + m[1];
+    }
+    if ((m = /^Restore (.+)$/.exec(value))) {
+      return { es: 'Restaurar ', pt: 'Restaurar ', fr: 'Restaurer ' }[current] + m[1];
+    }
+    if ((m = /^Import (.+)$/.exec(value))) {
+      return { es: 'Importar ', pt: 'Importar ', fr: 'Importer ' }[current] + m[1];
+    }
+    if ((m = /^(.+) is stopped\. Run plak enable\.$/.exec(value))) {
+      return m[1] + ({ es: ' está detenido. Ejecuta plak enable.', pt: ' está parado. Execute plak enable.', fr: ' est arrêté. Exécutez plak enable.' }[current]);
+    }
+    if ((m = /^(.+) deleted\.$/.exec(value))) return m[1] + ({ es: ' eliminado.', pt: ' excluído.', fr: ' supprimé.' }[current]);
+    if ((m = /^(.+) created\.$/.exec(value))) return m[1] + ({ es: ' creado.', pt: ' criado.', fr: ' créé.' }[current]);
+    if ((m = /^(.+) copied\.$/.exec(value))) return m[1] + ({ es: ' copiado.', pt: ' copiado.', fr: ' copié.' }[current]);
+    if ((m = /^wp-cli failed \((\d+)\)\.$/.exec(value))) {
+      return ({ es: 'wp-cli falló (', pt: 'wp-cli falhou (', fr: 'wp-cli a échoué (' }[current]) + m[1] + ').';
+    }
+    if (value === 'wp-cli returned nothing.') {
+      return { es: 'wp-cli no devolvió nada.', pt: 'wp-cli não retornou nada.', fr: 'wp-cli n’a rien renvoyé.' }[current];
+    }
+    if (value === 'Site name not provided for deletion.') {
+      return { es: 'No se proporcionó el nombre del sitio para eliminar.', pt: 'O nome do site não foi fornecido para exclusão.', fr: 'Nom du site non fourni pour la suppression.' }[current];
+    }
+    if (value === 'Invalid site name provided.') {
+      return { es: 'El nombre del sitio no es válido.', pt: 'O nome do site fornecido é inválido.', fr: 'Le nom du site fourni est invalide.' }[current];
+    }
+    if ((m = /^Upload failed \(code (\d+)\)\.$/.exec(value))) {
+      return { es: 'La subida falló (código ' + m[1] + ').', pt: 'O upload falhou (código ' + m[1] + ').', fr: 'Le téléversement a échoué (code ' + m[1] + ').' }[current];
+    }
+    if ((m = /^Could not create site: (.+)$/.exec(value))) {
+      return { es: 'No se pudo crear el sitio: ' + m[1], pt: 'Não foi possível criar o site: ' + m[1], fr: 'Impossible de créer le site : ' + m[1] }[current];
+    }
+    if ((m = /^Edit (.+) · Plak local$/.exec(value))) {
+      return { es: 'Editar ', pt: 'Editar ', fr: 'Modifier ' }[current] + m[1] + ' · Plak local';
+    }
+    if ((m = /^Delete (.+)\? This removes its files and database\.$/.exec(value))) {
+      return { es: '¿Eliminar ' + m[1] + '? Esto borra sus archivos y su base de datos.', pt: 'Excluir ' + m[1] + '? Isso remove os arquivos e o banco de dados.', fr: 'Supprimer ' + m[1] + ' ? Cela supprime ses fichiers et sa base de données.' }[current];
+    }
+    return null;
+  }
+
+  function translateText(value) {
+    if (typeof value !== 'string' || !value) return value;
+    var trimmed = value.trim();
+    if (!trimmed) return value;
+    var translated = exact(trimmed);
+    if (translated === null) translated = patterns(trimmed);
+    if (translated === null || translated === trimmed) return value;
+    var start = value.indexOf(trimmed);
+    if (start === -1) return value;
+    return value.slice(0, start) + translated + value.slice(start + trimmed.length);
+  }
+
+  function translateAttr(value) {
+    if (typeof value !== 'string' || !value) return value;
+    var trimmed = value.trim();
+    if (!trimmed) return value;
+    var translated = exact(trimmed);
+    if (translated === null) translated = patterns(trimmed);
+    return translated === null ? value : translated;
+  }
+
+  function ignored(element) {
+    if (!element || element.nodeType !== 1) return false;
+    var tag = element.tagName;
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'CODE' || tag === 'PRE' ||
+        tag === 'TEXTAREA' || tag === 'IFRAME' || tag === 'SVG' || tag === 'OBJECT') {
+      return true;
+    }
+    if (element.isContentEditable) return true;
+    if (element.hasAttribute && element.hasAttribute('data-i18n-ignore')) return true;
+    if (element.matches && element.matches('.site-name, .host-accent, .site-domain, .site-path, .editor-preview-hero, .editor-card-title, .console-out, .mail-html, .mail-from, .mail-subject, .mail-snippet, .comp-title, .comp-slug, .wp-cli-output, #file-select')) {
+      return true;
+    }
+    return false;
+  }
+
+  function inIgnored(node) {
+    var element = node.nodeType === 1 ? node : node.parentElement;
+    while (element) {
+      if (ignored(element)) return true;
+      element = element.parentElement;
+    }
+    return false;
+  }
+
+  function translateTextNode(node, force) {
+    var value = node.nodeValue;
+    if (!force && node.__plakRendered === value) return;
+    // Alpine can replace a translated node with a new English source. If the
+    // current value is neither the source nor our last render, adopt it.
+    if (node.__plakSource === undefined ||
+        (node.__plakRendered !== undefined && value !== node.__plakRendered)) {
+      node.__plakSource = value;
+    }
+    var source = node.__plakSource;
+    var next = translateText(source);
+    node.__plakRendered = next;
+    if (value !== next) node.nodeValue = next;
+  }
+
+  function translateAttrNode(element, attr, force) {
+    if (!element.hasAttribute(attr)) return;
+    var value = element.getAttribute(attr);
+    if (!element.__plakAttrs) element.__plakAttrs = {};
+    if (!element.__plakAttrRendered) element.__plakAttrRendered = {};
+    var rendered = element.__plakAttrRendered[attr];
+    if (!force && rendered === value) return;
+    if (element.__plakAttrs[attr] === undefined ||
+        (rendered !== undefined && value !== rendered)) {
+      element.__plakAttrs[attr] = value;
+    }
+    var source = element.__plakAttrs[attr];
+    var next = translateAttr(source);
+    element.__plakAttrRendered[attr] = next;
+    if (value !== next) element.setAttribute(attr, next);
+  }
+
+  function translateNode(node, force) {
+    if (!node || inIgnored(node)) return;
+    if (node.nodeType === 3) {
+      translateTextNode(node, force);
+      return;
+    }
+    if (node.nodeType === 11) {
+      for (var fragmentChild = node.firstChild; fragmentChild; fragmentChild = fragmentChild.nextSibling) {
+        translateNode(fragmentChild, force);
+      }
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    for (var i = 0; i < ATTRS.length; i++) {
+      translateAttrNode(node, ATTRS[i], force);
+    }
+    for (var child = node.firstChild; child; child = child.nextSibling) {
+      translateNode(child, force);
+    }
+  }
+
+  function apply(root, force) {
+    var target = root || document.body;
+    if (!target) return;
+    translateNode(target, !!force);
+    if (started) updateSwitcher();
+    if (originalTitle) {
+      var title = exact(originalTitle);
+      if (title === null) title = patterns(originalTitle);
+      if (title === null) title = originalTitle;
+      if (document.title !== title) document.title = title;
+    }
+  }
+
+  function updateSwitcher() {
+    var codes = document.querySelectorAll('[data-lang-code]');
+    for (var i = 0; i < codes.length; i++) codes[i].textContent = current.toUpperCase();
+    var options = document.querySelectorAll('[data-lang-option]');
+    for (var j = 0; j < options.length; j++) {
+      var active = options[j].getAttribute('data-lang-option') === current;
+      options[j].classList.toggle('active', active);
+      options[j].setAttribute('aria-selected', active ? 'true' : 'false');
+      var check = options[j].querySelector('.lang-check');
+      if (check) check.style.visibility = active ? 'visible' : 'hidden';
+    }
+    var selects = document.querySelectorAll('[data-lang-select]');
+    for (var k = 0; k < selects.length; k++) selects[k].value = current;
+  }
+
+  function setLocale(next) {
+    var normalized = normalize(next);
+    if (!normalized) return current;
+    current = normalized;
+    try { localStorage.setItem(STORAGE_KEY, current); } catch (error) {}
+    writeCookie(COOKIE, current);
+    document.documentElement.lang = current;
+    document.documentElement.removeAttribute('data-i18n-pending');
+    apply(document.body, true);
+    try {
+      window.dispatchEvent(new CustomEvent('plak:locale', { detail: { locale: current } }));
+    } catch (error) {}
+    return current;
+  }
+
+  function t(key, replace) {
+    var translated = exact(key);
+    if (translated === null) translated = patterns(key);
+    if (translated === null) translated = key;
+    return interpolate(translated, replace);
+  }
+
+  function tc(key, count) {
+    var translated = t(key);
+    var parts = translated.split('|');
+    return interpolate(count === 1 ? parts[0] : (parts[1] || parts[0]), { count: count });
+  }
+
+  function bindSwitchers() {
+    var toggles = document.querySelectorAll('[data-lang-toggle]');
+    for (var i = 0; i < toggles.length; i++) {
+      if (toggles[i].__plakBound) continue;
+      toggles[i].__plakBound = true;
+      toggles[i].addEventListener('click', function (event) {
+        event.stopPropagation();
+        var wrap = this.closest('[data-lang-wrap]') || this.parentElement;
+        var menu = wrap && wrap.querySelector('[data-lang-menu]');
+        if (!menu) return;
+        var opening = menu.hidden;
+        menu.hidden = !opening;
+        this.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      });
+    }
+    var options = document.querySelectorAll('[data-lang-option]');
+    for (var j = 0; j < options.length; j++) {
+      if (options[j].__plakBound) continue;
+      options[j].__plakBound = true;
+      options[j].addEventListener('click', function () {
+        setLocale(this.getAttribute('data-lang-option'));
+        var wrap = this.closest('[data-lang-wrap]');
+        var toggle = wrap && wrap.querySelector('[data-lang-toggle]');
+        var menu = wrap && wrap.querySelector('[data-lang-menu]');
+        if (menu) menu.hidden = true;
+        if (toggle) toggle.setAttribute('aria-expanded', 'false');
+      });
+    }
+    var selects = document.querySelectorAll('[data-lang-select]');
+    for (var k = 0; k < selects.length; k++) {
+      if (selects[k].__plakBound) continue;
+      selects[k].__plakBound = true;
+      selects[k].addEventListener('change', function () {
+        setLocale(this.value);
+      });
+    }
+    if (!document.__plakLangOutside) {
+      document.__plakLangOutside = true;
+      document.addEventListener('click', function (event) {
+        var wraps = document.querySelectorAll('[data-lang-wrap]');
+        for (var i = 0; i < wraps.length; i++) {
+          if (wraps[i].contains(event.target)) continue;
+          var menu = wraps[i].querySelector('[data-lang-menu]');
+          var toggle = wraps[i].querySelector('[data-lang-toggle]');
+          if (menu) menu.hidden = true;
+          if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        }
+      });
+      document.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') return;
+        var menus = document.querySelectorAll('[data-lang-menu]');
+        for (var i = 0; i < menus.length; i++) menus[i].hidden = true;
+        var toggles = document.querySelectorAll('[data-lang-toggle]');
+        for (var j = 0; j < toggles.length; j++) toggles[j].setAttribute('aria-expanded', 'false');
+      });
+    }
+  }
+
+  function startObserver() {
+    if (observer || typeof MutationObserver === 'undefined') return;
+    observer = new MutationObserver(function (mutations) {
+      for (var i = 0; i < mutations.length; i++) {
+        var mutation = mutations[i];
+        if (mutation.type === 'characterData') {
+          translateNode(mutation.target, false);
+        } else if (mutation.type === 'childList') {
+          for (var j = 0; j < mutation.addedNodes.length; j++) translateNode(mutation.addedNodes[j], false);
+        } else if (mutation.type === 'attributes') {
+          var attr = mutation.attributeName;
+          if (ATTRS.indexOf(attr) === -1) continue;
+          translateAttrNode(mutation.target, attr, false);
+        }
+      }
+    });
+    observer.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ATTRS
+    });
+  }
+
+  function init() {
+    if (started) return;
+    started = true;
+    document.documentElement.lang = current;
+    apply(document.body, false);
+    bindSwitchers();
+    startObserver();
+    document.documentElement.removeAttribute('data-i18n-pending');
+  }
+
+  // Hide the body until the first non-English pass is applied. English never
+  // needs the pending state, so a missing i18n.js cannot hide the dashboard.
+  if (current !== 'en') document.documentElement.setAttribute('data-i18n-pending', '');
+
+  window.PlakI18n = {
+    get locale() { return current; },
+    supported: SUPPORTED,
+    names: NAMES,
+    normalize: normalize,
+    detect: detect,
+    t: t,
+    tc: tc,
+    translateText: translateText,
+    translateAttr: translateAttr,
+    setLocale: setLocale,
+    apply: apply,
+    refresh: function () { apply(document.body, false); bindSwitchers(); },
+    init: init
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+  document.addEventListener('alpine:initialized', function () { apply(document.body); });
+})();
+PLAK_I18N_RUNTIME_EOF
+    } > "$gui_dir/i18n.js.tmp" || return 1
+    mv "$gui_dir/i18n.js.tmp" "$gui_dir/i18n.js" || return 1
+}
+
 # --- HTML Editor Assets ---
 deploy_html_editor() {
     local editor_dir="${1:-$GUI_DIR/editor}"
@@ -22858,6 +24624,20 @@ a { color: inherit; }
   border-color: var(--action-border);
   color: var(--action-fg);
 }
+.lang-select-wrap { display: inline-flex; align-items: center; }
+.lang-select-wrap select {
+  min-height: 32px;
+  padding: .35rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lang-select-wrap select:hover { border-color: var(--accent); color: var(--accent); }
 .status {
   min-width: 6rem;
   color: var(--accent);
@@ -23163,6 +24943,8 @@ html[data-theme="light"] .status { color: var(--muted); }
 
 /* `hidden` must win over the flex button rule: Close is embed-only. */
 .actions [hidden] { display: none !important; }
+
+html[data-i18n-pending] body { visibility: hidden; }
 PLAK_EDITOR_ASSET_EOF
     cat > "$editor_dir/editor.js" <<'PLAK_EDITOR_ASSET_EOF'
 (() => {
@@ -23734,7 +25516,7 @@ PLAK_EDITOR_ASSET_EOF
       button.type = 'button';
       button.textContent = 'Reload file';
       button.addEventListener('click', () => {
-        if (confirm('Discard your unsaved changes and reload the file?')) {
+        if (confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes and reload the file?') : 'Discard your unsaved changes and reload the file?')) {
           loadFile(state.file, true).catch((error) => showBanner(error.message, true));
         }
       });
@@ -24023,7 +25805,7 @@ PLAK_EDITOR_ASSET_EOF
       const data = await upload(file);
       imageUrl.value = data.url;
       updateImagePreview();
-      imageUploadStatus.textContent = `Uploaded ${data.path}`;
+      imageUploadStatus.textContent = window.PlakI18n ? window.PlakI18n.t('Uploaded :path', { path: data.path }) : `Uploaded ${data.path}`;
     } catch (error) {
       imageUploadStatus.textContent = error.message;
     } finally {
@@ -24032,7 +25814,7 @@ PLAK_EDITOR_ASSET_EOF
   }
 
   async function loadFile(file, force = false) {
-    if (!force && state.dirty && !confirm('Discard your unsaved changes?')) return;
+    if (!force && state.dirty && !confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes?') : 'Discard your unsaved changes?')) return;
     state.loading = true;
     updateChrome();
     showBanner('');
@@ -24115,7 +25897,7 @@ PLAK_EDITOR_ASSET_EOF
   fileSelect.addEventListener('change', () => {
     const next = fileSelect.value;
     if (next === state.file) return;
-    if (state.dirty && !confirm('Discard your unsaved changes?')) {
+    if (state.dirty && !confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes?') : 'Discard your unsaved changes?')) {
       fileSelect.value = state.file;
       return;
     }
@@ -24170,7 +25952,7 @@ PLAK_EDITOR_ASSET_EOF
 
   function requestClose() {
     if (!embed || window.parent === window) return;
-    if (state.dirty && !confirm('Discard your unsaved changes?')) return;
+    if (state.dirty && !confirm(window.PlakI18n ? window.PlakI18n.t('Discard your unsaved changes?') : 'Discard your unsaved changes?')) return;
     window.parent.postMessage({ type: 'plak-editor-close' }, '*');
   }
 
@@ -24281,6 +26063,7 @@ header('Referrer-Policy: no-referrer');
   }
 })();
 </script>
+<script src="/i18n.js?v=<?= (int) @filemtime(__DIR__ . '/../i18n.js') ?>"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700;750&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -24312,6 +26095,14 @@ header('Referrer-Policy: no-referrer');
     <button type="button" id="undo" class="icon" disabled title="Undo" aria-label="Undo">↶</button>
     <button type="button" id="redo" class="icon" disabled title="Redo" aria-label="Redo">↷</button>
     <button type="button" id="theme-toggle" class="icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    <label class="lang-select-wrap" title="Language">
+      <select data-lang-select aria-label="Language">
+        <option value="en">EN</option>
+        <option value="es">ES</option>
+        <option value="pt">PT</option>
+        <option value="fr">FR</option>
+      </select>
+    </label>
     <button type="button" id="code-toggle">Code</button>
     <button type="button" id="save" class="primary" disabled title="Save (⌘S)">Save</button>
     <span id="status" class="status">Loading…</span>
@@ -24506,6 +26297,23 @@ PLAK_EDITOR_ASSET_EOF
   const file = page === '/' ? 'index.html' : page.replace(/^\/+/, '');
   const editorUrl = `${editorOrigin}/editor/?site=${encodeURIComponent(site)}&embed=1&file=${encodeURIComponent(file)}`;
 
+  // The launcher runs on the site's own origin, so the dashboard's localStorage
+  // preference is not available. Follow the browser language for this label.
+  const loaderLang = (() => {
+    const candidates = navigator.languages || [navigator.language];
+    for (const value of candidates) {
+      const code = String(value || '').toLowerCase().split('-')[0];
+      if (['en', 'es', 'pt', 'fr'].includes(code)) return code;
+    }
+    return 'en';
+  })();
+  const loaderLabel = {
+    en: 'Edit site',
+    es: 'Editar sitio',
+    pt: 'Editar site',
+    fr: 'Modifier le site'
+  }[loaderLang] || 'Edit site';
+
   const hostElement = document.createElement('div');
   hostElement.id = 'plak-editor-host';
   hostElement.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
@@ -24572,7 +26380,7 @@ PLAK_EDITOR_ASSET_EOF
         .launcher { right: 14px; bottom: 14px; }
       }
     </style>
-    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&lt;/&gt;</span> Edit site</button>
+    <button type="button" class="launcher" id="plak-edit-launcher"><span aria-hidden="true">&lt;/&gt;</span> ${loaderLabel}</button>
     <div class="overlay" id="plak-edit-overlay" hidden>
       <div class="frame-wrap">
         <iframe id="plak-edit-frame" title="Plak HTML editor"></iframe>

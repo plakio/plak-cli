@@ -273,6 +273,14 @@ grep -q 'paletteOpen' "$tmpdir/first-index" || fail 'dashboard lacks the command
 grep -q 'Keyboard shortcuts' "$tmpdir/first-index" || fail 'dashboard lacks the shortcuts sheet'
 grep -q 'action=static_sites' "$tmpdir/first-index" || fail 'dashboard does not load static sites'
 grep -q 'action=services' "$tmpdir/first-index" || fail 'dashboard does not load services'
+grep -q 'data-lang-toggle' "$tmpdir/first-index" || fail 'dashboard lacks the language switcher'
+grep -q 'data-lang-option="es"' "$tmpdir/first-index" || fail 'dashboard lacks the Spanish language option'
+grep -q '/i18n.js' "$tmpdir/first-index" || fail 'dashboard does not load i18n.js'
+grep -q 'data-i18n-pending' "$GUI_DIR/index.php" || fail 'dashboard lacks the i18n first-paint guard'
+grep -q '"es"' "$GUI_DIR/i18n.js" || fail 'dashboard i18n assets lack Spanish'
+grep -q '"pt"' "$GUI_DIR/i18n.js" || fail 'dashboard i18n assets lack Portuguese'
+grep -q '"fr"' "$GUI_DIR/i18n.js" || fail 'dashboard i18n assets lack French'
+grep -q 'window.PlakI18n' "$GUI_DIR/i18n.js" || fail 'dashboard i18n runtime is missing'
 grep -q '<body x-data="dashboard">' "$tmpdir/first-index" || fail 'dashboard must not call init twice via x-init'
 grep -q "o: 'overview', w: 'websites', e: 'editor', s: 'services'" "$tmpdir/first-index" || fail 'dashboard shortcut mapping deviates from the panel convention'
 grep -q 'Cache-Control: no-store' "$GUI_DIR/index.php" || fail 'dashboard HTML can be cached after an upgrade'
@@ -677,6 +685,8 @@ grep -q "remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1" plak.sh || f
 grep -q 'deploy_adminer_theme' commands/site/reload || fail "reload does not refresh the Adminer theme"
 grep -q 'plak-local-context' adminer-theme/adminer.js || fail "Adminer lacks the local context bar"
 grep -q 'plak-has-local-bar' adminer-theme/adminer.css || fail "Adminer lacks the local context offset styles"
+grep -q 'plak_lang' adminer-theme/adminer.js || fail "Adminer does not follow the local language cookie"
+grep -q 'adminer_lang' shared/site/runtime || fail "Adminer entry point does not bridge the local language"
 
 # Network mutations without an explicit scope are refused before execution.
 sed -i "s|^\\\$plak_site_path = .*|\\\$plak_site_path = '$tmpdir/deleted-cellar/plak';|" "$GUI_DIR/api.php"

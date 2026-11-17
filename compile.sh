@@ -40,6 +40,28 @@ grep -vFx 'main "$@"' "$MAIN_SCRIPT" > "$OUTPUT_FILE"
         echo ""
     done
 
+    echo "# --- Local i18n Assets ---"
+    if [ ! -f assets/i18n.js ] || [ ! -f assets/lang/i18n.json ]; then
+        echo "Error: local i18n assets are missing." >&2
+        exit 1
+    fi
+    echo 'deploy_i18n_assets() {'
+    echo '    local gui_dir="${1:-$GUI_DIR}"'
+    echo '    mkdir -p "$gui_dir" || return 1'
+    echo '    {'
+    echo '        printf "window.PLAK_I18N = \n";'
+    echo '        cat <<'"'"'PLAK_I18N_DICT_EOF'"'"''
+    cat assets/lang/i18n.json
+    echo 'PLAK_I18N_DICT_EOF'
+    echo '        printf ";\n";'
+    echo '        cat <<'"'"'PLAK_I18N_RUNTIME_EOF'"'"''
+    cat assets/i18n.js
+    echo 'PLAK_I18N_RUNTIME_EOF'
+    echo '    } > "$gui_dir/i18n.js.tmp" || return 1'
+    echo '    mv "$gui_dir/i18n.js.tmp" "$gui_dir/i18n.js" || return 1'
+    echo '}'
+    echo ""
+
     echo "# --- HTML Editor Assets ---"
     echo 'deploy_html_editor() {'
     echo '    local editor_dir="${1:-$GUI_DIR/editor}"'

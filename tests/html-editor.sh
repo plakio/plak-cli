@@ -85,6 +85,9 @@ grep -q 'id="undo"' "$GUI_DIR/editor/index.php" || fail "editor lacks the undo c
 grep -q 'id="redo"' "$GUI_DIR/editor/index.php" || fail "editor lacks the redo control"
 grep -q 'id="theme-toggle"' "$GUI_DIR/editor/index.php" || fail "editor lacks the theme control"
 grep -q 'plak-editor-theme' "$GUI_DIR/editor/index.php" || fail "editor theme is not persisted"
+grep -q '/i18n.js' "$GUI_DIR/editor/index.php" || fail "editor does not load i18n.js"
+grep -q 'data-lang-select' "$GUI_DIR/editor/index.php" || fail "editor lacks the language selector"
+grep -q 'data-i18n-pending' "$GUI_DIR/editor/editor.css" || fail "editor lacks the i18n first-paint guard"
 
 editor_port=$(free_port)
 router_port=$(free_port)
