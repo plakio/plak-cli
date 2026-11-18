@@ -135,8 +135,11 @@ plak panel purchases --json
   `manual_review` and `provisioning_unknown` are ambiguous. Any status the CLI
   does not recognize is also treated as ambiguous (exit 3), never as success.
   Stop and check the panel/support; do not create another purchase.
-- A pending request has a one-day `expires_at`. The CLI reports `expired` and
-  asks for an explicit `--new`; it never silently creates a second request.
+- `expires_at` applies to `pending_approval`, `approved` and `checkout_open`.
+  The CLI reports `expired` and asks for an explicit `--new`; it never silently
+  creates a second request. `--new` is only accepted after `failed`/`cancelled`
+  or an expired approval, never for `paid`, `provisioning`, ambiguous or
+  unresolved requests.
 - `purchases` lists the local request records (safe fields only). The token is
   never stored there or printed in `--json`.
 - Deleting a paid server schedules cancellation for the end of the paid

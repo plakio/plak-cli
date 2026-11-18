@@ -244,6 +244,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 rec["status"] = "checkout_open"
             elif name == "web-paid":
                 rec["status"] = "paid"
+                rec["expires_at"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).isoformat()
             elif name == "web-provisioning":
                 rec["status"] = "provisioning"
             elif name == "web-fulfilled":
@@ -859,6 +860,12 @@ purchase_status_check web-fulfilled 31 41 fulfilled 0 0
 purchase_status_check web-cancelled 12 13 cancelled 1 0
 purchase_status_check web-manual 12 14 manual_review 3 1
 purchase_status_check web-paused 12 13 paused 3 1
+set +e
+./plak.sh panel buy-server --offer 20 --region 13 --name web-paid --new --json > "$tmpdir/paid-new.json" 2>"$tmpdir/paid-new.err"
+paid_new_rc=$?
+set -e
+[ "$paid_new_rc" -ne 0 ] || fail "--new accepted a paid request"
+grep -q "is 'paid'" "$tmpdir/paid-new.err" || fail "paid --new guidance"
 set +e
 ./plak.sh panel buy-server --offer 12 --region 14 --name web-manual --new --json > "$tmpdir/manual-new.json" 2>"$tmpdir/manual-new.err"
 manual_new_rc=$?

@@ -1,6 +1,6 @@
 ---
 name: plak-cli
-description: "Use when working with Plak CLI: managing local WordPress/static sites, the https://plak.localhost dashboard, Plak install/status/service workflows, database backups, pull/push migrations, /etc/hosts entries, SSH remotes with site bindings, SSH keys, or Plak release/Homebrew maintenance."
+description: "Use when working with Plak CLI: local WordPress/static sites, the https://plak.localhost dashboard, install/status/service workflows, database backups, pull/push migrations, /etc/hosts entries, SSH remotes with site bindings, SSH keys, Plak Connect and panel sites/servers, server offers and purchase requests, or Plak release/Homebrew maintenance."
 ---
 
 # Plak CLI
@@ -21,6 +21,9 @@ Use Plak for local developer workflows around:
 - Plak uses FrankenPHP as the Caddy server. Do not install or require a separate `caddy` binary unless the user explicitly asks.
 - Plak site state lives under `~/Plak`; sites live under `~/Plak/Sites`.
 - The compiled distributable is `plak.sh`; source files are `main`, `shared/`, and `commands/`.
+- Panel purchases only create a request; the account holder approves/pays in the browser. Never approve or pay, open a Polar checkout with agent credentials, ask for card data, or treat `--yes` as financial approval.
+- Pairing defaults to `user:read` + `ssh:authorize`. `plak connect --billing` requests `billing:request`; the panel/holder can deny it. Verify `billing_granted` before claiming the machine can buy.
+- Never expose tokens, idempotency keys, Polar/checkout/customer-portal URLs in output, logs or commits. A paid-server deletion is scheduled for the end of the paid period, not immediate.
 
 ## Installation
 
@@ -34,11 +37,16 @@ curl -fsSL https://plak.sh/install | bash
 curl -fsSL https://plak.sh/install | PLAK_YES=1 bash
 
 # CLI only, without the local stack
-curl -fsSL https://plak.sh/install | PLAK_CLI_ONLY=1 bash
+curl -fsSL https://plak.sh/install | PLAK_YES=1 PLAK_CLI_ONLY=1 bash
 
 # Via Homebrew (macOS)
 brew install plakio/tap/plak-cli
 ```
+
+For `plak connect --billing` and the panel purchase flow, use Plak **0.4.90 or
+newer**. The full local stack is required for `plak add`, local WordPress and
+static sites; use `PLAK_CLI_ONLY=1` only when the user does not want local
+sites.
 
 `PLAK_YES=1` installs Homebrew on macOS when needed and persists its
 `shellenv` for new shells. It may still need a sudo password. Run it in a
@@ -57,7 +65,8 @@ On WSL, this also installs into the Windows user profile for `codex`,
 it. Use `--no-windows` to install only in WSL. Hermes and Pi are installed only
 in WSL because their Windows discovery paths are not verified.
 
-Hermes installs to `~/.hermes/skills/plak-cli/SKILL.md`.
+Hermes installs to `~/.hermes/skills/plak-cli/SKILL.md`. Re-run
+`plak skill install` after `plak upgrade` to refresh the installed skill.
 
 ## Agent-friendly interface
 
@@ -75,7 +84,7 @@ WP-CLI's exit code. Use `plak wp --help` for Plak's wrapper help.
 
 **Error handling**:
 
-- Exit codes: `0` = success, `1` = usage/config error, `2` = not found, `3` = binding/integrity error.
+- Exit codes: `0` = success, `1` = usage/config or terminal purchase failure, `2` = not found, `3` = binding/integrity error, purchase timeout or ambiguous purchase status.
 - Errors go to STDERR; data goes to STDOUT. Use `data=$(plak ... 2>/dev/null)` to capture only data.
 - When a TTY is unavailable AND a confirmation prompt is needed, the command exits with a clear error telling you which flag to pass (`--yes`, `--force`, etc.) — it does **not** auto-confirm.
 
@@ -258,19 +267,32 @@ plak sshkey view [<name>]
 
 # Panel account (device flow, Botmail-style; secret never via argv)
 plak connect [--billing] [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
-plak connect --manual [--panel URL] [--dev] --token-stdin   # echo "$KEY" | plak connect --manual --token-stdin
+plak connect --manual [--panel URL] [--dev] --token-stdin   # printf '%s\n' "$KEY" | plak connect --manual --token-stdin
 plak connect status [--json]
 plak disconnect [--yes]   # local forget only; revoke in panel Perfil > API Keys
 ```
 
 **Panel connection**: `plak connect` requests a pairing and polls until you
-approve it in the panel (`approve_url`, 1 click). `--billing` requests
-`billing:request` so the device can buy servers; the panel/holder still
-decides and can deny it. Credential lives in
-`${PLAK_HOME:-~/.plak}/connection.json` (dir `700`, file `600`); `--json`
-outputs never include the secret. `plak connect status` shows the granted
-scopes and whether purchases are available. Dev behind Cloudflare Access needs
-`PLAK_CF_ACCESS_TOKEN` (service token, different from the Plak API key).
+approve it in the panel (`approve_url`, 1 click). The default pairing grants
+`user:read` + `ssh:authorize`. `--billing` requests `billing:request` so the
+device can request server purchases; the panel/holder still decides and can
+deny it. On the approval page, keep the optional `billing:request` checkbox
+checked when purchases are wanted; it is checked by default when the device
+requested it.
+
+`plak connect status --json` reports `scopes` and `billing_granted`
+(`true`/`false`/`null` if the panel did not report scopes). Require
+`billing_granted:true` before claiming the machine can buy; if false or null,
+use `plak connect --billing` again or a manual API key with `billing:request`.
+Reconnecting replaces the saved credential; a device pairing only grants
+`user:read` + `ssh:authorize` (+ optional `billing:request`), so use a manual
+key with `servers:write`/`sites:write` if those scopes are needed.
+
+The credential lives in `${PLAK_HOME:-~/.plak}/connection.json` (dir `700`,
+file `600`); `--json` outputs never include the secret. Never ask the user to
+paste an API key into chat: they run the manual command themselves. Dev behind
+Cloudflare Access needs `PLAK_CF_ACCESS_TOKEN` (service token, different from
+the Plak API key).
 
 **Panel resources (connected account only)**:
 `plak panel sites [--all] [--json]`, `plak panel site <id|domain>`,
@@ -289,31 +311,58 @@ stop with an explanation); manual remotes unchanged.
 async creation is polled, never false success). `create-server` is legacy:
 a panel with per-server billing answers `servers.purchase_required` and must
 guide to `offers`/`buy-server`, never to a global or comped fallback.
-**Panel purchases (CLI-50/51)**: `offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]`
-lists the public catalog (free accounts can browse), grouped by offer with
-family, provider plan, specs and regions. The family is optional (some
-providers omit it). The Plak plan is `code`; `plan` is the provider technical
-label, not a marketing/plan name. `buy-server --offer ID --region ID --name N
-[--json]` requests a server purchase; `purchase-request <id> [--wait SECS]
-[--poll SECS] [--json]` checks/polls it; `purchases [--json]` lists requests
-recorded on this machine. `offers` needs `user:read`; `buy-server` and
-`purchase-request` only need `billing:request`. Use `plak connect --billing`
-to request it during pairing; if the panel does not grant it, connect a
-manual API key with that scope. Pairing keys still cannot approve or pay.
-`manual_review`, `provisioning_unknown` and any unknown status are ambiguous
-(exit 3): stop and check the panel/support; never create another purchase.
-The CLI receives **only the internal `approval_url`**: give it to the account
-holder, who opens it in an authenticated browser. Never approve or pay for the
-holder, never open/pay a Polar checkout with agent credentials, never send
-prices, and never treat `--yes` as financial authorization. Re-running
-`buy-server` with the same offer/region/name resumes the stored idempotent
-request; after a timeout use `purchase-request <id>` or the same command,
-never a blind retry or a second purchase. Statuses: `pending_approval`,
-`approved`, `checkout_open`, `paid`, `provisioning`, `fulfilled` (success);
-`failed` and `cancelled` are terminal. `delete-server` on a paid
-server schedules cancellation for the end of the paid period, not immediate
-destruction; the holder cancels the subscription in the Polar portal. D14/D21
-are manual backend operations, not agent-authorized commands.
+**Panel purchases (CLI-50/51/52)**:
+- `offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]`
+  lists the public catalog (free accounts can browse), grouped by offer.
+  The Plak plan is `code`; `plan` is the provider technical label. Family is
+  optional. Needs `user:read`.
+- `buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS]
+  [--json] [--new]` creates a purchase request. It sends only offer/region/
+  name/idempotency key; never a price or Polar ID. Needs `billing:request`.
+- `purchase-request <id> [--wait SECS] [--poll SECS] [--json]` polls one
+  request without creating anything.
+- `purchases [--json]` lists local records with safe fields; it works without
+  a connection and never includes the token or idempotency key.
+- Use `plak connect --billing` during pairing. Require `billing_granted:true`
+  from `plak connect status --json`; if false/null, use a manual API key with
+  `billing:request`.
+- The CLI prints only the internal `approval_url`. Give it to the account
+  holder; they approve/pay in the browser. Never approve/pay, open a Polar
+  checkout with agent credentials, ask for card data, or treat `--yes` as
+  financial approval.
+- `--json` includes `request_id`, `status`, `approval_url`, `expires_at`,
+  `created_at`, `resumed`, `approval_required`, and optional `expired`,
+  `timed_out`/`ambiguous` flags. It never includes the token, idempotency key,
+  Polar checkout URL or customer portal URL. `approval_required` is true only
+  for `pending_approval`/`approved`/`checkout_open`.
+- Idempotency: the key is persisted before the POST in
+  `${PLAK_HOME:-$HOME/.plak}/panel-purchases.json` (dir `700`, file `600`).
+  Re-running with a known request id polls it without a new POST. After a
+  timeout/503, re-run the same command or `purchase-request <id>`; never use a
+  new key. A definitive 409/422 creates no request and marks the local attempt
+  failed. Corrupt local state fails closed.
+- `--new` only after a terminal/expired request. Never for `pending_approval`,
+  `approved`, `checkout_open`, `paid`, `provisioning`, `submitting`,
+  `manual_review` or `provisioning_unknown`.
+- Statuses: `pending_approval`/`approved`/`checkout_open` need the holder;
+  `paid`/`provisioning` wait; `fulfilled` is success (find the server with
+  `plak panel servers`; the response has no `server_id`); `failed`/`cancelled`
+  are terminal; `manual_review`/`provisioning_unknown`/unknown are ambiguous
+  (exit 3): stop and check panel/support; never create another purchase.
+- `expires_at` only applies to `pending_approval`/`approved`/`checkout_open`;
+  expired requires explicit `--new`.
+- `delete-server` on a paid server returns `deleted:false`, `scheduled:true`
+  with `task_id`; it is cancellation at the end of the paid period, not
+  immediate deletion. The holder cancels the subscription in the Polar portal.
+- D14/D21 are manual backend operations, not agent-authorized commands.
+
+```bash
+# Browse; never buy without an explicit user request.
+plak panel offers --json
+plak panel buy-server --offer 12 --region 13 --name web-1 --json
+# Give approval_url to the holder, then poll without creating another request:
+plak panel purchase-request 42 --wait 600 --poll 10 --json
+```
 **Panel WordPress (Fase B)**: `wp-overview|wp-themes|wp-plugins`,
 `wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc`,
 theme/plugin `activate|deactivate|update|install|delete`,
@@ -373,3 +422,13 @@ bash -n main shared/* shared/site/* commands/* commands/site/* compile.sh instal
 - If HTTPS warnings appear, run `plak trust`.
 - If ports 80/443 conflict with another local dev tool, use `plak ports`.
 - If you need to install Plak CLI first, see **Installation** above.
+- Panel connection: use `plak connect status --json`. `billing_granted:false`
+  or `null` means the machine cannot claim purchase capability; run
+  `plak connect --billing` or connect a manual key with `billing:request`.
+- `plak panel offers` needs `user:read`; `buy-server`/`purchase-request` need
+  `billing:request`. A 403 names the missing scope.
+- Purchase timeout/503: re-run the same command or `purchase-request <id>`;
+  never use a new idempotency key. `manual_review`/`provisioning_unknown`:
+  stop and check panel/support; do not create another purchase.
+- Paid `delete-server` is scheduled for the end of the paid period; report the
+  `task_id`, not immediate deletion.

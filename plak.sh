@@ -12653,8 +12653,9 @@ Create and operate your own panel servers and sites (write API).
   --wait SECS       Max seconds to wait for provisioning (default 600 for
                     create-server; 0 for buy-server/purchase-request).
   --poll SECS       Poll interval (default 15 for create-server; 10 for purchases).
-  --new             Start a new request for the same offer/region/name after a
-                    terminal one (failed/cancelled/expired). Never for an open one.
+  --new             Start a new request only after failed/cancelled or an
+                    expired approval. Never for paid, provisioning or
+                    ambiguous/open requests.
   --yes             Only skips delete/restart prompts. It never approves or
                     pays a purchase.
   --json            Machine-readable output (never includes secrets).
@@ -13366,11 +13367,18 @@ plak_panel_buy_server() {
                     plak_ui_error "Existing purchase request #${req_id:-?} is '${status}'. It needs panel/support review; the CLI will not create another purchase."
                     return 1
                     ;;
-                pending_approval|approved|checkout_open|paid|provisioning)
+                pending_approval|approved|checkout_open)
                     if [ "$existing_expired" != "1" ]; then
                         plak_ui_error "Existing purchase request #${req_id:-?} is still '${status}'. Use 'plak panel purchase-request ${req_id:-<id>}' instead of creating another one."
                         return 1
                     fi
+                    ;;
+                paid|provisioning)
+                    # The approval window may have passed, but payment or
+                    # provisioning is already in progress. Never start a
+                    # second purchase from an expired timestamp.
+                    plak_ui_error "Existing purchase request #${req_id:-?} is '${status}'. Wait and check it with 'plak panel purchase-request ${req_id:-<id>}'; do not create another purchase."
+                    return 1
                     ;;
                 fulfilled)
                     plak_ui_error "A server from purchase request #${req_id:-?} is already fulfilled. Use a different --name or manage it in the panel."
