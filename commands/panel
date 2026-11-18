@@ -1,6 +1,6 @@
 # plak panel — own panel resources (CLI-25).
 #
-# Reads (never writes) the connected account's sites and servers from the
+# Reads and writes the connected account's sites and servers through the
 # panel personal API. Local sites (`plak list`) and panel resources are
 # never mixed: everything here is explicitly labeled as panel data and
 # resolved through the saved connection (panel URL + token + identity).
@@ -13,7 +13,11 @@ Usage:
   plak panel servers [--page N] [--per-page N] [--all] [--json] [--panel URL] [--dev]
   plak panel server <id|name> [--json] [--panel URL] [--dev]
   plak panel providers [--json]
-  plak panel create-server --name N --provider ID --region ID --plan ID [--json]
+  plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
+  plak panel buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS] [--json] [--new]
+  plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
+  plak panel purchases [--json]
+  plak panel create-server --name N --provider ID --region ID --plan ID [--json] (legacy)
   plak panel delete-server <id|name> [--yes] [--json]
   plak panel restart-server <id|name> [--yes] [--json]
   plak panel create-site --domain D --server <id|name> [--json]
@@ -36,7 +40,14 @@ Usage:
   Details per area: plak panel <any-cmd> help   (e.g. plak panel db-add help)
   plak panel link <panel-site> <local-site> [--system-user USER] [--path PATH]
 
-List and inspect your own panel sites and servers (read-only).
+List, inspect and operate your own panel sites and servers.
+
+Panel purchases (billing:request): offers, buy-server, purchase-request and
+purchases. The CLI never approves or pays: the account holder opens the
+internal approval_url in an authenticated browser. --yes is not approval.
+Re-running buy-server with the same offer/region/name resumes the stored
+request; after a timeout use purchase-request <id>, never a blind retry.
+Legacy create-server may answer purchase_required and points to the new flow.
 
   --page N / --per-page N   Pagination (per-page 1-100, default 25).
   --all                     Walk every page (for inventories and selection).
@@ -95,7 +106,17 @@ plak_panel_get() {
             if [ "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" = "account.blocked" ]; then
                 plak_ui_error "Account blocked. Contact support."
             else
-                plak_ui_error "Forbidden for this token. Check 'plak connect status'."
+                case "$url" in
+                    */api/v1/billing/offers*)
+                        plak_ui_error "Token lacks user:read. Reconnect or create a key with user:read in Perfil > API Keys."
+                        ;;
+                    */api/v1/billing/purchase-requests*)
+                        plak_ui_error "Token lacks the billing:request scope. Grant it in the panel (Perfil > API Keys, tick billing:request). It can request a purchase and check its status; it cannot approve or pay."
+                        ;;
+                    *)
+                        plak_ui_error "Forbidden for this token. Check 'plak connect status'."
+                        ;;
+                esac
             fi
             return 1
             ;;
@@ -311,6 +332,21 @@ plak_panel() {
         providers)
             plak_panel_require_connection "$@" || return 1
             plak_panel_providers "$@"
+            ;;
+        offers)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_offers "$@"
+            ;;
+        buy-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_buy_server "$@"
+            ;;
+        purchase-request|purchase)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_purchase_request "$@"
+            ;;
+        purchases|purchase-requests)
+            plak_panel_purchases "$@"
             ;;
         create-server)
             plak_panel_require_connection "$@" || return 1

@@ -1,6 +1,6 @@
 # plak connect — pairing con el panel estilo Botmail (CLI-24).
 #
-#   plak connect [--panel URL] [--dev] [--no-open] [--wait S] [--poll S]
+#   plak connect [--billing] [--panel URL] [--dev] [--no-open] [--wait S] [--poll S]
 #   plak connect --manual [--panel URL] [--dev] [--token-stdin]
 #   plak connect status [--json]
 #   plak disconnect [--yes]
@@ -12,7 +12,7 @@
 plak_connect_help() {
     cat <<'HELP'
 Usage:
-  plak connect [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
+  plak connect [--billing] [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
   plak connect --manual [--panel URL] [--dev] [--token-stdin] [--json]
   plak connect status [--json]
   plak disconnect [--yes]
@@ -21,6 +21,11 @@ Connect this machine to your Plak panel account (device flow, Botmail-style):
 requests a pairing, shows/opens the approval link, polls until you approve
 it in the panel with 1 click. No secrets to copy by hand.
 
+  --billing     Request billing:request when pairing so this device can
+                request server purchases. The panel/holder must grant it;
+                the CLI still cannot approve or pay. Without this flag the
+                pairing keeps the default user:read + ssh:authorize scopes.
+                If the panel does not grant it, connect a manual API key.
   --panel URL   Panel origin (default https://cloud.plak.io).
                 Use an explicit URL for staging/dev, e.g. http://127.0.0.1:8000.
   --dev         Shorthand for $PLAK_PANEL_DEV_URL (default http://127.0.0.1:8000).
@@ -33,7 +38,7 @@ it in the panel with 1 click. No secrets to copy by hand.
   --json        Machine-readable output (never includes the secret).
 
 Other actions:
-  plak connect status     Show panel, account and token validity.
+  plak connect status     Show panel, account, token validity and scopes.
   plak disconnect [--yes] Forget the local credential. Revoke the key itself
                           in the panel: Perfil > API Keys. Revoking there does
                           not delete other connections.
@@ -55,16 +60,28 @@ plak_connect_status_cmd() {
     tmp=$(mktemp) || return 1
     if plak_connect_validate "$PLAK_SAVED_PANEL" "$PLAK_SAVED_TOKEN" "$cf_token" >"$tmp"; then
         user_json=$(cat "$tmp"); rm -f "$tmp"
-        local name email uid
+        local name email uid scopes_json billing_granted scopes_text scopes_out="null"
         name=$(plak_connect_json_get "$user_json" "data.name")
         email=$(plak_connect_json_get "$user_json" "data.email")
         uid=$(plak_connect_json_get "$user_json" "data.id")
+        scopes_json=$(plak_connect_capabilities_json "$user_json")
+        [ -n "$scopes_json" ] || scopes_json="${PLAK_SAVED_SCOPES_JSON:-}"
+        [ -n "$scopes_json" ] && scopes_out="$scopes_json"
+        billing_granted=$(plak_connect_billing_granted "$scopes_json")
+        scopes_text=$(plak_connect_scopes_text "$scopes_json")
         if [ "$json" -eq 1 ]; then
-            printf '{"connected":true,"panel_url":%s,"user":{"id":%s,"name":%s,"email":%s}}\n' \
+            printf '{"connected":true,"panel_url":%s,"user":{"id":%s,"name":%s,"email":%s},"scopes":%s,"billing_granted":%s}\n' \
                 "$(plak_json_string "$PLAK_SAVED_PANEL")" "${uid:-null}" \
-                "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+                "$(plak_json_string "$name")" "$(plak_json_string "$email")" \
+                "$scopes_out" "$billing_granted"
         else
             echo "Connected to $PLAK_SAVED_PANEL as ${name:-?} <${email:-?}>"
+            [ -n "$scopes_text" ] && echo "Scopes: $scopes_text"
+            case "$billing_granted" in
+                true) echo "Purchases: available (billing:request)." ;;
+                false) echo "Purchases: not available (missing billing:request)." ;;
+                *) echo "Purchases: unknown (panel did not report scopes)." ;;
+            esac
         fi
         return 0
     else
@@ -165,6 +182,10 @@ plak_connect_manual() {
         return 1
     fi
     user_json=$(cat "$tmp"); rm -f "$tmp"
+    local scopes_json billing_granted scopes_out="null"
+    scopes_json=$(plak_connect_capabilities_json "$user_json")
+    billing_granted=$(plak_connect_billing_granted "$scopes_json")
+    [ -n "$scopes_json" ] && scopes_out="$scopes_json"
     if ! plak_connect_save "$panel" "$token" "$user_json"; then
         plak_ui_error "Validated, but the credential could not be stored."
         return 1
@@ -174,15 +195,19 @@ plak_connect_manual() {
     name=$(plak_connect_json_get "$user_json" "data.name")
     email=$(plak_connect_json_get "$user_json" "data.email")
     if [ "$json" -eq 1 ]; then
-        printf '{"connected":true,"panel_url":%s,"user":{"name":%s,"email":%s}}\n' \
-            "$(plak_json_string "$panel")" "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+        printf '{"connected":true,"panel_url":%s,"user":{"name":%s,"email":%s},"scopes":%s,"billing_granted":%s}\n' \
+            "$(plak_json_string "$panel")" "$(plak_json_string "$name")" "$(plak_json_string "$email")" \
+            "$scopes_out" "$billing_granted"
     else
         plak_ui_success "Connected to $panel as ${name:-?} <${email:-?}>"
+        if [ "$billing_granted" = "false" ]; then
+            echo "Note: this API key cannot request server purchases (missing billing:request)."
+        fi
     fi
 }
 
 plak_connect_device() {
-    local panel="" no_open=0 wait_secs="$PLAK_CONNECT_DEFAULT_WAIT" poll_secs="$PLAK_CONNECT_DEFAULT_POLL" json=0
+    local panel="" no_open=0 wait_secs="$PLAK_CONNECT_DEFAULT_WAIT" poll_secs="$PLAK_CONNECT_DEFAULT_POLL" json=0 billing=0
     local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -191,6 +216,7 @@ plak_connect_device() {
             --no-open) no_open=1; shift 1 ;;
             --wait) wait_secs="$2"; shift 2 ;;
             --poll) poll_secs="$2"; shift 2 ;;
+            --billing) billing=1; shift 1 ;;
             --json) json=1; shift 1 ;;
             --cf-access-token) cf_token="$2"; shift 2 ;;
             --token|--key) plak_ui_error "Refusing --token: use the device flow or --manual --token-stdin."; return 1 ;;
@@ -208,7 +234,13 @@ plak_connect_device() {
     fi
     local device_name="${HOSTNAME:-$(hostname 2>/dev/null || echo cli)}"
     local body pending approve_url code expires
-    body=$(PLAK_DEVICE="$device_name" python3 -c 'import json, os; print(json.dumps({"device_name": os.environ["PLAK_DEVICE"][:100]}))')
+    body=$(PLAK_DEVICE="$device_name" PLAK_BILLING="$billing" python3 -c '
+import json, os
+doc = {"device_name": os.environ["PLAK_DEVICE"][:100]}
+if os.environ.get("PLAK_BILLING") == "1":
+    doc["abilities"] = ["billing:request"]
+print(json.dumps(doc))
+')
     if ! plak_connect_http POST "$panel/api/v1/cli/pair" "$body" "" "$cf_token"; then
         plak_ui_error "Panel unreachable. Check the URL and network."
         return 1
@@ -305,12 +337,32 @@ plak_connect_device() {
         plak_ui_error "Could not persist the connection."
         return 1
     fi
-    local name
+    local name scopes_json="${PLAK_SAVED_SCOPES_JSON:-}" billing_granted scopes_out="null"
+    [ -n "$scopes_json" ] && scopes_out="$scopes_json"
+    billing_granted=$(plak_connect_billing_granted "$scopes_json")
     name=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "name")
     if [ "$json" -eq 1 ]; then
-        printf '{"connected":true,"panel_url":%s}\n' "$(plak_json_string "$panel")"
+        printf '{"connected":true,"panel_url":%s,"scopes":%s,"billing_granted":%s}\n' \
+            "$(plak_json_string "$panel")" "$scopes_out" "$billing_granted"
     else
         plak_ui_success "Connected to $panel${name:+ as $name}."
+        if [ "$billing" -eq 1 ]; then
+            case "$billing_granted" in
+                true)
+                    echo "billing:request granted: this connection can request server purchases; the holder still approves and pays in the browser."
+                    ;;
+                false)
+                    echo "This connection cannot request server purchases: the panel did not grant billing:request."
+                    cat <<'FALLBACK'
+Create an API key with billing:request in Perfil > API Keys and run:
+  printf '%s\n' "$PLAK_API_KEY" | plak connect --manual --token-stdin
+FALLBACK
+                    ;;
+                *)
+                    echo "The panel did not report scopes. If 'plak panel buy-server' returns 403, connect a manual API key with billing:request."
+                    ;;
+            esac
+        fi
     fi
 }
 

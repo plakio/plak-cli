@@ -693,6 +693,59 @@ else:
 ' 2>/dev/null
 }
 
+# Extrae data.capabilities del GET /api/v1/user como JSON array.
+# Imprime vacío si el panel no reporta capabilities (conexiones antiguas).
+plak_connect_capabilities_json() {
+    PLAK_USER_DOC="${1:-}" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ.get("PLAK_USER_DOC", "") or "{}")
+except Exception:
+    print("")
+    raise SystemExit(0)
+data = doc.get("data", doc) if isinstance(doc, dict) else {}
+caps = data.get("capabilities") if isinstance(data, dict) else None
+if isinstance(caps, list):
+    print(json.dumps([str(c) for c in caps], sort_keys=True))
+'
+}
+
+# true/false si scopes es un array JSON; null si no se conoce.
+plak_connect_billing_granted() {
+    PLAK_SCOPES="${1:-}" python3 -c '
+import json, os
+raw = os.environ.get("PLAK_SCOPES", "")
+if not raw:
+    print("null")
+    raise SystemExit(0)
+try:
+    scopes = json.loads(raw)
+except Exception:
+    print("null")
+    raise SystemExit(0)
+if not isinstance(scopes, list):
+    print("null")
+    raise SystemExit(0)
+print("true" if "billing:request" in scopes else "false")
+'
+}
+
+# Texto seguro para mostrar scopes en humano; nunca incluye el token.
+plak_connect_scopes_text() {
+    PLAK_SCOPES="${1:-}" python3 -c '
+import json, os
+raw = os.environ.get("PLAK_SCOPES", "")
+if not raw:
+    raise SystemExit(0)
+try:
+    scopes = json.loads(raw)
+except Exception:
+    raise SystemExit(0)
+if isinstance(scopes, list):
+    print(", ".join(str(s) for s in scopes))
+'
+}
+
 # GET/POST JSON contra la API sin seguir redirecciones.
 # Uso: plak_connect_http METHOD URL [BODY] [BEARER] [CF_TOKEN]
 # Exporta: PLAK_HTTP_STATUS, PLAK_HTTP_BODY, PLAK_HTTP_RETRY_AFTER.
@@ -752,12 +805,9 @@ HINT
 # Guarda conexión: panel_url + token + identidad mínima. Atómico, 600.
 plak_connect_save() {
     local panel_url="$1" token="$2" user_json="$3"
-    local file tmp name email uid
+    local file tmp
     file=$(plak_connect_storage_file)
     plak_connect_ensure_storage
-    uid=$(plak_connect_json_get "$user_json" "data.id")
-    name=$(plak_connect_json_get "$user_json" "data.name")
-    email=$(plak_connect_json_get "$user_json" "data.email")
     tmp=$(mktemp "$(dirname "$file")/.connection.XXXXXX") || return 1
     chmod 600 "$tmp"
     PLAK_SAVE_PANEL="$panel_url" PLAK_SAVE_TOKEN="$token" PLAK_SAVE_USER="$user_json" PLAK_SAVE_TMP="$tmp" python3 -c '
@@ -779,6 +829,9 @@ try:
         doc["user"]["id"] = d.get("id")
         doc["user"]["name"] = d.get("name", "")
         doc["user"]["email"] = d.get("email", "")
+        caps = d.get("capabilities")
+        if isinstance(caps, list):
+            doc["scopes"] = [str(c) for c in caps]
 except Exception:
     pass
 open(os.environ["PLAK_SAVE_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
@@ -803,7 +856,17 @@ plak_connect_load() {
 import json, os
 print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("user", {})))
 ' 2>/dev/null)
-    export PLAK_SAVED_PANEL PLAK_SAVED_TOKEN PLAK_SAVED_USER_JSON
+    PLAK_SAVED_SCOPES_JSON=$(PLAK_JSON_DOC="$content" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ.get("PLAK_JSON_DOC", "") or "{}")
+except Exception:
+    print("")
+    raise SystemExit(0)
+scopes = doc.get("scopes") if isinstance(doc, dict) else None
+print(json.dumps([str(s) for s in scopes]) if isinstance(scopes, list) else "")
+' 2>/dev/null)
+    export PLAK_SAVED_PANEL PLAK_SAVED_TOKEN PLAK_SAVED_USER_JSON PLAK_SAVED_SCOPES_JSON
     return 0
 }
 
@@ -9777,7 +9840,7 @@ plak_validate_port() {
 # Source: commands/connect
 # plak connect — pairing con el panel estilo Botmail (CLI-24).
 #
-#   plak connect [--panel URL] [--dev] [--no-open] [--wait S] [--poll S]
+#   plak connect [--billing] [--panel URL] [--dev] [--no-open] [--wait S] [--poll S]
 #   plak connect --manual [--panel URL] [--dev] [--token-stdin]
 #   plak connect status [--json]
 #   plak disconnect [--yes]
@@ -9789,7 +9852,7 @@ plak_validate_port() {
 plak_connect_help() {
     cat <<'HELP'
 Usage:
-  plak connect [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
+  plak connect [--billing] [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
   plak connect --manual [--panel URL] [--dev] [--token-stdin] [--json]
   plak connect status [--json]
   plak disconnect [--yes]
@@ -9798,6 +9861,11 @@ Connect this machine to your Plak panel account (device flow, Botmail-style):
 requests a pairing, shows/opens the approval link, polls until you approve
 it in the panel with 1 click. No secrets to copy by hand.
 
+  --billing     Request billing:request when pairing so this device can
+                request server purchases. The panel/holder must grant it;
+                the CLI still cannot approve or pay. Without this flag the
+                pairing keeps the default user:read + ssh:authorize scopes.
+                If the panel does not grant it, connect a manual API key.
   --panel URL   Panel origin (default https://cloud.plak.io).
                 Use an explicit URL for staging/dev, e.g. http://127.0.0.1:8000.
   --dev         Shorthand for $PLAK_PANEL_DEV_URL (default http://127.0.0.1:8000).
@@ -9810,7 +9878,7 @@ it in the panel with 1 click. No secrets to copy by hand.
   --json        Machine-readable output (never includes the secret).
 
 Other actions:
-  plak connect status     Show panel, account and token validity.
+  plak connect status     Show panel, account, token validity and scopes.
   plak disconnect [--yes] Forget the local credential. Revoke the key itself
                           in the panel: Perfil > API Keys. Revoking there does
                           not delete other connections.
@@ -9832,16 +9900,28 @@ plak_connect_status_cmd() {
     tmp=$(mktemp) || return 1
     if plak_connect_validate "$PLAK_SAVED_PANEL" "$PLAK_SAVED_TOKEN" "$cf_token" >"$tmp"; then
         user_json=$(cat "$tmp"); rm -f "$tmp"
-        local name email uid
+        local name email uid scopes_json billing_granted scopes_text scopes_out="null"
         name=$(plak_connect_json_get "$user_json" "data.name")
         email=$(plak_connect_json_get "$user_json" "data.email")
         uid=$(plak_connect_json_get "$user_json" "data.id")
+        scopes_json=$(plak_connect_capabilities_json "$user_json")
+        [ -n "$scopes_json" ] || scopes_json="${PLAK_SAVED_SCOPES_JSON:-}"
+        [ -n "$scopes_json" ] && scopes_out="$scopes_json"
+        billing_granted=$(plak_connect_billing_granted "$scopes_json")
+        scopes_text=$(plak_connect_scopes_text "$scopes_json")
         if [ "$json" -eq 1 ]; then
-            printf '{"connected":true,"panel_url":%s,"user":{"id":%s,"name":%s,"email":%s}}\n' \
+            printf '{"connected":true,"panel_url":%s,"user":{"id":%s,"name":%s,"email":%s},"scopes":%s,"billing_granted":%s}\n' \
                 "$(plak_json_string "$PLAK_SAVED_PANEL")" "${uid:-null}" \
-                "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+                "$(plak_json_string "$name")" "$(plak_json_string "$email")" \
+                "$scopes_out" "$billing_granted"
         else
             echo "Connected to $PLAK_SAVED_PANEL as ${name:-?} <${email:-?}>"
+            [ -n "$scopes_text" ] && echo "Scopes: $scopes_text"
+            case "$billing_granted" in
+                true) echo "Purchases: available (billing:request)." ;;
+                false) echo "Purchases: not available (missing billing:request)." ;;
+                *) echo "Purchases: unknown (panel did not report scopes)." ;;
+            esac
         fi
         return 0
     else
@@ -9942,6 +10022,10 @@ plak_connect_manual() {
         return 1
     fi
     user_json=$(cat "$tmp"); rm -f "$tmp"
+    local scopes_json billing_granted scopes_out="null"
+    scopes_json=$(plak_connect_capabilities_json "$user_json")
+    billing_granted=$(plak_connect_billing_granted "$scopes_json")
+    [ -n "$scopes_json" ] && scopes_out="$scopes_json"
     if ! plak_connect_save "$panel" "$token" "$user_json"; then
         plak_ui_error "Validated, but the credential could not be stored."
         return 1
@@ -9951,15 +10035,19 @@ plak_connect_manual() {
     name=$(plak_connect_json_get "$user_json" "data.name")
     email=$(plak_connect_json_get "$user_json" "data.email")
     if [ "$json" -eq 1 ]; then
-        printf '{"connected":true,"panel_url":%s,"user":{"name":%s,"email":%s}}\n' \
-            "$(plak_json_string "$panel")" "$(plak_json_string "$name")" "$(plak_json_string "$email")"
+        printf '{"connected":true,"panel_url":%s,"user":{"name":%s,"email":%s},"scopes":%s,"billing_granted":%s}\n' \
+            "$(plak_json_string "$panel")" "$(plak_json_string "$name")" "$(plak_json_string "$email")" \
+            "$scopes_out" "$billing_granted"
     else
         plak_ui_success "Connected to $panel as ${name:-?} <${email:-?}>"
+        if [ "$billing_granted" = "false" ]; then
+            echo "Note: this API key cannot request server purchases (missing billing:request)."
+        fi
     fi
 }
 
 plak_connect_device() {
-    local panel="" no_open=0 wait_secs="$PLAK_CONNECT_DEFAULT_WAIT" poll_secs="$PLAK_CONNECT_DEFAULT_POLL" json=0
+    local panel="" no_open=0 wait_secs="$PLAK_CONNECT_DEFAULT_WAIT" poll_secs="$PLAK_CONNECT_DEFAULT_POLL" json=0 billing=0
     local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -9968,6 +10056,7 @@ plak_connect_device() {
             --no-open) no_open=1; shift 1 ;;
             --wait) wait_secs="$2"; shift 2 ;;
             --poll) poll_secs="$2"; shift 2 ;;
+            --billing) billing=1; shift 1 ;;
             --json) json=1; shift 1 ;;
             --cf-access-token) cf_token="$2"; shift 2 ;;
             --token|--key) plak_ui_error "Refusing --token: use the device flow or --manual --token-stdin."; return 1 ;;
@@ -9985,7 +10074,13 @@ plak_connect_device() {
     fi
     local device_name="${HOSTNAME:-$(hostname 2>/dev/null || echo cli)}"
     local body pending approve_url code expires
-    body=$(PLAK_DEVICE="$device_name" python3 -c 'import json, os; print(json.dumps({"device_name": os.environ["PLAK_DEVICE"][:100]}))')
+    body=$(PLAK_DEVICE="$device_name" PLAK_BILLING="$billing" python3 -c '
+import json, os
+doc = {"device_name": os.environ["PLAK_DEVICE"][:100]}
+if os.environ.get("PLAK_BILLING") == "1":
+    doc["abilities"] = ["billing:request"]
+print(json.dumps(doc))
+')
     if ! plak_connect_http POST "$panel/api/v1/cli/pair" "$body" "" "$cf_token"; then
         plak_ui_error "Panel unreachable. Check the URL and network."
         return 1
@@ -10082,12 +10177,32 @@ plak_connect_device() {
         plak_ui_error "Could not persist the connection."
         return 1
     fi
-    local name
+    local name scopes_json="${PLAK_SAVED_SCOPES_JSON:-}" billing_granted scopes_out="null"
+    [ -n "$scopes_json" ] && scopes_out="$scopes_json"
+    billing_granted=$(plak_connect_billing_granted "$scopes_json")
     name=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "name")
     if [ "$json" -eq 1 ]; then
-        printf '{"connected":true,"panel_url":%s}\n' "$(plak_json_string "$panel")"
+        printf '{"connected":true,"panel_url":%s,"scopes":%s,"billing_granted":%s}\n' \
+            "$(plak_json_string "$panel")" "$scopes_out" "$billing_granted"
     else
         plak_ui_success "Connected to $panel${name:+ as $name}."
+        if [ "$billing" -eq 1 ]; then
+            case "$billing_granted" in
+                true)
+                    echo "billing:request granted: this connection can request server purchases; the holder still approves and pays in the browser."
+                    ;;
+                false)
+                    echo "This connection cannot request server purchases: the panel did not grant billing:request."
+                    cat <<'FALLBACK'
+Create an API key with billing:request in Perfil > API Keys and run:
+  printf '%s\n' "$PLAK_API_KEY" | plak connect --manual --token-stdin
+FALLBACK
+                    ;;
+                *)
+                    echo "The panel did not report scopes. If 'plak panel buy-server' returns 403, connect a manual API key with billing:request."
+                    ;;
+            esac
+        fi
     fi
 }
 
@@ -10780,7 +10895,7 @@ plak_install() {
 # Source: commands/panel
 # plak panel — own panel resources (CLI-25).
 #
-# Reads (never writes) the connected account's sites and servers from the
+# Reads and writes the connected account's sites and servers through the
 # panel personal API. Local sites (`plak list`) and panel resources are
 # never mixed: everything here is explicitly labeled as panel data and
 # resolved through the saved connection (panel URL + token + identity).
@@ -10793,7 +10908,11 @@ Usage:
   plak panel servers [--page N] [--per-page N] [--all] [--json] [--panel URL] [--dev]
   plak panel server <id|name> [--json] [--panel URL] [--dev]
   plak panel providers [--json]
-  plak panel create-server --name N --provider ID --region ID --plan ID [--json]
+  plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
+  plak panel buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS] [--json] [--new]
+  plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
+  plak panel purchases [--json]
+  plak panel create-server --name N --provider ID --region ID --plan ID [--json] (legacy)
   plak panel delete-server <id|name> [--yes] [--json]
   plak panel restart-server <id|name> [--yes] [--json]
   plak panel create-site --domain D --server <id|name> [--json]
@@ -10816,7 +10935,14 @@ Usage:
   Details per area: plak panel <any-cmd> help   (e.g. plak panel db-add help)
   plak panel link <panel-site> <local-site> [--system-user USER] [--path PATH]
 
-List and inspect your own panel sites and servers (read-only).
+List, inspect and operate your own panel sites and servers.
+
+Panel purchases (billing:request): offers, buy-server, purchase-request and
+purchases. The CLI never approves or pays: the account holder opens the
+internal approval_url in an authenticated browser. --yes is not approval.
+Re-running buy-server with the same offer/region/name resumes the stored
+request; after a timeout use purchase-request <id>, never a blind retry.
+Legacy create-server may answer purchase_required and points to the new flow.
 
   --page N / --per-page N   Pagination (per-page 1-100, default 25).
   --all                     Walk every page (for inventories and selection).
@@ -10875,7 +11001,17 @@ plak_panel_get() {
             if [ "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" = "account.blocked" ]; then
                 plak_ui_error "Account blocked. Contact support."
             else
-                plak_ui_error "Forbidden for this token. Check 'plak connect status'."
+                case "$url" in
+                    */api/v1/billing/offers*)
+                        plak_ui_error "Token lacks user:read. Reconnect or create a key with user:read in Perfil > API Keys."
+                        ;;
+                    */api/v1/billing/purchase-requests*)
+                        plak_ui_error "Token lacks the billing:request scope. Grant it in the panel (Perfil > API Keys, tick billing:request). It can request a purchase and check its status; it cannot approve or pay."
+                        ;;
+                    *)
+                        plak_ui_error "Forbidden for this token. Check 'plak connect status'."
+                        ;;
+                esac
             fi
             return 1
             ;;
@@ -11091,6 +11227,21 @@ plak_panel() {
         providers)
             plak_panel_require_connection "$@" || return 1
             plak_panel_providers "$@"
+            ;;
+        offers)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_offers "$@"
+            ;;
+        buy-server)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_buy_server "$@"
+            ;;
+        purchase-request|purchase)
+            plak_panel_require_connection "$@" || return 1
+            plak_panel_purchase_request "$@"
+            ;;
+        purchases|purchase-requests)
+            plak_panel_purchases "$@"
             ;;
         create-server)
             plak_panel_require_connection "$@" || return 1
@@ -12479,8 +12630,13 @@ plak_panel_write_help() {
     cat <<'HELP'
 Usage:
   plak panel providers [--json]
+  plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
+  plak panel buy-server --offer ID --region ID --name N
+                       [--wait SECS] [--poll SECS] [--json] [--new]
+  plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
+  plak panel purchases [--json]
   plak panel create-server --name N --provider ID --region ID --plan ID
-                         [--database T] [--php V] [--os O] [--wait SECS] [--poll SECS] [--json]
+                         [--database T] [--php V] [--os O] [--wait SECS] [--poll SECS] [--json] (legacy)
   plak panel delete-server <id|name> [--yes] [--json]
   plak panel restart-server <id|name> [--yes] [--json]
   plak panel create-site --domain D --server <id|name> [--wait SECS] [--poll SECS] [--json]
@@ -12488,15 +12644,32 @@ Usage:
 
 Create and operate your own panel servers and sites (write API).
 
-  providers      Show your package providers with regions and plans.
-  --wait SECS    Max seconds to wait for provisioning (default 600).
-  --poll SECS    Poll interval (default 15).
-  --yes          Skip destructive confirmations (delete/restart).
-  --json         Machine-readable output (never includes secrets).
+  providers         Show legacy provider/region/plan references (use offers for purchases).
+  offers            Show public server offers (free accounts can browse).
+                    Filter with --provider, --family or --region.
+  buy-server        Request a server purchase; the account holder approves/pays.
+  purchase-request  Show or poll one purchase request by id.
+  purchases         List purchase requests recorded on this machine.
+  --wait SECS       Max seconds to wait for provisioning (default 600 for
+                    create-server; 0 for buy-server/purchase-request).
+  --poll SECS       Poll interval (default 15 for create-server; 10 for purchases).
+  --new             Start a new request for the same offer/region/name after a
+                    terminal one (failed/cancelled/expired). Never for an open one.
+  --yes             Only skips delete/restart prompts. It never approves or
+                    pays a purchase.
+  --json            Machine-readable output (never includes secrets).
 
 Write scopes (servers:write, sites:write) are opt-in: pick them in the
 panel (Perfil > API Keys) or create a key with them. Pairing-approved
 keys carry read + SSH only.
+
+Purchases need billing:request (opt-in in Perfil > API Keys); browsing the
+catalog needs user:read. buy-server/purchase-request do not require user:read.
+The CLI only receives the internal approval_url; it never receives or prints
+a Polar checkout/customer-portal URL or token. Re-running buy-server with the same
+offer/region/name resumes the stored request instead of creating another one.
+Legacy create-server may answer servers.purchase_required; it never falls
+back to global or comped creation.
 HELP
 }
 
@@ -12525,7 +12698,14 @@ plak_panel_write_call() {
         403)
             case "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" in
                 personal_token.forbidden)
-                    plak_ui_error "Token lacks the write scope. Grant it in the panel (Perfil > API Keys, tick servers:write/sites:write) or create a key with them."
+                    case "$path" in
+                        /api/v1/billing/purchase-requests*)
+                            plak_ui_error "Token lacks the billing:request scope. Grant it in the panel (Perfil > API Keys, tick billing:request). It can request a purchase and check its status; it cannot approve or pay."
+                            ;;
+                        *)
+                            plak_ui_error "Token lacks the write scope. Grant it in the panel (Perfil > API Keys, tick servers:write/sites:write) or create a key with them."
+                            ;;
+                    esac
                     ;;
                 account.blocked)
                     plak_ui_error "Account blocked. Contact support."
@@ -12536,12 +12716,41 @@ plak_panel_write_call() {
             esac
             return 1
             ;;
-        404)
-            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+        402)
+            if [ "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" = "servers.purchase_required" ]; then
+                plak_ui_error "Direct server creation requires a paid purchase on this panel."
+                plak_ui_error "Run 'plak panel offers', then 'plak panel buy-server --offer ID --region ID --name N'. The account holder must approve and pay in the browser; --yes cannot bypass it."
+            else
+                plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            fi
             return 1
             ;;
-        409|422)
+        404)
+            local not_found_code
+            not_found_code=$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")
+            if [ "$method" = "POST" ] && [ "$path" = "/api/v1/servers" ] &&
+                { [ -z "$not_found_code" ] || [ "$not_found_code" = "not_found" ]; }; then
+                plak_ui_error "Direct server creation is retired on this panel."
+                plak_ui_error "Run 'plak panel offers', then 'plak panel buy-server --offer ID --region ID --name N'. There is no global or comped fallback."
+            else
+                plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            fi
+            return 1
+            ;;
+        409)
+            if [ "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" = "billing.idempotency_conflict" ]; then
+                plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+                plak_ui_error "That idempotency key was used with different purchase data; no request was created for this offer/region/name. Use --new to start a separate request, or inspect 'plak panel purchases'."
+            else
+                plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            fi
+            return 1
+            ;;
+        422)
             plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+            if [ "$(plak_connect_json_get "$PLAK_HTTP_BODY" "code")" = "billing.offer_unavailable" ]; then
+                plak_ui_error "No purchase request was created. Run 'plak panel offers' with a user:read token to see valid offer/region pairs."
+            fi
             return 1
             ;;
         429)
@@ -12549,7 +12758,15 @@ plak_panel_write_call() {
             return 1
             ;;
         503)
-            plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message") Nothing was persisted."
+            case "$path" in
+                /api/v1/billing/purchase-requests*)
+                    plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message")"
+                    plak_ui_error "The purchase outcome is ambiguous. Do not create a new purchase; re-run the same buy-server command or check 'plak panel purchase-request <id>'."
+                    ;;
+                *)
+                    plak_ui_error "$(plak_connect_json_get "$PLAK_HTTP_BODY" "message") Nothing was persisted."
+                    ;;
+            esac
             return 1
             ;;
         *)
@@ -12629,7 +12846,7 @@ plak_panel_providers() {
 import json, os
 provs = json.loads(os.environ["PLAK_JSON_DOC"]).get("data", [])
 if not provs:
-    print("No providers available for your package.")
+    print("No providers available for this account.")
 for p in provs:
     print("provider %s: %s" % (p.get("id"), p.get("name")))
     for r in p.get("regions", []):
@@ -12637,6 +12854,695 @@ for p in provs:
     for pl in p.get("plans", []):
         print("  plan   %s: %s" % (pl.get("id"), pl.get("label")))
 ' 2>/dev/null || plak_ui_error "Invalid providers response."
+}
+
+
+# --- Server purchases (CLI-50) -------------------------------------------
+# The Panel owns the catalog and the human approval/payment flow. The CLI
+# only requests a purchase, stores a per-operation idempotency key, and polls
+# the internal request. It never receives a Polar checkout URL or token.
+
+plak_panel_purchases_file() {
+    printf '%s\n' "${PLAK_HOME:-$HOME/.plak}/panel-purchases.json"
+}
+
+plak_panel_purchases_ensure() {
+    local file dir
+    file=$(plak_panel_purchases_file)
+    dir=$(dirname "$file")
+    mkdir -p "$dir" || return 1
+    chmod 700 "$dir" 2>/dev/null || true
+    if [ ! -f "$file" ]; then
+        printf '{"version":1,"requests":{}}\n' > "$file" || return 1
+    fi
+    chmod 600 "$file" 2>/dev/null || true
+}
+
+plak_panel_purchase_fingerprint() {
+    PLAK_FP_PANEL="$1" PLAK_FP_USER="$2" PLAK_FP_OFFER="$3" PLAK_FP_REGION="$4" PLAK_FP_NAME="$5" python3 -c '
+import hashlib, os
+keys = ["PLAK_FP_PANEL", "PLAK_FP_USER", "PLAK_FP_OFFER", "PLAK_FP_REGION", "PLAK_FP_NAME"]
+print(hashlib.sha256("|".join(os.environ[k] for k in keys).encode("utf-8")).hexdigest())
+'
+}
+
+plak_panel_purchase_idempotency_key() {
+    python3 -c 'import uuid; print("plak-cli-" + uuid.uuid4().hex)'
+}
+
+plak_panel_purchase_expired() {
+    PLAK_EXPIRES="$1" python3 -c '
+import datetime, os
+value = os.environ.get("PLAK_EXPIRES", "")
+if not value:
+    print(0)
+    raise SystemExit(0)
+try:
+    dt = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    print(1 if dt < datetime.datetime.now(datetime.timezone.utc) else 0)
+except Exception:
+    print(0)
+'
+}
+
+plak_panel_purchase_record() {
+    local fp="$1" file
+    file=$(plak_panel_purchases_file)
+    [ -f "$file" ] || return 0
+    PLAK_FILE="$file" PLAK_FP="$fp" python3 -c '
+import json, os, sys
+try:
+    with open(os.environ["PLAK_FILE"], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception as exc:
+    print("Cannot read %s: %s" % (os.environ["PLAK_FILE"], exc), file=sys.stderr)
+    sys.exit(2)
+rec = (doc.get("requests") or {}).get(os.environ["PLAK_FP"])
+if isinstance(rec, dict):
+    print(json.dumps(rec, sort_keys=True))
+'
+}
+
+plak_panel_purchase_store() {
+    local fp="$1" panel="$2" user_id="$3" offer="$4" region="$5" name="$6"
+    local key="$7" request_id="$8" status="$9" approval="${10:-}" expires="${11:-}" created="${12:-}"
+    local file
+    file=$(plak_panel_purchases_file)
+    plak_panel_purchases_ensure || return 1
+    PLAK_FILE="$file" PLAK_FP="$fp" PLAK_PANEL_URL="$panel" PLAK_USER_ID="$user_id" \
+    PLAK_OFFER_ID="$offer" PLAK_REGION_ID="$region" PLAK_NAME="$name" \
+    PLAK_IDEM="$key" PLAK_REQUEST_ID="$request_id" PLAK_STATUS="$status" \
+    PLAK_APPROVAL="$approval" PLAK_EXPIRES="$expires" PLAK_CREATED="$created" \
+    python3 -c '
+import datetime, json, os, tempfile
+path = os.environ["PLAK_FILE"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except FileNotFoundError:
+    doc = {"version": 1, "requests": {}}
+except Exception as exc:
+    import sys
+    print("Cannot read %s: %s" % (path, exc), file=sys.stderr)
+    raise SystemExit(1)
+requests = doc.setdefault("requests", {})
+fp = os.environ["PLAK_FP"]
+existing = requests.get(fp) if isinstance(requests.get(fp), dict) else {}
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+def field(name, fallback=None):
+    value = os.environ.get(name, "")
+    return value if value else fallback
+def integer(name, fallback=None):
+    value = os.environ.get(name, "")
+    return int(value) if value else fallback
+record = {
+    "panel_url": field("PLAK_PANEL_URL", existing.get("panel_url")),
+    "user_id": field("PLAK_USER_ID", existing.get("user_id")),
+    "offer_id": integer("PLAK_OFFER_ID", existing.get("offer_id")),
+    "region_id": integer("PLAK_REGION_ID", existing.get("region_id")),
+    "name": field("PLAK_NAME", existing.get("name")),
+    "idempotency_key": field("PLAK_IDEM", existing.get("idempotency_key")),
+    "request_id": integer("PLAK_REQUEST_ID", existing.get("request_id")),
+    "status": field("PLAK_STATUS", existing.get("status") or "submitting"),
+    "approval_url": field("PLAK_APPROVAL", existing.get("approval_url")),
+    "expires_at": field("PLAK_EXPIRES", existing.get("expires_at")),
+    "created_at": field("PLAK_CREATED", existing.get("created_at") or now),
+    "updated_at": now,
+}
+requests[fp] = record
+fd, tmp = tempfile.mkstemp(prefix=".panel-purchases.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+'
+}
+
+plak_panel_purchase_update_by_request() {
+    local request_id="$1" status="$2" approval="$3" expires="$4" file
+    file=$(plak_panel_purchases_file)
+    [ -f "$file" ] || return 0
+    PLAK_FILE="$file" PLAK_REQUEST_ID="$request_id" PLAK_STATUS="$status" \
+    PLAK_APPROVAL="$approval" PLAK_EXPIRES="$expires" python3 -c '
+import datetime, json, os, tempfile
+path = os.environ["PLAK_FILE"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+changed = False
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+for rec in (doc.get("requests") or {}).values():
+    if not isinstance(rec, dict) or str(rec.get("request_id")) != str(os.environ["PLAK_REQUEST_ID"]):
+        continue
+    rec["status"] = os.environ.get("PLAK_STATUS") or rec.get("status") or "unknown"
+    if os.environ.get("PLAK_APPROVAL"):
+        rec["approval_url"] = os.environ["PLAK_APPROVAL"]
+    if os.environ.get("PLAK_EXPIRES"):
+        rec["expires_at"] = os.environ["PLAK_EXPIRES"]
+    rec["updated_at"] = now
+    changed = True
+if not changed:
+    raise SystemExit(0)
+fd, tmp = tempfile.mkstemp(prefix=".panel-purchases.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+'
+}
+
+plak_panel_purchase_json() {
+    PLAK_REQUEST_ID="${1:-}" PLAK_STATUS="${2:-}" PLAK_APPROVAL="${3:-}" \
+    PLAK_EXPIRES="${4:-}" PLAK_CREATED="${5:-}" PLAK_RESUMED="${6:-0}" \
+    PLAK_EXPIRED="${7:-0}" PLAK_TIMED_OUT="${8:-0}" PLAK_AMBIGUOUS="${9:-0}" python3 -c '
+import json, os
+def nz(name):
+    value = os.environ.get(name, "")
+    return value if value else None
+def flag(name):
+    return os.environ.get(name) == "1"
+status = os.environ.get("PLAK_STATUS") or "unknown"
+out = {
+    "request_id": int(os.environ["PLAK_REQUEST_ID"]),
+    "status": status,
+    "approval_url": nz("PLAK_APPROVAL"),
+    "expires_at": nz("PLAK_EXPIRES"),
+    "created_at": nz("PLAK_CREATED"),
+    "resumed": flag("PLAK_RESUMED"),
+    "approval_required": status in ("pending_approval", "approved", "checkout_open"),
+}
+if flag("PLAK_EXPIRED"):
+    out["expired"] = True
+if flag("PLAK_TIMED_OUT"):
+    out["timed_out"] = True
+if flag("PLAK_AMBIGUOUS"):
+    out["ambiguous"] = True
+print(json.dumps(out, sort_keys=True))
+'
+}
+
+plak_panel_purchase_print() {
+    local request_id="$1" status="$2" approval="$3" expires="$4"
+    local expired="$5" timed_out="$6" ambiguous="$7" resumed="$8" mode="$9"
+    if [ "$mode" = "created" ]; then
+        if [ "$resumed" = "1" ]; then
+            echo "Existing purchase request #$request_id resumed (no new request was created)."
+        else
+            echo "Purchase request #$request_id created."
+        fi
+    else
+        echo "Purchase request #$request_id:"
+    fi
+    case "$status" in
+        pending_approval) echo "Status: pending approval. The account holder must approve it in the browser." ;;
+        approved) echo "Status: approved. Waiting for payment/checkout." ;;
+        checkout_open) echo "Status: checkout open. The account holder must finish payment in the browser." ;;
+        paid) echo "Status: paid. Waiting for provisioning." ;;
+        provisioning) echo "Status: provisioning." ;;
+        fulfilled) echo "Status: fulfilled. The server was provisioned; run 'plak panel servers' to find it." ;;
+        failed) echo "Status: failed. Do not retry the purchase blindly; check the panel/support." ;;
+        cancelled) echo "Status: cancelled." ;;
+        manual_review) echo "Status: manual review required. Contact support; the CLI cannot bypass it." ;;
+        provisioning_unknown) echo "Status: provisioning unknown. Do not retry the purchase; check the panel/support." ;;
+        *) echo "Status: ${status:-unknown}." ;;
+    esac
+    if [ "$expired" = "1" ]; then
+        echo "This request has expired. Create a new one with 'plak panel buy-server ... --new' if needed."
+    fi
+    if [ "$timed_out" = "1" ]; then
+        echo "Still not terminal after the wait. Resume with 'plak panel purchase-request $request_id --wait SECS --poll SECS'; do not create another purchase."
+    fi
+    if [ "$ambiguous" = "1" ]; then
+        echo "This request needs manual review or has ambiguous provisioning. Do not create another purchase; check the panel/support."
+    fi
+    case "$status" in
+        pending_approval|approved|checkout_open)
+            if [ -n "$approval" ]; then
+                echo "Open this internal approval URL in an authenticated browser as the account holder:"
+                echo "  $approval"
+                echo "The CLI cannot approve or pay."
+            else
+                echo "No approval URL was returned; check the panel."
+            fi
+            ;;
+    esac
+    [ -n "$expires" ] && echo "Expires: $expires"
+}
+
+plak_panel_purchase_emit() {
+    local request_id="$1" status="$2" approval="$3" expires="$4" created="$5"
+    local expired="$6" timed_out="$7" ambiguous="$8" resumed="$9" mode="${10:-created}" json="${11:-0}"
+    if [ "${PLAK_PURCHASE_PROGRESS:-0}" = "1" ]; then
+        printf '\n'
+        PLAK_PURCHASE_PROGRESS=0
+    fi
+    if [ "$json" = "1" ]; then
+        plak_panel_purchase_json "$request_id" "$status" "$approval" "$expires" "$created" \
+            "$resumed" "$expired" "$timed_out" "$ambiguous"
+    else
+        plak_panel_purchase_print "$request_id" "$status" "$approval" "$expires" \
+            "$expired" "$timed_out" "$ambiguous" "$resumed" "$mode"
+    fi
+}
+
+plak_panel_purchase_poll() {
+    local request_id="$1" wait_secs="${2:-0}" poll_secs="${3:-10}" json="${4:-0}"
+    local resumed="${5:-0}" mode="${6:-status}"
+    local elapsed=0 status="" approval="" expires="" created="" expired=0 timed_out=0 ambiguous=0
+    PLAK_PURCHASE_PROGRESS=0
+    while :; do
+        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/billing/purchase-requests/$request_id" || return 1
+        status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+        approval=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.approval_url")
+        expires=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.expires_at")
+        created=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.created_at")
+        [ -n "$status" ] || { plak_ui_error "Invalid purchase request response."; return 1; }
+        plak_panel_purchase_update_by_request "$request_id" "$status" "$approval" "$expires"
+        expired=0
+        case "$status" in
+            pending_approval|approved|checkout_open)
+                expired=$(plak_panel_purchase_expired "$expires")
+                ;;
+        esac
+        case "$status" in
+            fulfilled)
+                plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" "$expired" 0 0 "$resumed" "$mode" "$json"
+                return 0
+                ;;
+            failed|cancelled)
+                plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" "$expired" 0 0 "$resumed" "$mode" "$json"
+                return 1
+                ;;
+            manual_review|provisioning_unknown)
+                ambiguous=1
+                plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" "$expired" 0 "$ambiguous" "$resumed" "$mode" "$json"
+                return 3
+                ;;
+            pending_approval|approved|checkout_open|paid|provisioning)
+                ;;
+            *)
+                # A status the CLI does not know is never reported as success.
+                ambiguous=1
+                plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" "$expired" 0 "$ambiguous" "$resumed" "$mode" "$json"
+                return 3
+                ;;
+        esac
+        if [ "$expired" = "1" ]; then
+            case "$status" in
+                pending_approval|approved|checkout_open)
+                    plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" "$expired" 0 0 "$resumed" "$mode" "$json"
+                    return 1
+                    ;;
+            esac
+        fi
+        if [ "$wait_secs" -le 0 ]; then
+            plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" "$expired" 0 0 "$resumed" "$mode" "$json"
+            return 0
+        fi
+        if [ "$elapsed" -ge "$wait_secs" ]; then
+            timed_out=1
+            plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" "$expired" "$timed_out" 0 "$resumed" "$mode" "$json"
+            return 3
+        fi
+        if [ "$json" = "0" ] && [ -t 1 ]; then
+            printf '\rWaiting for purchase request #%s... %ss / %ss (status: %s)' "$request_id" "$elapsed" "$wait_secs" "$status"
+            PLAK_PURCHASE_PROGRESS=1
+        fi
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+    done
+}
+
+plak_panel_offers() {
+    local json=0 provider="" family="" region=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift 1 ;;
+            --provider) provider="$2"; shift 2 ;;
+            --family) family="$2"; shift 2 ;;
+            --region) region="$2"; shift 2 ;;
+            --provider=*) provider="${1#*=}"; shift 1 ;;
+            --family=*) family="${1#*=}"; shift 1 ;;
+            --region=*) region="${1#*=}"; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/billing/offers" || return 1
+    # Never pass the whole catalog through the environment: production has
+    # 383 offer+region rows and can exceed the per-argument execve limit
+    # (E2BIG / "Argument list too long"). Pipe it through stdin instead.
+    printf '%s' "$PLAK_PANEL_JSON" | PLAK_JSON="$json" \
+    PLAK_FILTER_PROVIDER="$provider" PLAK_FILTER_FAMILY="$family" PLAK_FILTER_REGION="$region" \
+    python3 -c '
+import json, os, sys
+items = json.load(sys.stdin).get("data", [])
+provider = os.environ.get("PLAK_FILTER_PROVIDER", "").strip().lower()
+family = os.environ.get("PLAK_FILTER_FAMILY", "").strip().lower()
+region = os.environ.get("PLAK_FILTER_REGION", "").strip().lower()
+
+def region_matches(entry):
+    reg = entry.get("region") or {}
+    rid = str(reg.get("id") or "")
+    label = str(reg.get("label") or "").lower()
+    return not region or region == rid or region in label
+
+def matches(entry):
+    if provider:
+        name = str(entry.get("provider") or "").lower()
+        aliases = {"aws": "amazon web services", "amazon": "amazon web services", "hetzner": "hetzner cloud"}
+        alias = aliases.get(provider, "")
+        if provider not in name and (not alias or alias not in name):
+            return False
+    if family:
+        haystack = (str(entry.get("family") or "") + " " + str(entry.get("family_label") or "")).lower()
+        if family not in haystack:
+            return False
+    return region_matches(entry)
+
+filtered = [entry for entry in items if matches(entry)]
+if os.environ.get("PLAK_JSON") == "1":
+    print(json.dumps({"data": filtered}, sort_keys=True))
+    raise SystemExit(0)
+
+if not filtered:
+    if provider or family or region:
+        print("No offers match these filters.")
+    else:
+        print("No public offers are available right now. Contact support.")
+    raise SystemExit(0)
+
+def money(entry):
+    price = entry.get("price") or {}
+    amount = price.get("amount_cents")
+    currency = str(price.get("currency") or "").upper()
+    interval = str(price.get("interval") or "month")
+    count = int(price.get("interval_count") or 1)
+    suffix = {"month": "mo", "year": "yr", "week": "wk", "day": "day"}.get(interval, interval)
+    if count > 1:
+        suffix = "%dx%s" % (count, suffix)
+    if amount is None:
+        return "-"
+    return "%.2f %s/%s" % (amount / 100.0, currency, suffix)
+
+def specs(entry):
+    values = entry.get("specs") or {}
+    bits = []
+    if values.get("ram_gb") is not None:
+        bits.append("%s GB RAM" % values["ram_gb"])
+    elif values.get("memory_mb") is not None:
+        bits.append("%s MB RAM" % values["memory_mb"])
+    if values.get("vcpu") is not None:
+        bits.append("%s vCPU" % values["vcpu"])
+    elif values.get("vcpus") is not None:
+        bits.append("%s vCPU" % values["vcpus"])
+    if values.get("disk_gb") is not None:
+        bits.append("%s GB disk" % values["disk_gb"])
+    if values.get("bandwidth_tb") is not None:
+        bits.append("%s TB bandwidth" % values["bandwidth_tb"])
+    known = {"ram_gb", "memory_mb", "vcpu", "vcpus", "disk_gb", "bandwidth_tb"}
+    for key in sorted(values):
+        if key in known:
+            continue
+        bits.append("%s: %s" % (key.replace("_", " "), values[key]))
+    return bits
+
+groups = {}
+for entry in filtered:
+    groups.setdefault(entry.get("offer_id"), []).append(entry)
+for offer_id, entries in groups.items():
+    first = entries[0]
+    display = first.get("code") or first.get("display_name") or "?"
+    family_label = first.get("family_label") or first.get("family")
+    if family_label:
+        print("Offer %s · %s [%s]" % (offer_id, display, family_label))
+    else:
+        print("Offer %s · %s" % (offer_id, display))
+    print("  Provider plan: %s / %s" % (first.get("provider") or "-", first.get("plan") or "-"))
+    bits = specs(first)
+    if bits:
+        print("  Specs: %s" % " · ".join(bits))
+    print("  Price: %s" % money(first))
+    regions = ["%s (%s)" % ((entry.get("region") or {}).get("label") or "-", (entry.get("region") or {}).get("id") or "?") for entry in entries]
+    print("  Regions: %s" % ", ".join(regions))
+    print("")
+print("Prices are references; the approval page shows the final amount. The CLI never sends a price or Polar ID.")
+'
+}
+
+plak_panel_buy_server() {
+    local offer="" region="" name="" wait_secs=0 poll_secs=10 json=0 new=0
+    local idem_flag="" yes=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --offer|--offer-id) offer="$2"; shift 2 ;;
+            --region|--region-id) region="$2"; shift 2 ;;
+            --name) name="$2"; shift 2 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            --new) new=1; shift 1 ;;
+            --idempotency-key) idem_flag="$2"; shift 2 ;;
+            --yes|-y) yes=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    case "$wait_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --wait '$wait_secs'."; return 1 ;; esac
+    case "$poll_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --poll '$poll_secs'."; return 1 ;; esac
+    [ "$poll_secs" -ge 1 ] || poll_secs=1
+    case "$offer" in ''|*[!0-9]*) plak_ui_error "Missing or invalid --offer ID (see 'plak panel offers')."; return 1 ;; esac
+    case "$region" in ''|*[!0-9]*) plak_ui_error "Missing or invalid --region ID (see 'plak panel offers')."; return 1 ;; esac
+    [ -n "$name" ] || { plak_ui_error "Missing --name."; return 1; }
+    case "$name" in *[!A-Za-z0-9_-]*) plak_ui_error "Invalid --name: use letters, numbers, '-' or '_' only."; return 1 ;; esac
+    [ "${#name}" -le 40 ] || { plak_ui_error "Invalid --name: maximum 40 characters."; return 1; }
+    if [ -n "$idem_flag" ]; then
+        [ "${#idem_flag}" -le 120 ] || { plak_ui_error "Invalid --idempotency-key: maximum 120 characters."; return 1; }
+    fi
+    # --yes is accepted for interface symmetry but never authorizes a purchase.
+    if [ "$yes" -eq 1 ] && [ "$json" -eq 0 ]; then
+        echo "Note: --yes does not approve or pay; the account holder must open the approval URL."
+    fi
+
+    local user_id
+    user_id=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "id" 2>/dev/null) || user_id=""
+    [ -n "$user_id" ] || user_id="0"
+    local fp
+    fp=$(plak_panel_purchase_fingerprint "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name") || return 1
+
+    local record key="" req_id="" status="" approval="" expires="" created=""
+    if ! record=$(plak_panel_purchase_record "$fp"); then
+        plak_ui_error "Cannot read the local purchase state. Refusing to create a purchase; repair or remove '$(plak_panel_purchases_file)'."
+        return 1
+    fi
+    if [ -n "$record" ]; then
+        key=$(plak_connect_json_get "$record" "idempotency_key")
+        req_id=$(plak_connect_json_get "$record" "request_id")
+        status=$(plak_connect_json_get "$record" "status")
+        approval=$(plak_connect_json_get "$record" "approval_url")
+        expires=$(plak_connect_json_get "$record" "expires_at")
+        created=$(plak_connect_json_get "$record" "created_at")
+        if [ "$new" -eq 1 ]; then
+            local existing_expired
+            existing_expired=$(plak_panel_purchase_expired "$expires")
+            case "$status" in
+                submitting|"")
+                    plak_ui_error "The previous purchase attempt for this offer/region/name is unresolved (no request id). Re-run the same buy-server command with the same idempotency key; do not use --new."
+                    return 1
+                    ;;
+                provisioning_unknown|manual_review)
+                    plak_ui_error "Existing purchase request #${req_id:-?} is '${status}'. It needs panel/support review; the CLI will not create another purchase."
+                    return 1
+                    ;;
+                pending_approval|approved|checkout_open|paid|provisioning)
+                    if [ "$existing_expired" != "1" ]; then
+                        plak_ui_error "Existing purchase request #${req_id:-?} is still '${status}'. Use 'plak panel purchase-request ${req_id:-<id>}' instead of creating another one."
+                        return 1
+                    fi
+                    ;;
+                fulfilled)
+                    plak_ui_error "A server from purchase request #${req_id:-?} is already fulfilled. Use a different --name or manage it in the panel."
+                    return 1
+                    ;;
+            esac
+            key=""; req_id=""; status=""; approval=""; expires=""; created=""
+        elif [ -n "$req_id" ]; then
+            # A known request is never re-POSTed. Resolve its current state.
+            plak_panel_purchase_poll "$req_id" "$wait_secs" "$poll_secs" "$json" 1 created
+            return $?
+        fi
+        if [ -n "$idem_flag" ] && [ -n "$key" ] && [ "$idem_flag" != "$key" ]; then
+            plak_ui_error "A different idempotency key is already stored for this purchase. Use --new to start a separate request."
+            return 1
+        fi
+    fi
+
+    if [ -z "$key" ]; then
+        if [ -n "$idem_flag" ]; then key="$idem_flag"; else key=$(plak_panel_purchase_idempotency_key) || return 1; fi
+    fi
+
+    # Persist the key before the POST: a timeout can be retried safely.
+    plak_panel_purchase_store "$fp" "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name" \
+        "$key" "" "submitting" "" "" "" || return 1
+
+    local body
+    body=$(PLAK_OFFER_ID="$offer" PLAK_REGION_ID="$region" PLAK_NAME="$name" PLAK_IDEM="$key" python3 -c '
+import json, os
+print(json.dumps({
+    "offer_id": int(os.environ["PLAK_OFFER_ID"]),
+    "provider_region_id": int(os.environ["PLAK_REGION_ID"]),
+    "name": os.environ["PLAK_NAME"],
+    "idempotency_key": os.environ["PLAK_IDEM"],
+}, sort_keys=True))
+') || return 1
+    if ! plak_panel_write_call POST "/api/v1/billing/purchase-requests" "$body"; then
+        case "${PLAK_HTTP_STATUS:-}" in
+            4[0-9][0-9])
+                # Definitive rejection: the panel did not create a request.
+                # Keep ambiguous network errors/5xx/408 as "submitting" so a
+                # retry reuses the same key and cannot duplicate a purchase.
+                if [ "${PLAK_HTTP_STATUS:-}" != "408" ]; then
+                    plak_panel_purchase_store "$fp" "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name" \
+                        "$key" "" "failed" "" "" "" || true
+                fi
+                case "${PLAK_HTTP_STATUS:-}" in
+                    409|422) ;;
+                    *) plak_ui_error "The purchase request was not confirmed. Re-run the same command to retry safely with the same idempotency key; do not create a new purchase." ;;
+                esac
+                ;;
+            *)
+                plak_ui_error "The purchase request was not confirmed. Re-run the same command to retry safely with the same idempotency key; do not create a new purchase."
+                ;;
+        esac
+        return 1
+    fi
+    req_id=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.id")
+    status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
+    approval=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.approval_url")
+    expires=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.expires_at")
+    created=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.created_at")
+    [ -n "$req_id" ] || { plak_ui_error "Invalid purchase request response."; return 1; }
+    case "$approval" in
+        http://*|https://*) ;;
+        /*) approval="$PLAK_PANEL_URL_OUT$approval" ;;
+    esac
+    plak_panel_purchase_store "$fp" "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name" \
+        "$key" "$req_id" "$status" "$approval" "$expires" "$created" || return 1
+    if [ "$wait_secs" -gt 0 ]; then
+        plak_panel_purchase_poll "$req_id" "$wait_secs" "$poll_secs" "$json" 0 created
+        return $?
+    fi
+    local expired=0
+    case "$status" in
+        pending_approval|approved|checkout_open)
+            expired=$(plak_panel_purchase_expired "$expires")
+            ;;
+    esac
+    plak_panel_purchase_emit "$req_id" "$status" "$approval" "$expires" "$created" "$expired" 0 0 0 created "$json"
+    [ "$expired" = "1" ] && return 1
+    return 0
+}
+
+plak_panel_purchase_request() {
+    local request_id="" wait_secs=0 poll_secs=10 json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) request_id="$1"; shift 1 ;;
+        esac
+    done
+    case "$request_id" in ''|*[!0-9]*) plak_ui_error "Usage: plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]"; return 1 ;; esac
+    case "$wait_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --wait '$wait_secs'."; return 1 ;; esac
+    case "$poll_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --poll '$poll_secs'."; return 1 ;; esac
+    [ "$poll_secs" -ge 1 ] || poll_secs=1
+    plak_panel_purchase_poll "$request_id" "$wait_secs" "$poll_secs" "$json" 0 status
+}
+
+plak_panel_purchases() {
+    local json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift 1 ;;
+            *) plak_ui_error "Unknown flag: $1"; return 1 ;;
+        esac
+    done
+    local file
+    file=$(plak_panel_purchases_file)
+    if [ ! -f "$file" ]; then
+        if [ "$json" -eq 1 ]; then printf '{"data":[]}\n'; else echo "No purchase requests recorded on this machine."; fi
+        return 0
+    fi
+    PLAK_FILE="$file" PLAK_JSON="$json" python3 -c '
+import datetime, json, os, sys
+path = os.environ["PLAK_FILE"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception as exc:
+    print("Cannot read %s: %s" % (path, exc), file=sys.stderr)
+    raise SystemExit(2)
+items = []
+for rec in (doc.get("requests") or {}).values():
+    if not isinstance(rec, dict):
+        continue
+    expires = rec.get("expires_at")
+    expired = False
+    if expires and rec.get("status") in ("pending_approval", "approved", "checkout_open"):
+        try:
+            dt = datetime.datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            expired = dt < datetime.datetime.now(datetime.timezone.utc)
+        except Exception:
+            pass
+    items.append({
+        "request_id": rec.get("request_id"),
+        "status": rec.get("status"),
+        "name": rec.get("name"),
+        "offer_id": rec.get("offer_id"),
+        "region_id": rec.get("region_id"),
+        "approval_url": rec.get("approval_url"),
+        "expires_at": expires,
+        "created_at": rec.get("created_at"),
+        "updated_at": rec.get("updated_at"),
+        "expired": expired,
+    })
+items.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+if os.environ.get("PLAK_JSON") == "1":
+    print(json.dumps({"data": items}, sort_keys=True))
+else:
+    if not items:
+        print("No purchase requests recorded on this machine.")
+    else:
+        print("%-8s %-20s %-20s %-8s %-8s %s" % ("REQUEST", "STATUS", "NAME", "OFFER", "REGION", "UPDATED"))
+        for item in items:
+            request_id = item.get("request_id")
+            print("%-8s %-20s %-20s %-8s %-8s %s" % (
+                request_id if request_id is not None else "-",
+                (item.get("status") or "-")[:20],
+                (item.get("name") or "-")[:20],
+                item.get("offer_id") if item.get("offer_id") is not None else "-",
+                item.get("region_id") if item.get("region_id") is not None else "-",
+                (item.get("updated_at") or "-")[:19],
+            ))
+        print("")
+        print("Use plak panel purchase-request with the id to refresh one. Approval URLs are internal to the panel.")
+'
 }
 
 plak_panel_create_server() {
@@ -12698,9 +13604,30 @@ plak_panel_delete_server() {
     [ -n "$sel" ] || { plak_ui_error "Usage: plak panel delete-server <id|name> [--yes]"; return 1; }
     local id
     id=$(plak_panel_resolve_server "$sel") || return 1
-    plak_panel_write_confirm "Delete panel server '$sel' (id $id) with ALL its sites? This cannot be undone." "$yes" || return 1
+    plak_panel_write_confirm "Delete panel server '$sel' (id $id)? Paid servers are scheduled for the end of the paid period instead of immediate deletion." "$yes" || return 1
     plak_panel_write_call DELETE "/api/v1/servers/$id" || return 1
-    [ "$json" -eq 1 ] && printf '{"deleted":true,"id":%s}\n' "$id" || plak_ui_success "Server $id deleted (remote removal best-effort, see panel)."
+    local deleted scheduled task_id message
+    deleted=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.deleted")
+    scheduled=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.scheduled")
+    task_id=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.task_id")
+    message=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.message")
+    case "$deleted" in true|True|1) deleted=true ;; *) deleted=false ;; esac
+    case "$scheduled" in true|True|1) scheduled=true ;; *) scheduled=false ;; esac
+    if [ "$json" -eq 1 ]; then
+        printf '{"deleted":%s,"scheduled":%s,"id":%s,"task_id":%s,"message":%s}\n'             "$deleted" "$scheduled" "$id"             "$(if [ -n "$task_id" ]; then printf '%s' "$task_id"; else printf 'null'; fi)"             "$(plak_json_string "$message")"
+        return 0
+    fi
+    if [ -n "$message" ]; then
+        plak_ui_success "$message"
+    elif [ "$scheduled" = "true" ]; then
+        plak_ui_success "Server $id deletion is scheduled for the end of the paid period."
+    else
+        plak_ui_success "Server $id deleted (remote removal best-effort, see panel)."
+    fi
+    if [ "$scheduled" = "true" ]; then
+        echo "No immediate server deletion was performed; it stays available until the paid period ends."
+        [ -n "$task_id" ] && echo "Scheduled billing task: #$task_id"
+    fi
 }
 
 plak_panel_restart_server() {

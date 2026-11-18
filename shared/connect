@@ -142,6 +142,59 @@ else:
 ' 2>/dev/null
 }
 
+# Extrae data.capabilities del GET /api/v1/user como JSON array.
+# Imprime vacío si el panel no reporta capabilities (conexiones antiguas).
+plak_connect_capabilities_json() {
+    PLAK_USER_DOC="${1:-}" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ.get("PLAK_USER_DOC", "") or "{}")
+except Exception:
+    print("")
+    raise SystemExit(0)
+data = doc.get("data", doc) if isinstance(doc, dict) else {}
+caps = data.get("capabilities") if isinstance(data, dict) else None
+if isinstance(caps, list):
+    print(json.dumps([str(c) for c in caps], sort_keys=True))
+'
+}
+
+# true/false si scopes es un array JSON; null si no se conoce.
+plak_connect_billing_granted() {
+    PLAK_SCOPES="${1:-}" python3 -c '
+import json, os
+raw = os.environ.get("PLAK_SCOPES", "")
+if not raw:
+    print("null")
+    raise SystemExit(0)
+try:
+    scopes = json.loads(raw)
+except Exception:
+    print("null")
+    raise SystemExit(0)
+if not isinstance(scopes, list):
+    print("null")
+    raise SystemExit(0)
+print("true" if "billing:request" in scopes else "false")
+'
+}
+
+# Texto seguro para mostrar scopes en humano; nunca incluye el token.
+plak_connect_scopes_text() {
+    PLAK_SCOPES="${1:-}" python3 -c '
+import json, os
+raw = os.environ.get("PLAK_SCOPES", "")
+if not raw:
+    raise SystemExit(0)
+try:
+    scopes = json.loads(raw)
+except Exception:
+    raise SystemExit(0)
+if isinstance(scopes, list):
+    print(", ".join(str(s) for s in scopes))
+'
+}
+
 # GET/POST JSON contra la API sin seguir redirecciones.
 # Uso: plak_connect_http METHOD URL [BODY] [BEARER] [CF_TOKEN]
 # Exporta: PLAK_HTTP_STATUS, PLAK_HTTP_BODY, PLAK_HTTP_RETRY_AFTER.
@@ -201,12 +254,9 @@ HINT
 # Guarda conexión: panel_url + token + identidad mínima. Atómico, 600.
 plak_connect_save() {
     local panel_url="$1" token="$2" user_json="$3"
-    local file tmp name email uid
+    local file tmp
     file=$(plak_connect_storage_file)
     plak_connect_ensure_storage
-    uid=$(plak_connect_json_get "$user_json" "data.id")
-    name=$(plak_connect_json_get "$user_json" "data.name")
-    email=$(plak_connect_json_get "$user_json" "data.email")
     tmp=$(mktemp "$(dirname "$file")/.connection.XXXXXX") || return 1
     chmod 600 "$tmp"
     PLAK_SAVE_PANEL="$panel_url" PLAK_SAVE_TOKEN="$token" PLAK_SAVE_USER="$user_json" PLAK_SAVE_TMP="$tmp" python3 -c '
@@ -228,6 +278,9 @@ try:
         doc["user"]["id"] = d.get("id")
         doc["user"]["name"] = d.get("name", "")
         doc["user"]["email"] = d.get("email", "")
+        caps = d.get("capabilities")
+        if isinstance(caps, list):
+            doc["scopes"] = [str(c) for c in caps]
 except Exception:
     pass
 open(os.environ["PLAK_SAVE_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
@@ -252,7 +305,17 @@ plak_connect_load() {
 import json, os
 print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("user", {})))
 ' 2>/dev/null)
-    export PLAK_SAVED_PANEL PLAK_SAVED_TOKEN PLAK_SAVED_USER_JSON
+    PLAK_SAVED_SCOPES_JSON=$(PLAK_JSON_DOC="$content" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ.get("PLAK_JSON_DOC", "") or "{}")
+except Exception:
+    print("")
+    raise SystemExit(0)
+scopes = doc.get("scopes") if isinstance(doc, dict) else None
+print(json.dumps([str(s) for s in scopes]) if isinstance(scopes, list) else "")
+' 2>/dev/null)
+    export PLAK_SAVED_PANEL PLAK_SAVED_TOKEN PLAK_SAVED_USER_JSON PLAK_SAVED_SCOPES_JSON
     return 0
 }
 

@@ -53,7 +53,11 @@ how to grant them):
 
 ```bash
 plak panel providers [--json]
-plak panel create-server --name N --provider ID --region ID --plan ID [--json]
+plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
+plak panel buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS] [--json] [--new]
+plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
+plak panel purchases [--json]
+plak panel create-server --name N --provider ID --region ID --plan ID [--json]   # legacy
 plak panel delete-server <id|name> [--yes] [--json]
 plak panel restart-server <id|name> [--yes] [--json]
 plak panel create-site --domain D --server <id|name> [--json]
@@ -63,6 +67,97 @@ plak panel delete-site <id|domain> [--yes] [--json]
 Creation is async (`202 busy`): the CLI polls until `active`/`failed` (or
 timeout, never a false success). Deletes confirm (or `--yes`); remote
 removal is panel best-effort. `--json` never includes secrets.
+
+`create-server` is the legacy direct-creation path. Panels with per-server
+billing answer `servers.purchase_required` (or retire the route); the CLI
+guides to `offers`/`buy-server` and never falls back to global or comped
+creation.
+
+## Purchases — offers, approval and polling (CLI-50/51)
+
+The panel sells new servers through an offer catalog. The catalog is readable
+with `user:read`, so an account without a paid package can browse it. Buying
+needs the opt-in `billing:request` scope (Perfil > API Keys); `buy-server`
+does not require `user:read`, because the panel validates the offer/region
+pair on the POST. A key with both scopes covers the full flow.
+
+The device pairing grants `user:read` + `ssh:authorize` by default.
+`plak connect --billing` asks the panel to grant `billing:request` when the
+holder approves the device (PLA-277). Until the deployed panel grants it, the
+CLI warns and the fallback is a manual API key with that scope:
+
+```bash
+plak connect --billing
+plak connect status                    # shows scopes and purchase availability
+printf '%s\n' "$PLAK_API_KEY" | plak connect --manual --token-stdin
+```
+
+`billing:request` can only request a purchase and read its status, never
+approve or pay.
+
+```bash
+plak panel offers
+plak panel offers --json
+plak panel offers --provider AWS
+plak panel offers --family arm
+plak panel offers --region 13
+plak panel buy-server --offer 12 --region 13 --name web-1
+plak panel buy-server --offer 12 --region 13 --name web-1 --json
+plak panel purchase-request 42 --wait 600 --poll 10
+plak panel purchases --json
+```
+
+- `offers` returns one catalog entry per offer+region. Human output groups by
+  `offer_id`, shows the Plak plan (`code`), family, provider plan, specs,
+  reference price and every available region. `family`/`family_label` are
+  optional: some providers (DigitalOcean, Vultr, UpCloud) omit them, and the
+  CLI simply leaves the family out. `--provider`, `--family` and `--region`
+  filter the catalog (region accepts an id or label).
+- `buy-server` sends only `offer_id`, `provider_region_id`, `name` and an
+  idempotency key. It never sends a price or Polar product/price ID.
+- The CLI prints only the panel's internal `approval_url` (for example
+  `https://cloud.plak.io/billing/purchase-requests/42`). The account holder
+  opens it in an authenticated browser and approves/pays there. The CLI never
+  receives or prints the Polar checkout URL, customer portal URL or token.
+- `--yes` is not financial approval. In non-interactive mode the command only
+  requests the purchase and reports the approval URL. A free account can
+  request and explore; no VM is created until the holder approves and the
+  backend confirms payment.
+- The idempotency key is stored in
+  `${PLAK_HOME:-$HOME/.plak}/panel-purchases.json` (dir `700`, file `600`)
+  before the POST. Re-running the same offer/region/name resumes the stored
+  request; a lost response is retried with the same key, so a purchase is not
+  duplicated. After a timeout re-run the same `buy-server` command (same key)
+  or, if you have the request id, use `purchase-request <id>`; never a blind
+  retry with a new key.
+- Statuses: `pending_approval`, `approved`, `checkout_open`, `paid`,
+  `provisioning`, `fulfilled` (success); `failed`, `cancelled`;
+  `manual_review` and `provisioning_unknown` are ambiguous. Any status the CLI
+  does not recognize is also treated as ambiguous (exit 3), never as success.
+  Stop and check the panel/support; do not create another purchase.
+- A pending request has a one-day `expires_at`. The CLI reports `expired` and
+  asks for an explicit `--new`; it never silently creates a second request.
+- `purchases` lists the local request records (safe fields only). The token is
+  never stored there or printed in `--json`.
+- Deleting a paid server schedules cancellation for the end of the paid
+  period; the CLI reports the panel message and does not claim immediate
+  destruction. The subscription is cancelled in the Polar portal.
+
+`--json` exposes `request_id`, `status`, `approval_url`, `expires_at`,
+`created_at`, `resumed`, `approval_required`, and the flags `expired`,
+`timed_out` or `ambiguous` when applicable. `approval_required` is true only
+while the holder still has to act (`pending_approval`, `approved`,
+`checkout_open`); `expired` only applies to those states, never to a terminal
+request. It never exposes a token, Polar URL, customer portal URL or
+idempotency key.
+
+Known API gaps (reported, not worked around with fragile heuristics):
+
+- A lost response has no lookup by idempotency key, so the CLI re-sends the
+  same POST with the same key. The Panel returns the existing request; this is
+  not a second purchase, but it is an HTTP retry.
+- A `fulfilled` request does not include the created `server_id`; run
+  `plak panel servers` to find the new server.
 
 ## WordPress (`plak panel wp-*`, CLI-41)
 

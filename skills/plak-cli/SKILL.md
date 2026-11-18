@@ -257,19 +257,22 @@ plak sshkey list
 plak sshkey view [<name>]
 
 # Panel account (device flow, Botmail-style; secret never via argv)
-plak connect [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
+plak connect [--billing] [--panel URL] [--dev] [--no-open] [--wait SECS] [--poll SECS] [--json]
 plak connect --manual [--panel URL] [--dev] --token-stdin   # echo "$KEY" | plak connect --manual --token-stdin
 plak connect status [--json]
 plak disconnect [--yes]   # local forget only; revoke in panel Perfil > API Keys
 ```
 
 **Panel connection**: `plak connect` requests a pairing and polls until you
-approve it in the panel (`approve_url`, 1 click). Credential lives in
+approve it in the panel (`approve_url`, 1 click). `--billing` requests
+`billing:request` so the device can buy servers; the panel/holder still
+decides and can deny it. Credential lives in
 `${PLAK_HOME:-~/.plak}/connection.json` (dir `700`, file `600`); `--json`
-outputs never include the secret. Dev behind Cloudflare Access needs
+outputs never include the secret. `plak connect status` shows the granted
+scopes and whether purchases are available. Dev behind Cloudflare Access needs
 `PLAK_CF_ACCESS_TOKEN` (service token, different from the Plak API key).
 
-**Panel resources (read-only, connected account only)**:
+**Panel resources (connected account only)**:
 `plak panel sites [--all] [--json]`, `plak panel site <id|domain>`,
 `plak panel servers [--all] [--json]`, `plak panel server <id|name>`.
 Never mixed with local sites (`plak list`); the saved token is never sent
@@ -281,9 +284,36 @@ SSH authorizations outlive API keys (remove in panel Servers > SSH keys).
 **Panel migration**: `plak push/pull` on linked sites revalidate the panel
 destination first (account/panel/remote/site changes and invalid tokens
 stop with an explanation); manual remotes unchanged.
-**Panel writes (Fase A)**: `providers`, `create-server`, `delete-server`,
-`restart-server`, `create-site`, `delete-site` (opt-in scopes
-`servers:write`/`sites:write`; async creation is polled, never false success).
+**Panel writes (Fase A)**: `providers`, `delete-server`, `restart-server`,
+`create-site`, `delete-site` (opt-in scopes `servers:write`/`sites:write`;
+async creation is polled, never false success). `create-server` is legacy:
+a panel with per-server billing answers `servers.purchase_required` and must
+guide to `offers`/`buy-server`, never to a global or comped fallback.
+**Panel purchases (CLI-50/51)**: `offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]`
+lists the public catalog (free accounts can browse), grouped by offer with
+family, provider plan, specs and regions. The family is optional (some
+providers omit it). The Plak plan is `code`; `plan` is the provider technical
+label, not a marketing/plan name. `buy-server --offer ID --region ID --name N
+[--json]` requests a server purchase; `purchase-request <id> [--wait SECS]
+[--poll SECS] [--json]` checks/polls it; `purchases [--json]` lists requests
+recorded on this machine. `offers` needs `user:read`; `buy-server` and
+`purchase-request` only need `billing:request`. Use `plak connect --billing`
+to request it during pairing; if the panel does not grant it, connect a
+manual API key with that scope. Pairing keys still cannot approve or pay.
+`manual_review`, `provisioning_unknown` and any unknown status are ambiguous
+(exit 3): stop and check the panel/support; never create another purchase.
+The CLI receives **only the internal `approval_url`**: give it to the account
+holder, who opens it in an authenticated browser. Never approve or pay for the
+holder, never open/pay a Polar checkout with agent credentials, never send
+prices, and never treat `--yes` as financial authorization. Re-running
+`buy-server` with the same offer/region/name resumes the stored idempotent
+request; after a timeout use `purchase-request <id>` or the same command,
+never a blind retry or a second purchase. Statuses: `pending_approval`,
+`approved`, `checkout_open`, `paid`, `provisioning`, `fulfilled` (success);
+`failed` and `cancelled` are terminal. `delete-server` on a paid
+server schedules cancellation for the end of the paid period, not immediate
+destruction; the holder cancels the subscription in the Polar portal. D14/D21
+are manual backend operations, not agent-authorized commands.
 **Panel WordPress (Fase B)**: `wp-overview|wp-themes|wp-plugins`,
 `wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc`,
 theme/plugin `activate|deactivate|update|install|delete`,
