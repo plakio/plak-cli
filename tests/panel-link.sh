@@ -25,12 +25,19 @@ source ./plak.sh >/dev/null
 
 fail() { echo "panel-link test failed: $1" >&2; exit 1; }
 
-# --- fake ssh: succeeds only for the verified path probe ---
+# --- fake ssh: answers the remote root probe (WordPress or static) ---
 cat > "$tmpdir/bin/ssh" <<'SSH'
 #!/usr/bin/env bash
 echo "$*" >> "$SSH_LOG"
-[[ "$*" == *"/home/plak/shop.example/public"* && "$*" == *"wp-config.php"* ]] && exit 0
-exit 1
+if [[ "$*" == *"/home/plak/shop.example/public"* && "$*" == *"wp-config.php"* ]]; then
+    printf wordpress
+    exit 0
+fi
+if [[ "$*" == *"/home/html-6mqna/html.example/public"* && "$*" == *"index.html"* ]]; then
+    printf static
+    exit 0
+fi
+exit 3
 SSH
 chmod +x "$tmpdir/bin/ssh"
 export SSH_LOG="$tmpdir/ssh.log"
@@ -41,6 +48,7 @@ cat > "$tmpdir/stub.py" <<'PY'
 import http.server, json, urllib.parse
 TOKEN = "link-test-token"
 SITE = {"id": 21, "domain": "shop.example", "status": "active", "project": "wordpress"}
+STATIC = {"id": 22, "domain": "html.example", "status": "active", "project": "html"}
 calls = []
 class H(http.server.BaseHTTPRequestHandler):
     def _json(self, code, obj):
@@ -58,12 +66,21 @@ class H(http.server.BaseHTTPRequestHandler):
             return
         url = urllib.parse.urlsplit(self.path)
         if url.path == "/api/v1/sites":
-            self._json(200, {"current_page": 1, "per_page": 100, "total": 1, "last_page": 1, "data": [dict(SITE, server={"id": 9, "name": "web-9", "status": "active"})]})
+            self._json(200, {"current_page": 1, "per_page": 100, "total": 2, "last_page": 1, "data": [
+                dict(SITE, server={"id": 9, "name": "web-9", "status": "active"}),
+                dict(STATIC, server={"id": 9, "name": "web-9", "status": "active"})]})
         elif url.path == "/api/v1/sites/21/connection":
             self._json(200, {"data": {
                 "site": SITE,
                 "server": {"id": 9, "name": "web-9", "status": "active", "ip": "203.0.113.99", "ssh_port": 2222},
                 "system_users": [{"name": "plak", "sudo": False}],
+                "wordpress_path": None,
+                "path_hint": "hint"}})
+        elif url.path == "/api/v1/sites/22/connection":
+            self._json(200, {"data": {
+                "site": STATIC,
+                "server": {"id": 9, "name": "web-9", "status": "active", "ip": "203.0.113.99", "ssh_port": 2222},
+                "system_users": [{"name": "html-6mqna", "sudo": False}],
                 "wordpress_path": None,
                 "path_hint": "hint"}})
         else:
@@ -117,9 +134,23 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 assert d["site"] == {"id": 21, "domain": "shop.example"}, d
 assert d["remote"] == "panel-shop.example" and d["local_site"] == "myshop", d
+assert d["type"] == "wordpress", d
 assert "token" not in json.dumps(d) and "link-test-token" not in open(sys.argv[1]).read()
 PY
-grep -q "test -f" "$SSH_LOG" || fail "no ssh verify"
+grep -q "wp-config.php" "$SSH_LOG" || fail "no ssh verify"
+
+# --- static web root (index.html) links too ---
+mkdir -p "$HOME/Plak/Sites/myhtml.localhost"
+static_json=$(./plak.sh panel link html.example myhtml --system-user html-6mqna --key "$HOME/.ssh/id_test" --yes --json) || fail "static link"
+printf '%s' "$static_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["linked"] and d["type"] == "static", d' || fail "static json"
+[ "$(cat "$HOME/Plak/Sites/myhtml.localhost/.remote")" = "panel-html.example" ] || fail "static binding"
+python3 - "$HOME/Plak/Sites/myhtml.localhost/.panel-link" <<'PY' || fail "static record"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["site"] == {"id": 22, "domain": "html.example"}, d
+assert d["type"] == "static", d
+PY
+./plak.sh panel unlink myhtml --yes >/dev/null || fail "static unlink"
 
 # --- idempotent relink of the same pair ---
 ./plak.sh panel link shop.example myshop --system-user plak --key "$HOME/.ssh/id_test" --yes >/dev/null || fail "relink"

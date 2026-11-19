@@ -31,9 +31,12 @@ enumerable.
 
 `plak panel link <panel-site> <local-site>` authorizes one local public
 key on the panel server (`ssh:authorize` scope), verifies SSH access and
-the real WordPress path (`StrictHostKeyChecking=accept-new`, wrong paths
-never bind), then creates/reuses an SSH remote and records `.panel-link`
-(panel/account/remote ids, no tokens). `plak panel unlink` removes the
+the real site root (`StrictHostKeyChecking=accept-new`, wrong paths never
+bind): `wp-config.php` marks a WordPress root and `index.html`/`index.htm`
+a static web root. Both link the same way; push/pull choose their flow
+from the local site. The command then creates/reuses an SSH remote and
+records `.panel-link` (panel/account/remote ids and the detected `type`,
+no tokens). `plak panel unlink` removes the
 record only; installed SSH keys are removed in the panel (Servers > SSH
 keys) and live independently of API keys.
 

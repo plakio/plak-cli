@@ -11620,8 +11620,9 @@ print(json.dumps(p))'
 #
 # Flow: pick own panel site -> read its connection contract -> pick or
 # generate a local SSH key -> authorize only its public part in the panel
-# -> verify SSH + WordPress path -> create/reuse an SSH remote -> bind it
-# to the local site and record an unambiguous .panel-link (no secrets).
+# -> verify SSH + site root (WordPress or static) -> create/reuse an SSH
+# remote -> bind it to the local site and record an unambiguous
+# .panel-link (no secrets).
 #
 # Revoking the API key never removes an installed SSH key; remove it in
 # the panel (Servers > SSH keys). SSH credentials live their own lifecycle.
@@ -11641,15 +11642,20 @@ Link one of your panel sites to a local Plak site for push/pull.
   --system-user  Remote system user for SSH. Interactive pick from the
                  panel contract when omitted; required without a TTY unless
                  the contract lists none (server-wide key).
-  --path         Remote WordPress root. Defaults to the panel hint
-                 (/home/<user>/<domain>/public) and is always verified
-                 over SSH before binding — a wrong path never links.
+  --path         Remote site root (WordPress root or static web root).
+                 Defaults to the panel hint (/home/<user>/<domain>/public)
+                 and is always verified over SSH before binding — a wrong
+                 path never links.
   --key FILE     Existing local private key (its .pub is authorized).
   --generate     Create ~/.ssh/plak-panel-<site> (ed25519) for this link.
   --alias NAME   SSH remote alias (default panel-<domain>).
   --yes          Skip confirmations (automation). Implies no prompts:
                  pass --system-user/--key|--generate/--path as needed.
   --json         Machine-readable result (never includes secrets).
+
+The remote root is detected over SSH: wp-config.php marks a WordPress
+site, index.html (or index.htm) marks a static site. Both link the same
+way; push/pull pick their flow from the local site.
 
 Host keys use StrictHostKeyChecking=accept-new: the first key is recorded,
 a changed key refuses. The link record lives in
@@ -11872,18 +11878,34 @@ print(json.dumps(payload))
         fi
     fi
 
-    # 6. Verify SSH access and the real WordPress path. Never bind blind.
+    # 6. Verify SSH access and the real site root. Never bind blind.
+    #    wp-config.php marks WordPress; index.html/index.htm marks a static
+    #    web root. Exit 3 means "SSH worked but the path is neither", so it
+    #    is reported differently from an unusable connection (ssh exit 255).
     local ssh_target="$system_user@$server_ip"
     [ -n "$system_user" ] || ssh_target="$server_ip"
     local ssh_opts=(-i "$key_file" -p "$ssh_port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
     local quoted_path
     quoted_path=$(shell_quote "$remote_path")
-    if ! ssh "${ssh_opts[@]}" "$ssh_target" "test -f $quoted_path/wp-config.php" 2>/dev/null; then
-        plak_ui_error "SSH ok but '$remote_path' is not a WordPress root there (no wp-config.php). Not linked."
+    local site_kind="" ssh_rc=0
+    site_kind=$(ssh "${ssh_opts[@]}" "$ssh_target" \
+        "if [ -f $quoted_path/wp-config.php ]; then printf wordpress; elif [ -f $quoted_path/index.html ] || [ -f $quoted_path/index.htm ]; then printf static; else exit 3; fi" \
+        2>/dev/null) || ssh_rc=$?
+    if [ "$ssh_rc" -eq 3 ]; then
+        plak_ui_error "SSH ok but '$remote_path' is not a site root there (no wp-config.php or index.html). Not linked."
         echo "Hint: check --system-user/--path, then retry. The panel key authorization above stands and is reusable."
         return 1
+    elif [ "$ssh_rc" -ne 0 ]; then
+        plak_ui_error "Could not verify SSH access to $ssh_target (ssh exit $ssh_rc). Not linked."
+        echo "Hint: check --system-user/--key/--path. The panel key authorization above stands and is reusable."
+        return 1
     fi
-    [ "$json" -eq 0 ] && echo "SSH: $ssh_target:$remote_path verified (wp-config.php present)."
+    case "$site_kind" in
+        wordpress|static) : ;;
+        *) plak_ui_error "Could not classify '$remote_path' over SSH (unexpected probe output). Not linked."
+           return 1 ;;
+    esac
+    [ "$json" -eq 0 ] && echo "SSH: $ssh_target:$remote_path verified ($site_kind root)."
 
     # 7. Create or reuse the SSH remote (existing manual remotes untouched).
     [ -n "$alias" ] || alias="panel-$site_domain"
@@ -11919,12 +11941,17 @@ print(json.dumps(payload))
             return 1
         fi
     fi
-    plak_remote_attach_to "$alias" "$local_site" "$yes" || return 1
+    if [ "$json" -eq 1 ]; then
+        # Keep --json parseable: attach helpers print human messages.
+        plak_remote_attach_to "$alias" "$local_site" "$yes" >/dev/null || return 1
+    else
+        plak_remote_attach_to "$alias" "$local_site" "$yes" || return 1
+    fi
     local account
     account=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "email")
     local tmp_link
     tmp_link=$(mktemp) || return 1
-    PLAK_LINK_PANEL="$panel" PLAK_LINK_ACCOUNT="$account" PLAK_LINK_SITE_ID="$site_id" PLAK_LINK_DOMAIN="$site_domain" PLAK_LINK_SERVER_ID="$server_id" PLAK_LINK_SERVER="$server_name" PLAK_LINK_ALIAS="$alias" PLAK_LINK_LOCAL="$local_site" PLAK_LINK_TMP="$tmp_link" python3 -c '
+    PLAK_LINK_PANEL="$panel" PLAK_LINK_ACCOUNT="$account" PLAK_LINK_SITE_ID="$site_id" PLAK_LINK_DOMAIN="$site_domain" PLAK_LINK_SERVER_ID="$server_id" PLAK_LINK_SERVER="$server_name" PLAK_LINK_ALIAS="$alias" PLAK_LINK_LOCAL="$local_site" PLAK_LINK_KIND="$site_kind" PLAK_LINK_TMP="$tmp_link" python3 -c '
 import json, os, datetime
 doc = {
   "panel_url": os.environ["PLAK_LINK_PANEL"],
@@ -11933,6 +11960,7 @@ doc = {
   "server": {"id": int(os.environ["PLAK_LINK_SERVER_ID"]), "name": os.environ["PLAK_LINK_SERVER"]},
   "remote": os.environ["PLAK_LINK_ALIAS"],
   "local_site": os.environ["PLAK_LINK_LOCAL"],
+  "type": os.environ["PLAK_LINK_KIND"],
   "linked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
 open(os.environ["PLAK_LINK_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
@@ -11940,11 +11968,12 @@ open(os.environ["PLAK_LINK_TMP"], "w").write(json.dumps(doc, indent=2) + "\n")
     mv "$tmp_link" "$link_file"
 
     if [ "$json" -eq 1 ]; then
-        printf '{"linked":true,"local_site":%s,"remote":%s,"panel_site":{"id":%s,"domain":%s}}\n' \
+        printf '{"linked":true,"local_site":%s,"remote":%s,"type":%s,"panel_site":{"id":%s,"domain":%s}}\n' \
             "$(plak_json_string "$local_site")" "$(plak_json_string "$alias")" \
+            "$(plak_json_string "$site_kind")" \
             "$site_id" "$(plak_json_string "$site_domain")"
     else
-        plak_ui_success "Linked panel site $site_domain to local '$local_site' via remote '$alias'."
+        plak_ui_success "Linked panel site $site_domain ($site_kind) to local '$local_site' via remote '$alias'."
     fi
 }
 
