@@ -317,9 +317,11 @@ per-server billing answers `servers.purchase_required` and must guide to
   lists the public catalog (free accounts can browse), grouped by offer.
   The Plak plan is `code`; `plan` is the provider technical label. Family is
   optional. Needs `user:read`.
-- `buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS]
-  [--json] [--new]` creates a purchase request. It sends only offer/region/
-  name/idempotency key; never a price or Polar ID. Needs `billing:request`.
+- `buy-server --offer ID --region ID --name N [--os OS] [--database DB]
+  [--php V] [--wait SECS] [--poll SECS] [--json] [--new]` creates a purchase
+  request. Defaults are `ubuntu-24-04-lts`, `mysql` and `8.4`; runtime options
+  are part of the local fingerprint. It sends only offer/region/name/runtime/
+  idempotency key; never a price or Polar ID. Needs `billing:request`.
 - `purchase-request <id> [--wait SECS] [--poll SECS] [--json]` polls one
   request without creating anything. A single timeout/refused connection/5xx
   is retried (up to 3 consecutive failures, backoff based on `--poll`); if it
@@ -365,6 +367,7 @@ per-server billing answers `servers.purchase_required` and must guide to
 # Browse; never buy without an explicit user request.
 plak panel offers --json
 plak panel buy-server --offer 12 --region 13 --name web-1 --json
+plak panel buy-server --offer 12 --region 13 --name web-1 --os ubuntu-26-04-lts --database postgresql --php 8.3 --json
 # Give approval_url to the holder, then poll without creating another request:
 plak panel purchase-request 42 --wait 600 --poll 10 --json
 ```
@@ -372,6 +375,8 @@ plak panel purchase-request 42 --wait 600 --poll 10 --json
 `wp-complete-install|wp-mark-installed|wp-install-wpcli|wp-xmlrpc`,
 theme/plugin `activate|deactivate|update|install|delete`,
 `wp-search-replace`, guarded `wp-cli`, `wp-set-php|wp-set-robots`.
+Use `wp-complete-install --password-stdin`; `wp-set-php --json` emits one
+final object after polling.
 **Panel servers (Fase C)**: `service-list|service-restart|service-reload`,
 `wpcli-install|wpcli-uninstall`, `php-info|php-install|php-cli-set`,
 `opcache-enable|disable|refresh`, `firewall-list|add|del`,

@@ -55,14 +55,26 @@ abilities = {
 }
 VALID_PAIRS = {(12, 13), (12, 14), (20, 13), (30, 40), (31, 41),
                (40, 50), (40, 51), (41, 60), (42, 70)}
+OS_TYPES = {"ubuntu-22-04-lts", "ubuntu-24-04-lts", "ubuntu-26-04-lts"}
+DATABASE_TYPES = {"mysql", "mariadb", "postgresql"}
+PHP_VERSIONS = {"5.6", "7.0", "7.1", "7.2", "7.3", "7.4",
+                "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"}
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+def configuration(rec):
+    return {
+        "os_type": rec.get("os_type", "ubuntu-24-04-lts"),
+        "database_type": rec.get("database_type", "mysql"),
+        "php_version": rec.get("php_version", "8.4"),
+    }
 
 def present(rec):
     return {
         "id": rec["id"],
         "status": rec["status"],
+        "configuration": configuration(rec),
         "approval_url": rec["approval_url"],
         "expires_at": rec["expires_at"],
         "created_at": rec["created_at"],
@@ -112,6 +124,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "purchase_polls": state["purchase_polls"],
                 "purchase_requests": len(state["purchases"]),
                 "purchase_ids": sorted(rec["id"] for rec in state["purchases"].values()),
+                "configurations": {rec["name"]: configuration(rec) for rec in state["purchases"].values()},
             })
             return
         if url.path == "/__large/1":
@@ -323,8 +336,14 @@ class H(http.server.BaseHTTPRequestHandler):
             region = body.get("provider_region_id")
             name = body.get("name")
             key = body.get("idempotency_key")
+            os_type = body.get("os_type", "ubuntu-24-04-lts")
+            database_type = body.get("database_type", "mysql")
+            php_version = body.get("php_version", "8.4")
             if not isinstance(offer, int) or not isinstance(region, int) or not name or not key:
                 self._json(422, {"code": "validation.failed", "message": "Invalid purchase request.", "hint": ""})
+                return
+            if os_type not in OS_TYPES or database_type not in DATABASE_TYPES or php_version not in PHP_VERSIONS:
+                self._json(422, {"code": "validation.failed", "message": "Invalid runtime configuration.", "hint": ""})
                 return
             state["purchase_attempts"] += 1
             if (offer, region) not in VALID_PAIRS:
@@ -338,7 +357,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 return
             existing = state["purchases"].get(key)
             if existing:
-                if existing["offer_id"] != offer or existing["region_id"] != region or existing["name"] != name:
+                if (existing["offer_id"] != offer or existing["region_id"] != region
+                        or existing["name"] != name
+                        or configuration(existing) != {
+                            "os_type": os_type,
+                            "database_type": database_type,
+                            "php_version": php_version,
+                        }):
                     self._json(409, {"code": "billing.idempotency_conflict",
                                      "message": "That idempotency key was already used with a different request.",
                                      "hint": ""})
@@ -358,6 +383,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 "offer_id": offer,
                 "region_id": region,
                 "name": name,
+                "os_type": os_type,
+                "database_type": database_type,
+                "php_version": php_version,
                 "status": "pending_approval",
                 "approval_url": "http://127.0.0.1:18997/billing/purchase-requests/%d" % req_id,
                 "expires_at": expires,
@@ -601,6 +629,7 @@ raw = open(sys.argv[1]).read()
 data = json.loads(raw)
 assert data["request_id"] == 41, data
 assert data["status"] == "pending_approval", data
+assert data["configuration"] == {"os_type": "ubuntu-24-04-lts", "database_type": "mysql", "php_version": "8.4"}, data
 assert data["approval_url"].endswith("/billing/purchase-requests/41"), data
 assert data["approval_required"] is True
 assert data["resumed"] is False
@@ -616,10 +645,14 @@ assert "idempotency_key" in raw
 mode = stat.S_IMODE(os.stat(path).st_mode)
 assert mode == 0o600, oct(mode)
 data = json.loads(raw)
-assert any(rec.get("request_id") == 41 for rec in data["requests"].values())
+rec = next(rec for rec in data["requests"].values() if rec.get("request_id") == 41)
+assert rec.get("os_type") == "ubuntu-24-04-lts", rec
+assert rec.get("database_type") == "mysql", rec
+assert rec.get("php_version") == "8.4", rec
 PY
 ./plak.sh panel buy-server --offer 12 --region 13 --name web-41 > "$tmpdir/buy-human.txt" || fail "buy resumed"
 grep -q "Existing purchase request #41 resumed" "$tmpdir/buy-human.txt" || fail "resume message"
+grep -q "Configuration: ubuntu-24-04-lts · mysql · PHP 8.4" "$tmpdir/buy-human.txt" || fail "resume configuration"
 grep -q "The CLI cannot approve or pay" "$tmpdir/buy-human.txt" || fail "approval warning"
 
 stats_before=$(curl -fsS http://127.0.0.1:18997/__stats)
@@ -649,6 +682,88 @@ open_new_rc=$?
 set -e
 [ "$open_new_rc" -ne 0 ] || fail "--new accepted an open request"
 grep -q "still 'pending_approval'" "$tmpdir/buy-new-open.err" || fail "--new open guidance"
+
+# --- runtime configuration: defaults, custom values and validation ---
+./plak.sh panel buy-server --offer 20 --region 13 --name config-custom \
+    --os ubuntu-26-04-lts --database postgresql --php 8.3 --json > "$tmpdir/config-custom.json" || fail "custom config buy"
+python3 - "$tmpdir/config-custom.json" <<'PY' || fail "custom config json"
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data["configuration"] == {
+    "os_type": "ubuntu-26-04-lts",
+    "database_type": "postgresql",
+    "php_version": "8.3",
+}, data
+PY
+python3 - "$PLAK_HOME/panel-purchases.json" <<'PY' || fail "custom config state"
+import json, sys
+data = json.load(open(sys.argv[1]))
+rec = next(rec for rec in data["requests"].values() if rec.get("name") == "config-custom")
+assert rec.get("os_type") == "ubuntu-26-04-lts", rec
+assert rec.get("database_type") == "postgresql", rec
+assert rec.get("php_version") == "8.3", rec
+PY
+# "none" is normalized by the panel for web servers; the CLI matches it.
+./plak.sh panel buy-server --offer 12 --region 14 --name config-none \
+    --database none --php none --json > "$tmpdir/config-none.json" || fail "none config buy"
+python3 - "$tmpdir/config-none.json" <<'PY' || fail "none config normalized"
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data["configuration"] == {
+    "os_type": "ubuntu-24-04-lts",
+    "database_type": "mysql",
+    "php_version": "8.4",
+}, data
+PY
+
+config_before=$(curl -fsS http://127.0.0.1:18997/__stats)
+for bad in "--os ubuntu-18-04-lts" "--database oracle" "--php 9.9"; do
+    set +e
+    ./plak.sh panel buy-server --offer 30 --region 40 --name bad-config $bad --json > "$tmpdir/bad-config.out" 2> "$tmpdir/bad-config.err"
+    bad_rc=$?
+    set -e
+    [ "$bad_rc" -ne 0 ] || fail "invalid configuration accepted: $bad"
+    grep -q "Invalid --" "$tmpdir/bad-config.err" || fail "invalid configuration message: $bad"
+done
+config_after=$(curl -fsS http://127.0.0.1:18997/__stats)
+python3 - "$config_before" "$config_after" <<'PY' || fail "invalid configuration reached the panel"
+import json, sys
+before = json.loads(sys.argv[1])
+after = json.loads(sys.argv[2])
+assert before["purchase_attempts"] == after["purchase_attempts"], (before, after)
+assert before["purchase_requests"] == after["purchase_requests"], (before, after)
+PY
+# Changing the configuration with the same name must not silently reuse an
+# open request. It must be explicit (different --name or --new after terminal).
+set +e
+./plak.sh panel buy-server --offer 20 --region 13 --name config-custom \
+    --os ubuntu-22-04-lts --database mariadb --php 8.2 --json > "$tmpdir/config-conflict.out" 2> "$tmpdir/config-conflict.err"
+config_conflict_rc=$?
+set -e
+[ "$config_conflict_rc" -ne 0 ] || fail "changed configuration reused an open request"
+grep -q "different configuration" "$tmpdir/config-conflict.err" || fail "configuration conflict message"
+grep -q "still 'pending_approval'" "$tmpdir/config-conflict.err" || fail "configuration conflict status"
+python3 - "$PLAK_HOME/panel-purchases.json" <<'PY' || fail "configuration conflict created a request"
+import json, sys
+data = json.load(open(sys.argv[1]))
+matches = [rec for rec in data["requests"].values() if rec.get("name") == "config-custom"]
+assert len(matches) == 1, matches
+assert matches[0].get("os_type") == "ubuntu-26-04-lts", matches[0]
+PY
+python3 - "$(curl -fsS http://127.0.0.1:18997/__stats)" <<'PY' || fail "configuration payload defaults"
+import json, sys
+stats = json.loads(sys.argv[1])
+assert stats["configurations"]["web-41"] == {
+    "os_type": "ubuntu-24-04-lts",
+    "database_type": "mysql",
+    "php_version": "8.4",
+}, stats
+assert stats["configurations"]["config-custom"] == {
+    "os_type": "ubuntu-26-04-lts",
+    "database_type": "postgresql",
+    "php_version": "8.3",
+}, stats
+PY
 
 # --- status query and bounded polling ---
 ./plak.sh panel purchase-request 41 --json > "$tmpdir/pr.json" || fail "purchase-request"
@@ -1079,8 +1194,8 @@ PY
 
 # --- help and agent contract do not teach a bypass ---
 ./plak.sh panel help > "$tmpdir/panel-help.txt" || fail "panel help"
-for needle in "offers" "buy-server" "purchase-request" "billing:request" "purchase_required"; do
-    grep -q "$needle" "$tmpdir/panel-help.txt" || fail "panel help lacks $needle"
+for needle in "offers" "buy-server" "purchase-request" "billing:request" "purchase_required" "--os" "--database" "--php"; do
+    grep -q -- "$needle" "$tmpdir/panel-help.txt" || fail "panel help lacks $needle"
 done
 grep -qi "approve or pay" skills/plak-cli/SKILL.md || fail "skill lacks approval prohibition"
 grep -q "D14/D21" skills/plak-cli/SKILL.md || fail "skill lacks manual backend distinction"

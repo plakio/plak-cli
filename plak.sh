@@ -10915,7 +10915,7 @@ Usage:
   plak panel server <id|name> [--json] [--panel URL] [--dev]
   plak panel providers [--json]
   plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
-  plak panel buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS] [--json] [--new]
+  plak panel buy-server --offer ID --region ID --name N [--os OS] [--database DB] [--php V] [--wait SECS] [--poll SECS] [--json] [--new]
   plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
   plak panel purchases [--json]
   plak panel create-server --name N --provider ID --region ID --plan ID [--json] (legacy)
@@ -10948,6 +10948,8 @@ purchases. The CLI never approves or pays: the account holder opens the
 internal approval_url in an authenticated browser. --yes is not approval.
 Re-running buy-server with the same offer/region/name resumes the stored
 request; after a timeout use purchase-request <id>, never a blind retry.
+buy-server accepts --os, --database and --php (defaults: ubuntu-24-04-lts,
+mysql, 8.4); the runtime configuration is part of the local fingerprint.
 Legacy create-server may answer purchase_required and points to the new flow.
 
   --page N / --per-page N   Pagination (per-page 1-100, default 25).
@@ -12392,7 +12394,8 @@ Usage:
     wp-plugins [--refresh]               Plugin list
 
   Install (sites:write):
-    wp-complete-install --title T --user U --email E --password P
+    wp-complete-install --title T --user U --email E
+                        (--password-stdin | --password P)
     wp-mark-installed                    Mark externally-installed WP as done
     wp-install-wpcli                     Install WP-CLI on the server
     wp-xmlrpc --block | --allow          Toggle XML-RPC access
@@ -12415,6 +12418,8 @@ Usage:
   <site> is the panel id or exact domain. Destructive ops (deletes,
   non-dry-run search-replace) confirm or take --yes. --json prints the
   raw panel response (never secrets).
+  Prefer --password-stdin (printf '%s\n' "$PASS" | ...) over --password:
+  arguments are visible in shell history and process listings.
 HELP
 }
 
@@ -12494,11 +12499,12 @@ if doc.get("reason"):
 }
 
 plak_panel_wp_mutate() {
-    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}" silent="${6:-0}"
     if [ -n "$prompt" ]; then
         plak_panel_write_confirm "$prompt" "$yes" || return 1
     fi
     plak_panel_write_call "$method" "$path" "$body" || return 1
+    [ "$silent" -eq 1 ] && return 0
     if [ "$WP_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
     PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
 import json, os
@@ -12507,16 +12513,25 @@ print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent
 }
 
 plak_panel_wp_complete_install() {
-    local title="" user="" email="" password=""
+    local title="" user="" email="" password="" password_stdin=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --title) title="$2"; shift 2 ;; --user) user="$2"; shift 2 ;;
-            --email) email="$2"; shift 2 ;; --password) password="$2"; shift 2 ;;
+            --email) email="$2"; shift 2 ;;
+            --password) password="$2"; shift 2 ;;
+            --password-stdin) password_stdin=1; shift 1 ;;
             *) plak_ui_error "Unknown flag: $1"; return 1 ;;
         esac
     done
+    if [ "$password_stdin" -eq 1 ]; then
+        [ -z "$password" ] || { plak_ui_error "Use either --password-stdin or --password, not both."; return 1; }
+        password=""
+        IFS= read -r password || true
+    elif [ -n "$password" ]; then
+        echo "Note: --password is visible in shell history. Prefer --password-stdin." >&2
+    fi
     [ -n "$title" ] && [ -n "$user" ] && [ -n "$email" ] && [ -n "$password" ] || {
-        plak_ui_error "Missing: --title --user --email --password."
+        plak_ui_error "Missing: --title --user --email and --password-stdin (or --password)."
         return 1
     }
     local body
@@ -12629,7 +12644,9 @@ plak_panel_wp_set_php() {
     [ -n "$version" ] || { plak_ui_error "Missing --version."; return 1; }
     local body
     body=$(PLAK_V="$version" python3 -c 'import json, os; print(json.dumps({"version": os.environ["PLAK_V"]}))')
-    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/php-version" "$body" || return 1
+    # The panel accepts the change asynchronously (202). Do not print that
+    # intermediate response in --json: the poll below emits one final object.
+    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/php-version" "$body" 0 "" 1 || return 1
     [ "$WP_JSON" -eq 0 ] && echo "PHP change accepted; polling until applied (up to ${wait_secs}s)..."
     local elapsed=0 cur=""
     while [ "$elapsed" -lt "$wait_secs" ]; do
@@ -12638,11 +12655,19 @@ plak_panel_wp_set_php() {
         plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$WP_SITE_ID" || return 1
         cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.php_version")
         [ "$cur" = "$version" ] && {
-            [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || plak_ui_success "PHP version is now $cur."
+            if [ "$WP_JSON" -eq 1 ]; then
+                printf '{"php_version":%s}\n' "$(plak_json_string "$cur")"
+            else
+                plak_ui_success "PHP version is now $cur."
+            fi
             return 0
         }
     done
-    [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || echo "Still changing (current: ${cur:-unknown}). Check again later."
+    if [ "$WP_JSON" -eq 1 ]; then
+        printf '{"php_version":%s,"timed_out":true}\n' "$(plak_json_string "$cur")"
+    else
+        echo "Still changing (current: ${cur:-unknown}). Check again later."
+    fi
     return 3
 }
 
@@ -12670,12 +12695,15 @@ plak_panel_wp_xmlrpc() {
 }
 
 plak_panel_wp() {
-    local sub="$1" sel="$2"
+    local sub="${1:-}" sel="${2:-}"
     if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
         plak_panel_wp_help
         return 0
     fi
-    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"; return 1; }
+    if [ -z "$sub" ] || [ -z "$sel" ]; then
+        plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"
+        return 1
+    fi
     shift 2
     plak_panel_wp_args "$sel" "$@" || return 1
     set -- ${WP_ARGS[@]+"${WP_ARGS[@]}"}
@@ -12720,6 +12748,7 @@ Usage:
   plak panel providers [--json]
   plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
   plak panel buy-server --offer ID --region ID --name N
+                       [--os OS] [--database DB] [--php V]
                        [--wait SECS] [--poll SECS] [--json] [--new]
   plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
   plak panel purchases [--json]
@@ -12742,6 +12771,13 @@ Create and operate your own panel servers and sites (write API).
   --wait SECS       Max seconds to wait for provisioning (default 600 for
                     create-server; 0 for buy-server/purchase-request).
   --poll SECS       Poll interval (default 15 for create-server; 10 for purchases).
+  --os OS           Purchase OS (default ubuntu-24-04-lts; allowed
+                    ubuntu-22-04-lts, ubuntu-24-04-lts, ubuntu-26-04-lts).
+  --database DB     Purchase database (default mysql; allowed mysql,
+                    mariadb, postgresql. 'none' is normalized to mysql
+                    for web servers, matching the panel).
+  --php V           Purchase PHP version (default 8.4; allowed 5.6-8.5.
+                    'none' is normalized to 8.4, matching the panel).
   --new             Start a new request only after failed/cancelled or an
                     expired approval. Never for paid, provisioning or
                     ambiguous/open requests.
@@ -12758,6 +12794,8 @@ catalog needs user:read. buy-server/purchase-request do not require user:read.
 The CLI only receives the internal approval_url; it never receives or prints
 a Polar checkout/customer-portal URL or token. Re-running buy-server with the same
 offer/region/name resumes the stored request instead of creating another one.
+OS/database/PHP are part of the local purchase fingerprint: changing them with
+the same --name never silently reuses the previous request.
 Legacy create-server may answer servers.purchase_required; it never falls
 back to global or comped creation.
 HELP
@@ -13027,10 +13065,21 @@ plak_panel_purchases_ensure() {
 }
 
 plak_panel_purchase_fingerprint() {
-    PLAK_FP_PANEL="$1" PLAK_FP_USER="$2" PLAK_FP_OFFER="$3" PLAK_FP_REGION="$4" PLAK_FP_NAME="$5" python3 -c '
+    PLAK_FP_PANEL="$1" PLAK_FP_USER="$2" PLAK_FP_OFFER="$3" PLAK_FP_REGION="$4" \
+    PLAK_FP_NAME="$5" PLAK_FP_OS="${6:-}" PLAK_FP_DB="${7:-}" PLAK_FP_PHP="${8:-}" \
+    python3 -c '
 import hashlib, os
-keys = ["PLAK_FP_PANEL", "PLAK_FP_USER", "PLAK_FP_OFFER", "PLAK_FP_REGION", "PLAK_FP_NAME"]
-print(hashlib.sha256("|".join(os.environ[k] for k in keys).encode("utf-8")).hexdigest())
+values = [
+    os.environ["PLAK_FP_PANEL"],
+    os.environ["PLAK_FP_USER"],
+    os.environ["PLAK_FP_OFFER"],
+    os.environ["PLAK_FP_REGION"],
+    os.environ["PLAK_FP_NAME"],
+]
+extra = [os.environ.get("PLAK_FP_OS", ""), os.environ.get("PLAK_FP_DB", ""), os.environ.get("PLAK_FP_PHP", "")]
+if any(extra):
+    values.extend(extra)
+print(hashlib.sha256("|".join(values).encode("utf-8")).hexdigest())
 '
 }
 
@@ -13093,6 +13142,52 @@ for rec in (doc.get("requests") or {}).values():
 '
 }
 
+# Find a local record with the same panel/user/offer/region/name but a
+# different runtime configuration. Used to refuse a second silent purchase
+# after changing --os/--database/--php.
+plak_panel_purchase_different_config() {
+    local panel="$1" user="$2" offer="$3" region="$4" name="$5"
+    local want_os="$6" want_db="$7" want_php="$8" file
+    file=$(plak_panel_purchases_file)
+    [ -f "$file" ] || return 0
+    PLAK_FILE="$file" PLAK_PANEL_URL="$panel" PLAK_USER_ID="$user" \
+    PLAK_OFFER_ID="$offer" PLAK_REGION_ID="$region" PLAK_NAME="$name" \
+    PLAK_WANT_OS="$want_os" PLAK_WANT_DB="$want_db" PLAK_WANT_PHP="$want_php" \
+    python3 -c '
+import json, os
+try:
+    with open(os.environ["PLAK_FILE"], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+def norm(value, default):
+    value = str(value or "").strip()
+    return value if value and value != "none" else default
+want = (
+    norm(os.environ.get("PLAK_WANT_OS"), "ubuntu-24-04-lts"),
+    norm(os.environ.get("PLAK_WANT_DB"), "mysql"),
+    norm(os.environ.get("PLAK_WANT_PHP"), "8.4"),
+)
+for rec in (doc.get("requests") or {}).values():
+    if not isinstance(rec, dict):
+        continue
+    if (str(rec.get("panel_url") or "") != os.environ["PLAK_PANEL_URL"]
+            or str(rec.get("user_id") or "") != os.environ["PLAK_USER_ID"]
+            or str(rec.get("offer_id") or "") != os.environ["PLAK_OFFER_ID"]
+            or str(rec.get("region_id") or "") != os.environ["PLAK_REGION_ID"]
+            or str(rec.get("name") or "") != os.environ["PLAK_NAME"]):
+        continue
+    current = (
+        norm(rec.get("os_type"), "ubuntu-24-04-lts"),
+        norm(rec.get("database_type"), "mysql"),
+        norm(rec.get("php_version"), "8.4"),
+    )
+    if current != want:
+        print(json.dumps(rec, sort_keys=True))
+        break
+'
+}
+
 plak_panel_purchase_store() {
     local fp="$1" panel="$2" user_id="$3" offer="$4" region="$5" name="$6"
     local key="$7" request_id="$8" status="$9" approval="${10:-}" expires="${11:-}" created="${12:-}"
@@ -13103,6 +13198,7 @@ plak_panel_purchase_store() {
     PLAK_OFFER_ID="$offer" PLAK_REGION_ID="$region" PLAK_NAME="$name" \
     PLAK_IDEM="$key" PLAK_REQUEST_ID="$request_id" PLAK_STATUS="$status" \
     PLAK_APPROVAL="$approval" PLAK_EXPIRES="$expires" PLAK_CREATED="$created" \
+    PLAK_OS="${PLAK_PURCHASE_OS:-}" PLAK_DB="${PLAK_PURCHASE_DB:-}" PLAK_PHP="${PLAK_PURCHASE_PHP:-}" \
     python3 -c '
 import datetime, json, os, tempfile
 path = os.environ["PLAK_FILE"]
@@ -13131,6 +13227,9 @@ record = {
     "offer_id": integer("PLAK_OFFER_ID", existing.get("offer_id")),
     "region_id": integer("PLAK_REGION_ID", existing.get("region_id")),
     "name": field("PLAK_NAME", existing.get("name")),
+    "os_type": field("PLAK_OS", existing.get("os_type")),
+    "database_type": field("PLAK_DB", existing.get("database_type")),
+    "php_version": field("PLAK_PHP", existing.get("php_version")),
     "idempotency_key": field("PLAK_IDEM", existing.get("idempotency_key")),
     "request_id": integer("PLAK_REQUEST_ID", existing.get("request_id")),
     "status": field("PLAK_STATUS", existing.get("status") or "submitting"),
@@ -13158,7 +13257,9 @@ plak_panel_purchase_update_by_request() {
     file=$(plak_panel_purchases_file)
     [ -f "$file" ] || return 0
     PLAK_FILE="$file" PLAK_REQUEST_ID="$request_id" PLAK_STATUS="$status" \
-    PLAK_APPROVAL="$approval" PLAK_EXPIRES="$expires" python3 -c '
+    PLAK_APPROVAL="$approval" PLAK_EXPIRES="$expires" \
+    PLAK_OS="${PLAK_PURCHASE_OS:-}" PLAK_DB="${PLAK_PURCHASE_DB:-}" PLAK_PHP="${PLAK_PURCHASE_PHP:-}" \
+    python3 -c '
 import datetime, json, os, tempfile
 path = os.environ["PLAK_FILE"]
 try:
@@ -13176,6 +13277,9 @@ for rec in (doc.get("requests") or {}).values():
         rec["approval_url"] = os.environ["PLAK_APPROVAL"]
     if os.environ.get("PLAK_EXPIRES"):
         rec["expires_at"] = os.environ["PLAK_EXPIRES"]
+    for key, env_name in (("os_type", "PLAK_OS"), ("database_type", "PLAK_DB"), ("php_version", "PLAK_PHP")):
+        if os.environ.get(env_name):
+            rec[key] = os.environ[env_name]
     rec["updated_at"] = now
     changed = True
 if not changed:
@@ -13197,7 +13301,9 @@ plak_panel_purchase_json() {
     PLAK_REQUEST_ID="${1:-}" PLAK_STATUS="${2:-}" PLAK_APPROVAL="${3:-}" \
     PLAK_EXPIRES="${4:-}" PLAK_CREATED="${5:-}" PLAK_RESUMED="${6:-0}" \
     PLAK_EXPIRED="${7:-0}" PLAK_TIMED_OUT="${8:-0}" PLAK_AMBIGUOUS="${9:-0}" \
-    PLAK_INTERRUPTED="${10:-0}" PLAK_RESUME="${PLAK_PURCHASE_RESUME:-}" python3 -c '
+    PLAK_INTERRUPTED="${10:-0}" PLAK_RESUME="${PLAK_PURCHASE_RESUME:-}" \
+    PLAK_CONFIG_OS="${PLAK_PURCHASE_OS:-}" PLAK_CONFIG_DB="${PLAK_PURCHASE_DB:-}" \
+    PLAK_CONFIG_PHP="${PLAK_PURCHASE_PHP:-}" python3 -c '
 import json, os
 def nz(name):
     value = os.environ.get(name, "")
@@ -13214,6 +13320,13 @@ out = {
     "resumed": flag("PLAK_RESUMED"),
     "approval_required": status in ("pending_approval", "approved", "checkout_open"),
 }
+configuration = {}
+for key, env_name in (("os_type", "PLAK_CONFIG_OS"), ("database_type", "PLAK_CONFIG_DB"), ("php_version", "PLAK_CONFIG_PHP")):
+    value = os.environ.get(env_name, "")
+    if value:
+        configuration[key] = value
+if configuration:
+    out["configuration"] = configuration
 if flag("PLAK_EXPIRED"):
     out["expired"] = True
 if flag("PLAK_TIMED_OUT"):
@@ -13257,6 +13370,9 @@ plak_panel_purchase_print() {
         provisioning_unknown) echo "Status: provisioning unknown. Do not retry the purchase; check the panel/support." ;;
         *) echo "Status: ${status:-unknown}." ;;
     esac
+    if [ -n "${PLAK_PURCHASE_OS:-}" ] || [ -n "${PLAK_PURCHASE_DB:-}" ] || [ -n "${PLAK_PURCHASE_PHP:-}" ]; then
+        echo "Configuration: ${PLAK_PURCHASE_OS:-?} · ${PLAK_PURCHASE_DB:-?} · PHP ${PLAK_PURCHASE_PHP:-?}"
+    fi
     if [ "$expired" = "1" ]; then
         echo "This request has expired. Create a new one with 'plak panel buy-server ... --new' if needed."
     fi
@@ -13354,6 +13470,13 @@ plak_panel_purchase_poll() {
         approval=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.approval_url")
         expires=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.expires_at")
         created=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.created_at")
+        local cfg_os cfg_db cfg_php
+        cfg_os=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.configuration.os_type")
+        cfg_db=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.configuration.database_type")
+        cfg_php=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.configuration.php_version")
+        [ -n "$cfg_os" ] && PLAK_PURCHASE_OS="$cfg_os"
+        [ -n "$cfg_db" ] && PLAK_PURCHASE_DB="$cfg_db"
+        [ -n "$cfg_php" ] && PLAK_PURCHASE_PHP="$cfg_php"
         [ -n "$status" ] || { plak_ui_error "Invalid purchase request response for #$request_id. Resume with '$PLAK_PURCHASE_RESUME'."; return 1; }
         plak_panel_purchase_update_by_request "$request_id" "$status" "$approval" "$expires"
         expired=0
@@ -13530,11 +13653,18 @@ print("Prices are references; the approval page shows the final amount. The CLI 
 plak_panel_buy_server() {
     local offer="" region="" name="" wait_secs=0 poll_secs=10 json=0 new=0
     local idem_flag="" yes=0
+    local os="ubuntu-24-04-lts" database="mysql" php="8.4"
     while [ $# -gt 0 ]; do
         case "$1" in
             --offer|--offer-id) offer="$2"; shift 2 ;;
             --region|--region-id) region="$2"; shift 2 ;;
             --name) name="$2"; shift 2 ;;
+            --os) os="$2"; shift 2 ;;
+            --database|--db) database="$2"; shift 2 ;;
+            --php) php="$2"; shift 2 ;;
+            --os=*) os="${1#*=}"; shift 1 ;;
+            --database=*|--db=*) database="${1#*=}"; shift 1 ;;
+            --php=*) php="${1#*=}"; shift 1 ;;
             --wait) wait_secs="$2"; shift 2 ;;
             --poll) poll_secs="$2"; shift 2 ;;
             --json) json=1; shift 1 ;;
@@ -13552,6 +13682,25 @@ plak_panel_buy_server() {
     [ -n "$name" ] || { plak_ui_error "Missing --name."; return 1; }
     case "$name" in *[!A-Za-z0-9_-]*) plak_ui_error "Invalid --name: use letters, numbers, '-' or '_' only."; return 1 ;; esac
     [ "${#name}" -le 40 ] || { plak_ui_error "Invalid --name: maximum 40 characters."; return 1; }
+    case "$os" in
+        ubuntu-22-04-lts|ubuntu-24-04-lts|ubuntu-26-04-lts) ;;
+        *) plak_ui_error "Invalid --os '$os'. Allowed: ubuntu-22-04-lts, ubuntu-24-04-lts, ubuntu-26-04-lts."; return 1 ;;
+    esac
+    case "$database" in
+        none|mysql|mariadb|postgresql) ;;
+        *) plak_ui_error "Invalid --database '$database'. Allowed: mysql, mariadb, postgresql (none is normalized to mysql)."; return 1 ;;
+    esac
+    case "$php" in
+        none|5.6|7.0|7.1|7.2|7.3|7.4|8.0|8.1|8.2|8.3|8.4|8.5) ;;
+        *) plak_ui_error "Invalid --php '$php'. Allowed: none, 5.6, 7.0-7.4 or 8.0-8.5."; return 1 ;;
+    esac
+    # Paid web servers always receive a database and PHP runtime. Match the
+    # panel's PurchaseRuntimeOptions normalization before fingerprinting.
+    [ "$database" = "none" ] && database="mysql"
+    [ "$php" = "none" ] && php="8.4"
+    PLAK_PURCHASE_OS="$os"
+    PLAK_PURCHASE_DB="$database"
+    PLAK_PURCHASE_PHP="$php"
     if [ -n "$idem_flag" ]; then
         [ "${#idem_flag}" -le 120 ] || { plak_ui_error "Invalid --idempotency-key: maximum 120 characters."; return 1; }
     fi
@@ -13563,8 +13712,49 @@ plak_panel_buy_server() {
     local user_id
     user_id=$(plak_connect_json_get "$PLAK_SAVED_USER_JSON" "id" 2>/dev/null) || user_id=""
     [ -n "$user_id" ] || user_id="0"
-    local fp
-    fp=$(plak_panel_purchase_fingerprint "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name") || return 1
+
+    # A different runtime configuration is a different purchase. Never reuse
+    # the previous request/credentials silently; refuse while it is still open.
+    local conflicting
+    if ! conflicting=$(plak_panel_purchase_different_config "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name" "$os" "$database" "$php"); then
+        plak_ui_error "Cannot read the local purchase state. Refusing to create a purchase; repair or remove '$(plak_panel_purchases_file)'."
+        return 1
+    fi
+    if [ -n "$conflicting" ]; then
+        local conflict_id conflict_status conflict_expires conflict_expired
+        conflict_id=$(plak_connect_json_get "$conflicting" "request_id")
+        conflict_status=$(plak_connect_json_get "$conflicting" "status")
+        conflict_expires=$(plak_connect_json_get "$conflicting" "expires_at")
+        conflict_expired=$(plak_panel_purchase_expired "$conflict_expires")
+        case "$conflict_status" in
+            failed|cancelled)
+                [ "$new" -eq 1 ] || {
+                    plak_ui_error "Existing purchase request #${conflict_id:-?} for this name is '${conflict_status}' with a different configuration (idempotency conflict). Use --new to start a separate request or a different --name."
+                    return 1
+                }
+                ;;
+            pending_approval|approved|checkout_open)
+                if [ "$conflict_expired" != "1" ]; then
+                    plak_ui_error "Existing purchase request #${conflict_id:-?} for this name uses a different configuration (idempotency conflict) and is still '${conflict_status}'. Use a different --name or resolve it first."
+                    return 1
+                fi
+                [ "$new" -eq 1 ] || {
+                    plak_ui_error "Existing purchase request #${conflict_id:-?} for this name expired with a different configuration (idempotency conflict). Use --new to start a separate request or a different --name."
+                    return 1
+                }
+                ;;
+            *)
+                plak_ui_error "Existing purchase request #${conflict_id:-?} for this name uses a different configuration (idempotency conflict, status: ${conflict_status:-unknown}). Use a different --name; the CLI will not create a second purchase silently."
+                return 1
+                ;;
+        esac
+    fi
+
+    local fp fp_os="" fp_db="" fp_php=""
+    if [ "$os" != "ubuntu-24-04-lts" ] || [ "$database" != "mysql" ] || [ "$php" != "8.4" ]; then
+        fp_os="$os"; fp_db="$database"; fp_php="$php"
+    fi
+    fp=$(plak_panel_purchase_fingerprint "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name" "$fp_os" "$fp_db" "$fp_php") || return 1
 
     local record key="" req_id="" status="" approval="" expires="" created=""
     if ! record=$(plak_panel_purchase_record "$fp"); then
@@ -13578,6 +13768,13 @@ plak_panel_buy_server() {
         approval=$(plak_connect_json_get "$record" "approval_url")
         expires=$(plak_connect_json_get "$record" "expires_at")
         created=$(plak_connect_json_get "$record" "created_at")
+        local rec_os rec_db rec_php
+        rec_os=$(plak_connect_json_get "$record" "os_type")
+        rec_db=$(plak_connect_json_get "$record" "database_type")
+        rec_php=$(plak_connect_json_get "$record" "php_version")
+        [ -n "$rec_os" ] && PLAK_PURCHASE_OS="$rec_os"
+        [ -n "$rec_db" ] && PLAK_PURCHASE_DB="$rec_db"
+        [ -n "$rec_php" ] && PLAK_PURCHASE_PHP="$rec_php"
         if [ "$new" -eq 1 ]; then
             local existing_expired
             existing_expired=$(plak_panel_purchase_expired "$expires")
@@ -13630,13 +13827,17 @@ plak_panel_buy_server() {
         "$key" "" "submitting" "" "" "" || return 1
 
     local body
-    body=$(PLAK_OFFER_ID="$offer" PLAK_REGION_ID="$region" PLAK_NAME="$name" PLAK_IDEM="$key" python3 -c '
+    body=$(PLAK_OFFER_ID="$offer" PLAK_REGION_ID="$region" PLAK_NAME="$name" PLAK_IDEM="$key" \
+        PLAK_OS="$os" PLAK_DB="$database" PLAK_PHP="$php" python3 -c '
 import json, os
 print(json.dumps({
     "offer_id": int(os.environ["PLAK_OFFER_ID"]),
     "provider_region_id": int(os.environ["PLAK_REGION_ID"]),
     "name": os.environ["PLAK_NAME"],
     "idempotency_key": os.environ["PLAK_IDEM"],
+    "os_type": os.environ["PLAK_OS"],
+    "database_type": os.environ["PLAK_DB"],
+    "php_version": os.environ["PLAK_PHP"],
 }, sort_keys=True))
 ') || return 1
     if ! plak_panel_write_call POST "/api/v1/billing/purchase-requests" "$body"; then
@@ -13665,6 +13866,13 @@ print(json.dumps({
     approval=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.approval_url")
     expires=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.expires_at")
     created=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.created_at")
+    local cfg_os cfg_db cfg_php
+    cfg_os=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.configuration.os_type")
+    cfg_db=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.configuration.database_type")
+    cfg_php=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.configuration.php_version")
+    [ -n "$cfg_os" ] && PLAK_PURCHASE_OS="$cfg_os"
+    [ -n "$cfg_db" ] && PLAK_PURCHASE_DB="$cfg_db"
+    [ -n "$cfg_php" ] && PLAK_PURCHASE_PHP="$cfg_php"
     [ -n "$req_id" ] || { plak_ui_error "Invalid purchase request response."; return 1; }
     case "$approval" in
         http://*|https://*) ;;
@@ -13705,6 +13913,9 @@ plak_panel_purchase_request() {
     [ "$poll_secs" -ge 1 ] || poll_secs=1
     # Seed the last known state from the local record so an interrupted poll
     # still reports something useful along with the resume command.
+    PLAK_PURCHASE_OS=""
+    PLAK_PURCHASE_DB=""
+    PLAK_PURCHASE_PHP=""
     local record="" status="" approval="" expires="" created=""
     record=$(plak_panel_purchase_record_by_request "$request_id")
     if [ -n "$record" ]; then
@@ -13712,6 +13923,9 @@ plak_panel_purchase_request() {
         approval=$(plak_connect_json_get "$record" "approval_url")
         expires=$(plak_connect_json_get "$record" "expires_at")
         created=$(plak_connect_json_get "$record" "created_at")
+        PLAK_PURCHASE_OS=$(plak_connect_json_get "$record" "os_type")
+        PLAK_PURCHASE_DB=$(plak_connect_json_get "$record" "database_type")
+        PLAK_PURCHASE_PHP=$(plak_connect_json_get "$record" "php_version")
     fi
     plak_panel_purchase_poll "$request_id" "$wait_secs" "$poll_secs" "$json" 0 status \
         "$status" "$approval" "$expires" "$created"
@@ -13760,6 +13974,11 @@ for rec in (doc.get("requests") or {}).values():
         "name": rec.get("name"),
         "offer_id": rec.get("offer_id"),
         "region_id": rec.get("region_id"),
+        "configuration": {
+            "os_type": rec.get("os_type") or "ubuntu-24-04-lts",
+            "database_type": rec.get("database_type") or "mysql",
+            "php_version": rec.get("php_version") or "8.4",
+        },
         "approval_url": rec.get("approval_url"),
         "expires_at": expires,
         "created_at": rec.get("created_at"),

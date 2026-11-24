@@ -63,7 +63,7 @@ how to grant them):
 ```bash
 plak panel providers [--json]
 plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
-plak panel buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS] [--json] [--new]
+plak panel buy-server --offer ID --region ID --name N [--os OS] [--database DB] [--php V] [--wait SECS] [--poll SECS] [--json] [--new]
 plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
 plak panel purchases [--json]
 plak panel create-server --name N --provider ID --region ID --plan ID [--json]   # legacy
@@ -116,6 +116,7 @@ plak panel offers --provider AWS
 plak panel offers --family arm
 plak panel offers --region 13
 plak panel buy-server --offer 12 --region 13 --name web-1
+plak panel buy-server --offer 12 --region 13 --name web-1 --os ubuntu-26-04-lts --database postgresql --php 8.3
 plak panel buy-server --offer 12 --region 13 --name web-1 --json
 plak panel purchase-request 42 --wait 600 --poll 10
 plak panel purchases --json
@@ -127,8 +128,17 @@ plak panel purchases --json
   optional: some providers (DigitalOcean, Vultr, UpCloud) omit them, and the
   CLI simply leaves the family out. `--provider`, `--family` and `--region`
   filter the catalog (region accepts an id or label).
-- `buy-server` sends only `offer_id`, `provider_region_id`, `name` and an
+- `buy-server` sends only `offer_id`, `provider_region_id`, `name`, the
+  runtime configuration (`os_type`, `database_type`, `php_version`) and an
   idempotency key. It never sends a price or Polar product/price ID.
+- Runtime defaults are `ubuntu-24-04-lts`, `mysql` and `8.4`. Allowed OS
+  values are `ubuntu-22-04-lts`, `ubuntu-24-04-lts` and
+  `ubuntu-26-04-lts`; databases are `mysql`, `mariadb` and `postgresql`;
+  PHP is `5.6`-`8.5` (all values accepted by the panel). The panel normalizes
+  `none` to `mysql`/`8.4` for web servers, and the CLI does the same before
+  fingerprinting. The configuration is part of the local purchase
+  fingerprint: changing `--os`, `--database` or `--php` with the same
+  `--name` never silently resumes the previous request.
 - The CLI prints only the panel's internal `approval_url` (for example
   `https://cloud.plak.io/billing/purchase-requests/42`). The account holder
   opens it in an authenticated browser and approves/pays there. The CLI never
@@ -166,7 +176,8 @@ plak panel purchases --json
   period; the CLI reports the panel message and does not claim immediate
   destruction. The subscription is cancelled in the Polar portal.
 
-`--json` exposes `request_id`, `status`, `approval_url`, `expires_at`,
+`--json` exposes `request_id`, `status`, `configuration` (`os_type`,
+`database_type`, `php_version` when known), `approval_url`, `expires_at`,
 `created_at`, `resumed`, `approval_required`, and the flags `expired`,
 `timed_out`, `ambiguous` or `interrupted` when applicable; a timed-out or
 interrupted poll also includes `resume_command`. `approval_required` is true
@@ -193,6 +204,12 @@ theme/plugin `activate|deactivate|update|install|delete`, `wp-search-replace`
 `wp-set-php --version` (polled) and `wp-set-robots`. Partial results
 (`updated/failed`) are always shown; destructive remote wp-cli is denied
 server-side.
+
+`wp-complete-install` accepts `--password-stdin` (preferred: the secret does
+not enter argv or shell history) and the legacy `--password P`. With
+`--json`, `wp-set-php` prints one final object after polling
+(`{"php_version":"8.3"}`) or `{"php_version":"...","timed_out":true}`; it does
+not emit the intermediate 202 response.
 
 ## Site infra (`plak panel db-*|cron-*|cert-*|redirect-*|alias-*|dns-*|authuser-*|cache-*|app-*`, CLI-43)
 

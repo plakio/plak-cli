@@ -14,7 +14,7 @@ Usage:
   plak panel server <id|name> [--json] [--panel URL] [--dev]
   plak panel providers [--json]
   plak panel offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]
-  plak panel buy-server --offer ID --region ID --name N [--wait SECS] [--poll SECS] [--json] [--new]
+  plak panel buy-server --offer ID --region ID --name N [--os OS] [--database DB] [--php V] [--wait SECS] [--poll SECS] [--json] [--new]
   plak panel purchase-request <id> [--wait SECS] [--poll SECS] [--json]
   plak panel purchases [--json]
   plak panel create-server --name N --provider ID --region ID --plan ID [--json] (legacy)
@@ -47,6 +47,8 @@ purchases. The CLI never approves or pays: the account holder opens the
 internal approval_url in an authenticated browser. --yes is not approval.
 Re-running buy-server with the same offer/region/name resumes the stored
 request; after a timeout use purchase-request <id>, never a blind retry.
+buy-server accepts --os, --database and --php (defaults: ubuntu-24-04-lts,
+mysql, 8.4); the runtime configuration is part of the local fingerprint.
 Legacy create-server may answer purchase_required and points to the new flow.
 
   --page N / --per-page N   Pagination (per-page 1-100, default 25).

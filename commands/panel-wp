@@ -15,7 +15,8 @@ Usage:
     wp-plugins [--refresh]               Plugin list
 
   Install (sites:write):
-    wp-complete-install --title T --user U --email E --password P
+    wp-complete-install --title T --user U --email E
+                        (--password-stdin | --password P)
     wp-mark-installed                    Mark externally-installed WP as done
     wp-install-wpcli                     Install WP-CLI on the server
     wp-xmlrpc --block | --allow          Toggle XML-RPC access
@@ -38,6 +39,8 @@ Usage:
   <site> is the panel id or exact domain. Destructive ops (deletes,
   non-dry-run search-replace) confirm or take --yes. --json prints the
   raw panel response (never secrets).
+  Prefer --password-stdin (printf '%s\n' "$PASS" | ...) over --password:
+  arguments are visible in shell history and process listings.
 HELP
 }
 
@@ -117,11 +120,12 @@ if doc.get("reason"):
 }
 
 plak_panel_wp_mutate() {
-    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}"
+    local method="$1" path="$2" body="${3:-}" yes="${4:-0}" prompt="${5:-}" silent="${6:-0}"
     if [ -n "$prompt" ]; then
         plak_panel_write_confirm "$prompt" "$yes" || return 1
     fi
     plak_panel_write_call "$method" "$path" "$body" || return 1
+    [ "$silent" -eq 1 ] && return 0
     if [ "$WP_JSON" -eq 1 ]; then printf '%s\n' "$PLAK_PANEL_JSON"; return 0; fi
     PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
 import json, os
@@ -130,16 +134,25 @@ print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}), indent
 }
 
 plak_panel_wp_complete_install() {
-    local title="" user="" email="" password=""
+    local title="" user="" email="" password="" password_stdin=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --title) title="$2"; shift 2 ;; --user) user="$2"; shift 2 ;;
-            --email) email="$2"; shift 2 ;; --password) password="$2"; shift 2 ;;
+            --email) email="$2"; shift 2 ;;
+            --password) password="$2"; shift 2 ;;
+            --password-stdin) password_stdin=1; shift 1 ;;
             *) plak_ui_error "Unknown flag: $1"; return 1 ;;
         esac
     done
+    if [ "$password_stdin" -eq 1 ]; then
+        [ -z "$password" ] || { plak_ui_error "Use either --password-stdin or --password, not both."; return 1; }
+        password=""
+        IFS= read -r password || true
+    elif [ -n "$password" ]; then
+        echo "Note: --password is visible in shell history. Prefer --password-stdin." >&2
+    fi
     [ -n "$title" ] && [ -n "$user" ] && [ -n "$email" ] && [ -n "$password" ] || {
-        plak_ui_error "Missing: --title --user --email --password."
+        plak_ui_error "Missing: --title --user --email and --password-stdin (or --password)."
         return 1
     }
     local body
@@ -252,7 +265,9 @@ plak_panel_wp_set_php() {
     [ -n "$version" ] || { plak_ui_error "Missing --version."; return 1; }
     local body
     body=$(PLAK_V="$version" python3 -c 'import json, os; print(json.dumps({"version": os.environ["PLAK_V"]}))')
-    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/php-version" "$body" || return 1
+    # The panel accepts the change asynchronously (202). Do not print that
+    # intermediate response in --json: the poll below emits one final object.
+    plak_panel_wp_mutate PATCH "/api/v1/sites/$WP_SITE_ID/settings/php-version" "$body" 0 "" 1 || return 1
     [ "$WP_JSON" -eq 0 ] && echo "PHP change accepted; polling until applied (up to ${wait_secs}s)..."
     local elapsed=0 cur=""
     while [ "$elapsed" -lt "$wait_secs" ]; do
@@ -261,11 +276,19 @@ plak_panel_wp_set_php() {
         plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/sites/$WP_SITE_ID" || return 1
         cur=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.php_version")
         [ "$cur" = "$version" ] && {
-            [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || plak_ui_success "PHP version is now $cur."
+            if [ "$WP_JSON" -eq 1 ]; then
+                printf '{"php_version":%s}\n' "$(plak_json_string "$cur")"
+            else
+                plak_ui_success "PHP version is now $cur."
+            fi
             return 0
         }
     done
-    [ "$WP_JSON" -eq 1 ] && printf '{"php_version":%s}\n' "$(plak_json_string "$cur")" || echo "Still changing (current: ${cur:-unknown}). Check again later."
+    if [ "$WP_JSON" -eq 1 ]; then
+        printf '{"php_version":%s,"timed_out":true}\n' "$(plak_json_string "$cur")"
+    else
+        echo "Still changing (current: ${cur:-unknown}). Check again later."
+    fi
     return 3
 }
 
@@ -293,12 +316,15 @@ plak_panel_wp_xmlrpc() {
 }
 
 plak_panel_wp() {
-    local sub="$1" sel="$2"
+    local sub="${1:-}" sel="${2:-}"
     if [ "$sel" = "--help" ] || [ "$sel" = "-h" ] || [ "$sel" = "help" ]; then
         plak_panel_wp_help
         return 0
     fi
-    [ -n "$sub" ] && [ -n "$sel" ] || { plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"; return 1; }
+    if [ -z "$sub" ] || [ -z "$sel" ]; then
+        plak_ui_error "Usage: plak panel <wp-cmd> <site> [...]"
+        return 1
+    fi
     shift 2
     plak_panel_wp_args "$sel" "$@" || return 1
     set -- ${WP_ARGS[@]+"${WP_ARGS[@]}"}

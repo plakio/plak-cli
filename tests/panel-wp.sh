@@ -159,9 +159,11 @@ grep -q "6.7" "$tmpdir/ov.txt" || fail "overview version"
 grep -q "t1" "$tmpdir/th.txt" || fail "themes rows"
 ./plak.sh panel wp-plugins wp.example > "$tmpdir/pl.txt" || fail "plugins"
 grep -q "pending" "$tmpdir/pl.txt" || fail "plugins pending"
+./plak.sh panel wp-overview 2>"$tmpdir/missing-site.err" && fail "missing site accepted"
+grep -q "Usage: plak panel <wp-cmd> <site>" "$tmpdir/missing-site.err" || fail "missing site usage"
 
 # --- install + toggles ---
-./plak.sh panel wp-complete-install wp.example --title T --user a --email a@e.t --password longenough8 >/dev/null || fail "complete-install"
+printf 'longenough8\n' | ./plak.sh panel wp-complete-install wp.example --title T --user a --email a@e.t --password-stdin >/dev/null || fail "complete-install"
 ./plak.sh panel wp-mark-installed wp.example --json > "$tmpdir/fp1.out" || fail "mark-installed"
 grep -q completed "$tmpdir/fp1.out" || fail "mark-installed output"
 ./plak.sh panel wp-install-wpcli wp.example --json > "$tmpdir/fp2.out" || fail "install-wpcli"
@@ -192,7 +194,11 @@ grep -q '"ran": true' "$tmpdir/fp9.out" || fail "wp-cli output"
 
 # --- settings async + read-only denied ---
 ./plak.sh panel wp-set-php wp.example --version 8.3 --poll 1 --wait 20 --json > "$tmpdir/php.json" || fail "php set"
-grep -q '"php_version": "8.3"' "$tmpdir/php.json" || fail "php poll"
+python3 - "$tmpdir/php.json" <<'PY' || fail "php poll json"
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data == {"php_version": "8.3"}, data
+PY
 ./plak.sh panel wp-set-robots wp.example --disable --json > "$tmpdir/fp10.out" || fail "robots"
 grep -q disable_robots "$tmpdir/fp10.out" || fail "robots output"
 seed_conn "ro-token"
