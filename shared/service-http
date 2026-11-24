@@ -1,0 +1,42 @@
+# HTTP client for external Plak services (lookup.plak.io, sandbox.plak.io).
+# Keeps panel/connect state separate: it only sets PLAK_SVC_* variables.
+#
+# Usage: plak_service_http METHOD URL MAX_TIME [curl args...]
+# Sets: PLAK_SVC_STATUS, PLAK_SVC_BODY, PLAK_SVC_CURL_EXIT,
+#       PLAK_SVC_RETRY_AFTER.
+plak_service_http() {
+    local method="$1" url="$2" max_time="${3:-30}"
+    shift 3
+    local headers_file body_file code
+    PLAK_SVC_STATUS=""
+    PLAK_SVC_BODY=""
+    PLAK_SVC_CURL_EXIT=0
+    PLAK_SVC_RETRY_AFTER=""
+    headers_file=$(mktemp) || return 1
+    body_file=$(mktemp) || { rm -f "$headers_file"; return 1; }
+    local args=(-sS --max-time "$max_time" --connect-timeout 10 -X "$method"
+        -D "$headers_file" -o "$body_file" -w '%{http_code}'
+        -H 'Accept: application/json'
+        -H "User-Agent: PlakCLI/${PLAK_VERSION:-unknown}")
+    args+=("$@")
+    code=$(curl "${args[@]}" "$url" 2>/dev/null)
+    PLAK_SVC_CURL_EXIT=$?
+    [ "$PLAK_SVC_CURL_EXIT" -eq 0 ] || code="000"
+    PLAK_SVC_STATUS="$code"
+    PLAK_SVC_BODY=$(cat "$body_file" 2>/dev/null || true)
+    PLAK_SVC_RETRY_AFTER=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d ' \r\n' || true)
+    rm -f "$headers_file" "$body_file"
+    [ "$code" != "000" ]
+}
+
+# Human-readable transport error for a service label.
+plak_service_http_error() {
+    local label="${1:-Service}"
+    case "${PLAK_SVC_CURL_EXIT:-0}" in
+        6) printf 'Could not resolve the %s hostname. Check the network and the service URL.' "$label" ;;
+        7) printf 'Could not connect to %s (connection refused). Check the network and the service URL.' "$label" ;;
+        28) printf '%s took too long to respond (timeout). Check the network and retry.' "$label" ;;
+        35|51|60) printf 'Could not establish a secure connection to %s (TLS/certificate).' "$label" ;;
+        *) printf '%s unreachable (curl error %s). Check the network and the service URL.' "$label" "${PLAK_SVC_CURL_EXIT:-unknown}" ;;
+    esac
+}

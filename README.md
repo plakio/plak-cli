@@ -228,7 +228,15 @@ plak skill install
 plak enable
 plak disable
 plak reload
+plak lookup example.com
+plak sandbox create demo
 ```
+
+Panel, Lookup and Sandbox are optional cloud commands: `plak panel` works with
+your connected panel account, `plak lookup` uses the public
+`lookup.plak.io` API (no account), and `plak sandbox` creates disposable sites
+through `sandbox.plak.io` (no account, no delete; see
+[`docs/lookup.md`](docs/lookup.md) and [`docs/sandbox.md`](docs/sandbox.md)).
 
 The local site dashboard is served at `https://plak.localhost` after install.
 Each site has a linkable detail view at `https://plak.localhost/#/site/<name>`

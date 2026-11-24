@@ -82,6 +82,8 @@ Commands:
   connect     Connect this machine to your Plak panel account
   disconnect  Forget the local panel credential
   panel       List your own panel sites and servers (read-only)
+  lookup      WHOIS, DNS, email security, zones and audits
+  sandbox     Create and inspect disposable sandbox sites
   add         Create a WordPress or static local site
   edit        Open the local HTML editor for a static site
   import      Create a local site from a backup ZIP or TAR
@@ -123,6 +125,8 @@ Examples:
   plak remote connect
   plak connect
   plak panel sites
+  plak lookup example.com
+  plak sandbox create demo
   plak status
 HELP
 }
@@ -193,6 +197,20 @@ HELP
                 plak_panel_help
             else
                 echo "Usage: plak panel <sites|site|servers|server> [--json]"
+            fi
+            ;;
+        lookup)
+            if declare -F plak_lookup_help >/dev/null 2>&1; then
+                plak_lookup_help
+            else
+                echo "Usage: plak lookup <domain> [--deep] [--json]"
+            fi
+            ;;
+        sandbox)
+            if declare -F plak_sandbox_help >/dev/null 2>&1; then
+                plak_sandbox_help
+            else
+                echo "Usage: plak sandbox <create|list|show|open|import>"
             fi
             ;;
         install)
@@ -326,7 +344,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|edit|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
+        add|import|clone|delete|rename|list|path|edit|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel|lookup|sandbox)
             set +e
             ;;
     esac
@@ -365,6 +383,12 @@ main() {
             ;;
         panel)
             plak_panel "$@"
+            ;;
+        lookup)
+            plak_lookup "$@"
+            ;;
+        sandbox)
+            plak_sandbox "$@"
             ;;
         add)
             check_dependencies
@@ -1218,6 +1242,50 @@ plak_remote_choose_ssh() {
     [ -n "$selected" ] || return 1
     selected="${selected##ssh }"
     printf '%s\n' "$selected"
+}
+
+# Source: shared/service-http
+# HTTP client for external Plak services (lookup.plak.io, sandbox.plak.io).
+# Keeps panel/connect state separate: it only sets PLAK_SVC_* variables.
+#
+# Usage: plak_service_http METHOD URL MAX_TIME [curl args...]
+# Sets: PLAK_SVC_STATUS, PLAK_SVC_BODY, PLAK_SVC_CURL_EXIT,
+#       PLAK_SVC_RETRY_AFTER.
+plak_service_http() {
+    local method="$1" url="$2" max_time="${3:-30}"
+    shift 3
+    local headers_file body_file code
+    PLAK_SVC_STATUS=""
+    PLAK_SVC_BODY=""
+    PLAK_SVC_CURL_EXIT=0
+    PLAK_SVC_RETRY_AFTER=""
+    headers_file=$(mktemp) || return 1
+    body_file=$(mktemp) || { rm -f "$headers_file"; return 1; }
+    local args=(-sS --max-time "$max_time" --connect-timeout 10 -X "$method"
+        -D "$headers_file" -o "$body_file" -w '%{http_code}'
+        -H 'Accept: application/json'
+        -H "User-Agent: PlakCLI/${PLAK_VERSION:-unknown}")
+    args+=("$@")
+    code=$(curl "${args[@]}" "$url" 2>/dev/null)
+    PLAK_SVC_CURL_EXIT=$?
+    [ "$PLAK_SVC_CURL_EXIT" -eq 0 ] || code="000"
+    PLAK_SVC_STATUS="$code"
+    PLAK_SVC_BODY=$(cat "$body_file" 2>/dev/null || true)
+    PLAK_SVC_RETRY_AFTER=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d ' \r\n' || true)
+    rm -f "$headers_file" "$body_file"
+    [ "$code" != "000" ]
+}
+
+# Human-readable transport error for a service label.
+plak_service_http_error() {
+    local label="${1:-Service}"
+    case "${PLAK_SVC_CURL_EXIT:-0}" in
+        6) printf 'Could not resolve the %s hostname. Check the network and the service URL.' "$label" ;;
+        7) printf 'Could not connect to %s (connection refused). Check the network and the service URL.' "$label" ;;
+        28) printf '%s took too long to respond (timeout). Check the network and retry.' "$label" ;;
+        35|51|60) printf 'Could not establish a secure connection to %s (TLS/certificate).' "$label" ;;
+        *) printf '%s unreachable (curl error %s). Check the network and the service URL.' "$label" "${PLAK_SVC_CURL_EXIT:-unknown}" ;;
+    esac
 }
 
 # Source: shared/site/agent
@@ -10898,6 +10966,638 @@ plak_install() {
     plak_site_install "$@"
 }
 
+# Source: commands/lookup
+# plak lookup — WHOIS, DNS, email security, zones and audits (plakio/plak-cli#76, #77).
+#
+# The public Lookup API is anonymous and rate-limited by IP. The CLI never
+# sends credentials; it only prints the API response and surfaces 429/Retry-After.
+
+plak_lookup_help() {
+    cat <<'HELP'
+Usage:
+  plak lookup <domain> [--deep] [--json] [--timeout SECS]
+  plak lookup whois <domain> [--json] [--timeout SECS]
+  plak lookup dns <domain> [--type TYPE] [--json] [--timeout SECS]
+  plak lookup email <domain> [--json] [--timeout SECS]
+  plak lookup zone <domain> [--deep] [--output FILE] [--json] [--timeout SECS]
+  plak lookup health [--json] [--timeout SECS]
+
+  plak lookup audit <domain...> [--file FILE] [--wait SECS] [--poll SECS]
+                          [--cancel ID | --id ID] [--format json|csv] [--output FILE] [--json]
+  plak lookup convert [FILE|-] --provider bind|cloudflare|route53|route53-json
+                      [--output FILE] [--json]
+  plak lookup diff --before FILE --after FILE [--csv] [--output FILE] [--json]
+
+WHOIS, DNS, IP/HTTP data and email-security checks through lookup.plak.io.
+
+  --deep        Try AXFR and Certificate Transparency (limited to 5/min).
+  --json        Raw API JSON (never mixed with human messages).
+  --timeout     Per-request timeout in seconds (default 30; audits 60/120).
+  --type        Filter DNS records by type (A, AAAA, MX, TXT, ...).
+  --output      Write the zone or audit report to a file.
+  --file        Domain list for audit (one per line); '-' reads stdin.
+  --wait        0 = start and return; >0 polls until done/timeout (exit 3).
+  --poll        Audit poll interval (default 5).
+  --id          Poll an existing audit instead of creating one.
+  --format      Download the finished audit report as JSON or CSV.
+  --cancel      Cancel an audit by id instead of creating one.
+  --provider    Zone conversion target (default cloudflare).
+  --csv         Print the CSV export of a zone diff.
+
+The API is public and rate-limited by IP: 30/min normal, 5/min deep,
+10/min convert/diff, 5/min audit creation, 120/min audit status.
+Set PLAK_LOOKUP_URL for staging/self-hosted (default https://lookup.plak.io).
+HELP
+}
+
+plak_lookup_require_deps() {
+    if ! plak_command_exists curl; then
+        plak_ui_error "curl is required for 'plak lookup'."
+        return 1
+    fi
+    if ! plak_command_exists python3; then
+        plak_ui_error "python3 is required for 'plak lookup' (JSON parsing)."
+        return 1
+    fi
+}
+
+plak_lookup_base() {
+    local base="${PLAK_LOOKUP_URL:-https://lookup.plak.io}"
+    base="${base%/}"
+    case "$base" in
+        http://*|https://*) ;;
+        *) plak_ui_error "Invalid PLAK_LOOKUP_URL '$base' (use http:// or https://)."; return 1 ;;
+    esac
+    printf '%s\n' "$base"
+}
+
+plak_lookup_quote() {
+    PLAK_QUOTE="$1" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["PLAK_QUOTE"], safe=""))'
+}
+
+plak_lookup_error() {
+    local status="$1" body="$2" msg
+    case "$status" in
+        422)
+            msg=$(printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("invalid input")
+    raise SystemExit(0)
+errors = d.get("errors") or []
+if isinstance(errors, list) and errors:
+    print(" ".join(str(e) for e in errors[:3]))
+else:
+    print(d.get("message") or "invalid input")
+' 2>/dev/null)
+            plak_ui_error "Lookup rejected the request: ${msg:-invalid input}."
+            ;;
+        429)
+            plak_ui_error "Lookup rate limit reached${PLAK_SVC_RETRY_AFTER:+ (retry after ${PLAK_SVC_RETRY_AFTER}s)}. Try again later."
+            ;;
+        5??)
+            plak_ui_error "Lookup is temporarily unavailable (HTTP $status). Retry later."
+            ;;
+        *)
+            plak_ui_error "Lookup request failed (HTTP ${status:-unknown})."
+            ;;
+    esac
+}
+
+plak_lookup_get() {
+    local url="$1" timeout="${2:-30}"
+    if ! plak_service_http GET "$url" "$timeout"; then
+        plak_ui_error "$(plak_service_http_error Lookup)"
+        return 1
+    fi
+    if [ "$PLAK_SVC_STATUS" != "200" ]; then
+        plak_lookup_error "$PLAK_SVC_STATUS" "$PLAK_SVC_BODY"
+        return 1
+    fi
+}
+
+plak_lookup_post() {
+    local url="$1" timeout="${2:-60}"
+    shift 2
+    if ! plak_service_http POST "$url" "$timeout" "$@"; then
+        plak_ui_error "$(plak_service_http_error Lookup)"
+        return 1
+    fi
+    if [ "$PLAK_SVC_STATUS" != "200" ]; then
+        plak_lookup_error "$PLAK_SVC_STATUS" "$PLAK_SVC_BODY"
+        return 1
+    fi
+}
+
+plak_lookup_domain_url() {
+    local path="$1" domain="$2" deep="${3:-0}"
+    local base encoded url
+    base=$(plak_lookup_base) || return 1
+    encoded=$(plak_lookup_quote "$domain") || return 1
+    url="$base$path?domain=$encoded"
+    [ "$deep" -eq 1 ] && url="$url&deep=1"
+    printf '%s\n' "$url"
+}
+
+plak_lookup_fetch() {
+    local domain="$1" deep="${2:-0}" timeout="${3:-30}" url
+    url=$(plak_lookup_domain_url "/api.php" "$domain" "$deep") || return 1
+    plak_lookup_get "$url" "$timeout"
+}
+
+plak_lookup_summary() {
+    local domain="" deep=0 json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --deep) deep=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domain="$1"; shift 1 ;;
+        esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup <domain> [--deep] [--json]"; return 1; }
+    plak_lookup_fetch "$domain" "$deep" "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+def records(name):
+    out = []
+    for item in doc.get("whois") or []:
+        if str(item.get("name", "")).lower() == name.lower():
+            out.append(str(item.get("value", "")))
+    return out
+def first(name):
+    values = records(name)
+    return values[0] if values else None
+root = doc.get("root_domain")
+print("Domain: %s%s" % (doc.get("domain") or "?", " (root %s)" % root if root and root != doc.get("domain") else ""))
+registrar = first("Registrar")
+expiry = first("Expiration Date")
+dnssec = first("DNSSEC")
+whois = doc.get("whois_source") or "-"
+bits = ["source %s" % whois]
+if registrar: bits.append("registrar %s" % registrar)
+if expiry: bits.append("expires %s" % expiry)
+if dnssec: bits.append("DNSSEC %s" % dnssec)
+print("WHOIS: " + " · ".join(bits))
+print("DNS: %s (%s), %d records" % (doc.get("dns_status") or "?", doc.get("dns_source") or "?", len(doc.get("dns_records") or [])))
+ns = doc.get("nameservers") or []
+if ns: print("Nameservers: " + ", ".join(map(str, ns)))
+ips = doc.get("ips") or []
+if ips: print("IPs: " + ", ".join(map(str, ips)))
+http = "HTTP: "
+if doc.get("http_skipped"):
+    http += "skipped (%s)" % doc.get("http_skipped")
+elif doc.get("http_error"):
+    http += "error: %s" % doc.get("http_error")
+else:
+    http += "%s %s" % (doc.get("http_status") if doc.get("http_status") is not None else "?", doc.get("http_url") or "")
+    if doc.get("http_tls"): http += " · TLS"
+print(http)
+email = doc.get("email_security")
+if isinstance(email, dict):
+    print("Email: %s — %s" % (email.get("status") or "?", email.get("summary") or ""))
+else:
+    print("Email: unavailable (subdomain lookup)" if doc.get("sub_domain") else "Email: unavailable")
+zone_meta = doc.get("zone_meta") or {}
+if zone_meta:
+    print("Zone: %s, %s records%s" % (zone_meta.get("scope") or "?", zone_meta.get("record_count", 0), ", partial" if doc.get("partial") else ""))
+for warning in doc.get("warnings") or []:
+    print("Warning: %s" % warning)
+for error in doc.get("errors") or []:
+    print("Error: %s" % error)
+if doc.get("request_id"):
+    print("Request: %s%s" % (doc.get("request_id"), " (cached)" if doc.get("cached") else ""))
+'
+}
+
+plak_lookup_whois() {
+    local domain="" json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) domain="$1"; shift 1 ;; esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup whois <domain> [--json]"; return 1; }
+    plak_lookup_fetch "$domain" 0 "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print("WHOIS source: %s" % (doc.get("whois_source") or "-"))
+items = doc.get("whois") or []
+if not items:
+    print("(no WHOIS records)")
+for item in items:
+    print("%-22s %s" % (item.get("name", "?"), item.get("value", "")))
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning)
+'
+}
+
+plak_lookup_dns() {
+    local domain="" type="" json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --type) type="$2"; shift 2 ;;
+            --type=*) type="${1#*=}"; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domain="$1"; shift 1 ;;
+        esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup dns <domain> [--type TYPE] [--json]"; return 1; }
+    plak_lookup_fetch "$domain" 0 "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | PLAK_TYPE="$type" python3 -c '
+import json, os, sys
+doc = json.load(sys.stdin)
+want = os.environ.get("PLAK_TYPE", "").lower()
+print("DNS: %s (%s)" % (doc.get("dns_status") or "?", doc.get("dns_source") or "?"))
+count = 0
+for item in doc.get("dns_records") or []:
+    if want and str(item.get("type", "")).lower() != want:
+        continue
+    count += 1
+    print("%-6s %-36s %s (TTL %s)" % (str(item.get("type", "?")).upper(), item.get("name", ""), item.get("value", ""), item.get("ttl", "?")))
+if count == 0:
+    print("(no records%s)" % (" of type " + want.upper() if want else ""))
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning)
+'
+}
+
+plak_lookup_email() {
+    local domain="" json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) domain="$1"; shift 1 ;; esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup email <domain> [--json]"; return 1; }
+    plak_lookup_fetch "$domain" 0 "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+email = doc.get("email_security")
+if not isinstance(email, dict):
+    print("Email security: unavailable%s" % (" for subdomains" if doc.get("sub_domain") else ""))
+    raise SystemExit(0)
+print("Email security: %s — %s" % (email.get("status") or "?", email.get("summary") or ""))
+for check in email.get("checks") or []:
+    print("[%-4s] %-12s %s" % (check.get("status") or "?", check.get("label") or check.get("key") or "?", check.get("summary") or ""))
+    if check.get("recommendation"):
+        print("       %s" % check["recommendation"])
+'
+}
+
+plak_lookup_zone() {
+    local domain="" deep=0 json=0 output="" timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --deep) deep=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --output) output="$2"; shift 2 ;;
+            --output=*) output="${1#*=}"; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domain="$1"; shift 1 ;;
+        esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup zone <domain> [--deep] [--output FILE] [--json]"; return 1; }
+    plak_lookup_fetch "$domain" "$deep" "$timeout" || return 1
+    if [ -n "$output" ]; then
+        printf '%s' "$PLAK_SVC_BODY" | PLAK_ZONE_OUT="$output" python3 -c '
+import json, os, sys
+doc = json.load(sys.stdin)
+content = doc.get("zone") or ""
+if not content:
+    print("The API did not return a zone file.", file=sys.stderr)
+    raise SystemExit(1)
+open(os.environ["PLAK_ZONE_OUT"], "w").write(content)
+' || return 1
+        [ "$json" -eq 0 ] && echo "Zone written to $output"
+    fi
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    if [ -z "$output" ]; then
+        printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+meta = doc.get("zone_meta") or {}
+print("Zone: %s, %s records%s" % (meta.get("scope") or "?", meta.get("record_count", 0), ", partial" if doc.get("partial") else ""))
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning)
+print("")
+print(doc.get("zone") or "(no zone returned)")
+'
+    fi
+}
+
+plak_lookup_health() {
+    local json=0 timeout=30 base
+    while [ $# -gt 0 ]; do
+        case "$1" in --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) plak_ui_error "Unknown argument: $1"; return 1 ;; esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    base=$(plak_lookup_base) || return 1
+    plak_lookup_get "$base/health" "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; else
+        printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print("Status: %s" % (doc.get("status") or "?"))
+for key, value in (doc.get("checks") or {}).items():
+    if isinstance(value, dict):
+        ok = value.get("ok")
+        detail = value.get("version") or value.get("error") or value.get("message") or ""
+        print("  %-14s %-4s %s" % (key, "ok" if ok else "fail", detail))
+    else:
+        print("  %-14s %s" % (key, value))
+'
+    fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") == "ok" else 1)'
+}
+
+plak_lookup_print_job() {
+    local body="$1" json="$2"
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$body"; return 0; fi
+    printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+job = doc.get("job") if isinstance(doc.get("job"), dict) else doc
+print("Audit #%s: %s (%s/%s, ok %s, failed %s)" % (
+    job.get("id", "?"), job.get("status", "?"), job.get("processed", 0),
+    job.get("total", 0), job.get("succeeded", 0), job.get("failed", 0)))
+if doc.get("worker_started") is False:
+    print("Worker not started; the job is queued. Poll it with the same id.")
+for item in doc.get("ignored") or []:
+    print("Ignored: %s" % item)
+'
+}
+
+plak_lookup_audit_download() {
+    local job_id="$1" format="$2" output="$3" base url
+    [ -n "$format" ] || { plak_ui_error "Use --format json|csv to download a report."; return 1; }
+    case "$format" in json|csv) ;; *) plak_ui_error "Invalid --format '$format' (use json or csv)."; return 1 ;; esac
+    base=$(plak_lookup_base) || return 1
+    url="$base/audit.php?id=$job_id&format=$format"
+    plak_lookup_get "$url" 120 || return 1
+    if [ -n "$output" ]; then
+        printf '%s' "$PLAK_SVC_BODY" > "$output" || { plak_ui_error "Could not write '$output'."; return 1; }
+        echo "Report written to $output" >&2
+    else
+        printf '%s\n' "$PLAK_SVC_BODY"
+    fi
+}
+
+plak_lookup_audit() {
+    local domains=() file="" wait_secs=0 poll_secs=5 format="" output="" json=0 cancel="" id_opt="" timeout=60
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --file) file="$2"; shift 2 ;;
+            --file=*) file="${1#*=}"; shift 1 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --format) format="$2"; shift 2 ;;
+            --output) output="$2"; shift 2 ;;
+            --cancel) cancel="$2"; shift 2 ;;
+            --id) id_opt="$2"; shift 2 ;;
+            --id=*) id_opt="${1#*=}"; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domains+=("$1"); shift 1 ;;
+        esac
+    done
+    case "$wait_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --wait '$wait_secs'."; return 1 ;; esac
+    case "$poll_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --poll '$poll_secs'."; return 1 ;; esac
+    [ "$poll_secs" -ge 1 ] || poll_secs=1
+    [ -z "$output" ] || [ -n "$format" ] || { plak_ui_error "--output requires --format json|csv."; return 1; }
+    [ -z "$cancel" ] || [ -z "$id_opt" ] || { plak_ui_error "Use either --cancel or --id."; return 1; }
+    local base tmp="" url job_id="" job_status="" start_body=""
+    base=$(plak_lookup_base) || return 1
+
+    if [ -n "$cancel" ]; then
+        url="$base/audit.php"
+        plak_lookup_post "$url" "$timeout" -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'action=cancel' --data-urlencode "id=$cancel" || return 1
+        plak_lookup_print_job "$PLAK_SVC_BODY" "$json"
+        return 0
+    fi
+
+    if [ -n "$id_opt" ]; then
+        case "$id_opt" in *[!A-Za-z0-9_-]*) plak_ui_error "Invalid audit id '$id_opt'."; return 1 ;; esac
+        job_id="$id_opt"
+        if [ "$wait_secs" -eq 0 ]; then
+            plak_lookup_get "$base/audit.php?id=$job_id" "$timeout" || return 1
+            if [ -n "$format" ]; then
+                job_status=$(plak_connect_json_get "$PLAK_SVC_BODY" "status")
+                case "$job_status" in
+                    done|cancelled) plak_lookup_audit_download "$job_id" "$format" "$output" ;;
+                    *) plak_ui_error "Audit #$job_id is ${job_status:-running}; use --wait to poll or --cancel $job_id to cancel."; return 3 ;;
+                esac
+            else
+                plak_lookup_print_job "$PLAK_SVC_BODY" "$json"
+            fi
+            return 0
+        fi
+    else
+        if [ -n "$file" ]; then
+            if [ "$file" = "-" ]; then
+                tmp=$(mktemp) || return 1
+                cat > "$tmp" || { rm -f "$tmp"; plak_ui_error "Could not read the domain list from stdin."; return 1; }
+                file="$tmp"
+            fi
+            [ -r "$file" ] || { plak_ui_error "Cannot read '$file'."; return 1; }
+        elif [ "${#domains[@]}" -gt 0 ]; then
+            tmp=$(mktemp) || return 1
+            printf '%s\n' "${domains[@]}" > "$tmp"
+            file="$tmp"
+        elif [ ! -t 0 ]; then
+            tmp=$(mktemp) || return 1
+            cat > "$tmp" || { rm -f "$tmp"; plak_ui_error "Could not read the domain list from stdin."; return 1; }
+            file="$tmp"
+        else
+            plak_ui_error "Usage: plak lookup audit <domain...> [--file FILE] [--wait SECS] [--format json|csv]"
+            return 1
+        fi
+
+        url="$base/audit.php"
+        if ! plak_lookup_post "$url" "$timeout" -F "domain_file=@$file;type=text/plain"; then
+            [ -n "$tmp" ] && rm -f "$tmp"
+            return 1
+        fi
+        [ -n "$tmp" ] && rm -f "$tmp"
+        start_body="$PLAK_SVC_BODY"
+        job_id=$(plak_connect_json_get "$start_body" "job.id")
+        job_status=$(plak_connect_json_get "$start_body" "job.status")
+        [ -n "$job_id" ] || { plak_ui_error "Invalid audit response from Lookup."; return 1; }
+        if [ "$wait_secs" -eq 0 ] && [ -z "$format" ]; then
+            plak_lookup_print_job "$start_body" "$json"
+        elif [ "$wait_secs" -gt 0 ] && [ "$json" -eq 0 ]; then
+            plak_lookup_print_job "$start_body" 0
+        fi
+
+        if [ "$wait_secs" -eq 0 ]; then
+            if [ -n "$format" ]; then
+                case "$job_status" in done|cancelled) plak_lookup_audit_download "$job_id" "$format" "$output" ;; *)
+                    plak_ui_error "Audit #$job_id is ${job_status:-running}; use --wait or poll it with 'plak lookup audit --id $job_id --wait SECS'."; return 3 ;;
+                esac
+            fi
+            return 0
+        fi
+    fi
+
+    local elapsed=0 status_url
+    while :; do
+        status_url="$base/audit.php?id=$job_id"
+        if ! plak_lookup_get "$status_url" "$timeout"; then return 1; fi
+        job_status=$(plak_connect_json_get "$PLAK_SVC_BODY" "status")
+        [ -n "$job_status" ] || { plak_ui_error "Invalid audit status response for #$job_id."; return 1; }
+        case "$job_status" in
+            done|cancelled)
+                if [ "$json" -eq 1 ] && [ -z "$format" ]; then printf '%s\n' "$PLAK_SVC_BODY"; else
+                    [ "$json" -eq 0 ] && plak_lookup_print_job "$PLAK_SVC_BODY" 0
+                fi
+                [ -n "$format" ] && plak_lookup_audit_download "$job_id" "$format" "$output"
+                return 0
+                ;;
+            failed)
+                plak_lookup_print_job "$PLAK_SVC_BODY" "$json"
+                return 1
+                ;;
+        esac
+        if [ "$elapsed" -ge "$wait_secs" ]; then
+            if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; else plak_lookup_print_job "$PLAK_SVC_BODY" 0; fi
+            plak_ui_error "Audit #$job_id is still ${job_status:-running}. Resume with 'plak lookup audit --id $job_id --wait SECS'; cancel with 'plak lookup audit --cancel $job_id'."
+            return 3
+        fi
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+    done
+}
+
+plak_lookup_convert() {
+    local file="" provider="cloudflare" output="" json=0 timeout=60
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --provider) provider="$2"; shift 2 ;;
+            --provider=*) provider="${1#*=}"; shift 1 ;;
+            --output) output="$2"; shift 2 ;;
+            --output=*) output="${1#*=}"; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -) file="-"; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) file="$1"; shift 1 ;;
+        esac
+    done
+    case "$provider" in bind|cloudflare|route53|route53-json) ;; *) plak_ui_error "Invalid --provider '$provider'."; return 1 ;; esac
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    local base tmp="" url
+    base=$(plak_lookup_base) || return 1
+    if [ -z "$file" ] || [ "$file" = "-" ]; then
+        tmp=$(mktemp) || return 1
+        cat > "$tmp" || { rm -f "$tmp"; plak_ui_error "Could not read the zone from stdin."; return 1; }
+        file="$tmp"
+    fi
+    [ -r "$file" ] || { [ -n "$tmp" ] && rm -f "$tmp"; plak_ui_error "Cannot read '$file'."; return 1; }
+    url="$base/convert.php"
+    if ! plak_lookup_post "$url" "$timeout" -F "zone_file=@$file;type=text/plain" -F "provider=$provider"; then
+        [ -n "$tmp" ] && rm -f "$tmp"
+        return 1
+    fi
+    [ -n "$tmp" ] && rm -f "$tmp"
+    local body="$PLAK_SVC_BODY"
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$body"; fi
+    local content
+    content=$(printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print(doc.get("content") or "")
+')
+    if [ -n "$output" ] && [ -n "$content" ]; then
+        printf '%s' "$content" > "$output" || { plak_ui_error "Could not write '$output'."; return 1; }
+        [ "$json" -eq 0 ] && echo "Converted zone written to $output"
+    elif [ "$json" -eq 0 ]; then
+        printf '%s' "$content"
+        [ -n "$content" ] && printf '\n'
+    fi
+    printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning, file=sys.stderr)
+' || true
+}
+
+plak_lookup_diff() {
+    local before="" after="" csv=0 json=0 output="" timeout=60
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --before) before="$2"; shift 2 ;;
+            --before=*) before="${1#*=}"; shift 1 ;;
+            --after) after="$2"; shift 2 ;;
+            --after=*) after="${1#*=}"; shift 1 ;;
+            --csv) csv=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --output) output="$2"; shift 2 ;;
+            --output=*) output="${1#*=}"; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) plak_ui_error "Unexpected argument: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$before" ] && [ -n "$after" ] || { plak_ui_error "Usage: plak lookup diff --before FILE --after FILE [--csv] [--json]"; return 1; }
+    [ -r "$before" ] && [ -r "$after" ] || { plak_ui_error "Cannot read --before/--after files."; return 1; }
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    local base url
+    base=$(plak_lookup_base) || return 1
+    url="$base/diff.php"
+    plak_lookup_post "$url" "$timeout" -F "before_file=@$before;type=text/plain" -F "zone_file=@$after;type=text/plain" || return 1
+    local body="$PLAK_SVC_BODY"
+    if [ -n "$output" ]; then
+        if [ "$csv" -eq 1 ]; then
+            printf '%s' "$body" | python3 -c 'import json,sys,os; print(json.load(sys.stdin).get("exports",{}).get("csv",""))' > "$output"
+        else
+            printf '%s' "$body" | python3 -c 'import json,sys,os; print(json.load(sys.stdin).get("exports",{}).get("json",""))' > "$output"
+        fi
+        [ "$json" -eq 0 ] && echo "Diff written to $output"
+    fi
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$body"; return 0; fi
+    if [ "$csv" -eq 1 ]; then
+        printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("exports",{}).get("csv",""))'
+        return 0
+    fi
+    printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print("Risk: %s" % (doc.get("risk") or "none"))
+summary = doc.get("summary") or {}
+print("Changes: added %s, removed %s, changed %s, unchanged %s" % (summary.get("added", 0), summary.get("removed", 0), summary.get("changed", 0), summary.get("unchanged", 0)))
+for change in doc.get("changes") or []:
+    print("[%-6s] %s" % (change.get("risk") or "?", change.get("message") or ""))
+'
+}
+
+plak_lookup() {
+    plak_lookup_require_deps || return 1
+    local action="${1:-help}"
+    case "$action" in
+        help|--help|-h) plak_lookup_help; return 0 ;;
+        whois|dns|email|zone|health|audit|convert|diff)
+            shift
+            "plak_lookup_$action" "$@"
+            ;;
+        *)
+            plak_lookup_summary "$@"
+            ;;
+    esac
+}
+
 # Source: commands/panel
 # plak panel — own panel resources (CLI-25).
 #
@@ -15006,6 +15706,607 @@ plak_remote() {
             plak_display_command_help remote
             exit 1
             ;;
+    esac
+}
+
+# Source: commands/sandbox
+# plak sandbox — disposable sites on sandbox.plak.io (plakio/plak-cli#78).
+#
+# No account and no token: creation is public and rate-limited by IP. The
+# UUID is the access link; sharing it shares access. The CLI stores only
+# site metadata locally, never WordPress or database passwords.
+
+plak_sandbox_help() {
+    cat <<'HELP'
+Usage:
+  plak sandbox create <subdomain> [--email EMAIL] [--plugin NAME]...
+                      [--json] [--timeout SECS] [--idempotency-key KEY]
+  plak sandbox list [--json]
+  plak sandbox show <subdomain|uuid> [--secrets] [--json]
+  plak sandbox open <subdomain|uuid> [--info]
+  plak sandbox import <public-url> [--json]
+
+Create disposable WordPress sandboxes without an account.
+
+  create        Create a site; prints URL, /s/<uuid> info page and credentials.
+  list          Sites recorded on this machine (not a global server list).
+  show          Refresh status/expiry from the public API.
+  --secrets     Also show WordPress/database credentials on show.
+  open          Open the site URL; --info opens the /s/<uuid> page.
+  import        Add an existing /s/<uuid> link to this machine's list.
+
+The public page /s/<uuid> shows credentials because the UUID is the access
+link: anyone with it can administer the sandbox. Share the site URL instead
+when someone only needs to view the site. The CLI never stores passwords and
+never deletes sites; they expire automatically and the admin cleans them up.
+
+Set PLAK_SANDBOX_URL for staging/self-hosted (default https://sandbox.plak.io).
+HELP
+}
+
+plak_sandbox_require_deps() {
+    if ! plak_command_exists curl; then
+        plak_ui_error "curl is required for 'plak sandbox'."
+        return 1
+    fi
+    if ! plak_command_exists python3; then
+        plak_ui_error "python3 is required for 'plak sandbox' (JSON parsing)."
+        return 1
+    fi
+}
+
+plak_sandbox_base() {
+    local base="${PLAK_SANDBOX_URL:-https://sandbox.plak.io}"
+    base="${base%/}"
+    case "$base" in
+        http://*|https://*) ;;
+        *) plak_ui_error "Invalid PLAK_SANDBOX_URL '$base' (use http:// or https://)."; return 1 ;;
+    esac
+    printf '%s\n' "$base"
+}
+
+plak_sandbox_file() {
+    printf '%s\n' "${PLAK_HOME:-$HOME/.plak}/sandbox-sites.json"
+}
+
+plak_sandbox_ensure() {
+    local file dir
+    file=$(plak_sandbox_file)
+    dir=$(dirname "$file")
+    mkdir -p "$dir" || return 1
+    chmod 700 "$dir" 2>/dev/null || true
+    if [ ! -f "$file" ]; then
+        printf '{"version":1,"sites":{},"pending":{}}\n' > "$file" || return 1
+    fi
+    chmod 600 "$file" 2>/dev/null || true
+}
+
+plak_sandbox_error_body() {
+    printf '%s' "$1" | python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    print("invalid response")
+    raise SystemExit(0)
+errors = doc.get("errors")
+if isinstance(errors, dict):
+    parts = []
+    for value in errors.values():
+        if isinstance(value, list):
+            parts.extend(str(v) for v in value)
+        else:
+            parts.append(str(value))
+    print("; ".join(parts[:4]))
+elif isinstance(errors, list) and errors:
+    print("; ".join(str(v) for v in errors[:4]))
+else:
+    print(doc.get("error") or doc.get("message") or "invalid response")
+'
+}
+
+plak_sandbox_error() {
+    local status="$1" body="$2" msg
+    msg=$(plak_sandbox_error_body "$body")
+    case "$status" in
+        409) plak_ui_error "Sandbox conflict: ${msg:-site already exists}." ;;
+        422) plak_ui_error "Sandbox rejected the request: ${msg:-invalid input}." ;;
+        429) plak_ui_error "Sandbox rate limit reached${PLAK_SVC_RETRY_AFTER:+ (retry after ${PLAK_SVC_RETRY_AFTER}s)}. Try again later." ;;
+        503) plak_ui_error "Sandbox site creation is temporarily disabled. Try again later." ;;
+        5??) plak_ui_error "Sandbox is temporarily unavailable (HTTP $status). Retry later." ;;
+        *) plak_ui_error "Sandbox request failed (HTTP ${status:-unknown}): ${msg}." ;;
+    esac
+}
+
+plak_sandbox_get() {
+    local url="$1" timeout="${2:-30}"
+    if ! plak_service_http GET "$url" "$timeout"; then
+        plak_ui_error "$(plak_service_http_error Sandbox)"
+        return 1
+    fi
+    case "$PLAK_SVC_STATUS" in
+        200) return 0 ;;
+        *) plak_sandbox_error "$PLAK_SVC_STATUS" "$PLAK_SVC_BODY"; return 1 ;;
+    esac
+}
+
+plak_sandbox_post() {
+    local url="$1" timeout="$2" body="$3" key="$4" quiet="${5:-0}"
+    if ! plak_service_http POST "$url" "$timeout" \
+        -H 'Content-Type: application/json' \
+        -H "Idempotency-Key: $key" \
+        --data "$body"; then
+        [ "$quiet" -eq 1 ] || plak_ui_error "$(plak_service_http_error Sandbox)"
+        return 1
+    fi
+    case "$PLAK_SVC_STATUS" in
+        200|201|202) return 0 ;;
+        *) [ "$quiet" -eq 1 ] || plak_sandbox_error "$PLAK_SVC_STATUS" "$PLAK_SVC_BODY"; return 1 ;;
+    esac
+}
+
+plak_sandbox_store_record() {
+    local uuid="$1" subdomain="$2" domain="$3" url="$4" public_url="$5" expires="$6" created="$7"
+    local file
+    file=$(plak_sandbox_file)
+    plak_sandbox_ensure || return 1
+    PLAK_FILE="$file" PLAK_UUID="$uuid" PLAK_SUBDOMAIN="$subdomain" PLAK_DOMAIN="$domain" \
+    PLAK_URL="$url" PLAK_PUBLIC_URL="$public_url" PLAK_EXPIRES="$expires" PLAK_CREATED="$created" \
+    python3 -c '
+import datetime, json, os, tempfile
+path = os.environ["PLAK_FILE"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except FileNotFoundError:
+    doc = {"version": 1, "sites": {}, "pending": {}}
+except Exception as exc:
+    print("Cannot read %s: %s" % (path, exc), file=__import__("sys").stderr)
+    raise SystemExit(1)
+sites = doc.setdefault("sites", {})
+uuid = os.environ["PLAK_UUID"]
+existing = sites.get(uuid) if isinstance(sites.get(uuid), dict) else {}
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+def field(name, fallback=None):
+    value = os.environ.get(name, "")
+    return value if value else fallback
+sites[uuid] = {
+    "uuid": uuid,
+    "subdomain": field("PLAK_SUBDOMAIN", existing.get("subdomain")),
+    "domain": field("PLAK_DOMAIN", existing.get("domain")),
+    "url": field("PLAK_URL", existing.get("url")),
+    "public_url": field("PLAK_PUBLIC_URL", existing.get("public_url")),
+    "expires_at": field("PLAK_EXPIRES", existing.get("expires_at")),
+    "created_at": field("PLAK_CREATED", existing.get("created_at") or now),
+    "updated_at": now,
+}
+subdomain = sites[uuid].get("subdomain")
+if subdomain and isinstance(doc.get("pending"), dict):
+    doc["pending"].pop(subdomain, None)
+fd, tmp = tempfile.mkstemp(prefix=".sandbox-sites.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+'
+}
+
+plak_sandbox_pending_key() {
+    local subdomain="$1" file
+    file=$(plak_sandbox_file)
+    [ -f "$file" ] || return 0
+    PLAK_FILE="$file" PLAK_SUBDOMAIN="$subdomain" python3 -c '
+import json, os
+try:
+    with open(os.environ["PLAK_FILE"], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+rec = (doc.get("pending") or {}).get(os.environ["PLAK_SUBDOMAIN"])
+if isinstance(rec, dict):
+    print(rec.get("idempotency_key") or "")
+'
+}
+
+plak_sandbox_store_pending() {
+    local subdomain="$1" key="$2" email="$3" plugins_json="$4"
+    local file
+    file=$(plak_sandbox_file)
+    plak_sandbox_ensure || return 1
+    PLAK_FILE="$file" PLAK_SUBDOMAIN="$subdomain" PLAK_KEY="$key" PLAK_EMAIL="$email" \
+    PLAK_PLUGINS="$plugins_json" python3 -c '
+import datetime, json, os, tempfile
+path = os.environ["PLAK_FILE"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except FileNotFoundError:
+    doc = {"version": 1, "sites": {}, "pending": {}}
+except Exception as exc:
+    print("Cannot read %s: %s" % (path, exc), file=__import__("sys").stderr)
+    raise SystemExit(1)
+pending = doc.setdefault("pending", {})
+try:
+    plugins = json.loads(os.environ.get("PLAK_PLUGINS") or "[]")
+except Exception:
+    plugins = []
+pending[os.environ["PLAK_SUBDOMAIN"]] = {
+    "idempotency_key": os.environ["PLAK_KEY"],
+    "email": os.environ.get("PLAK_EMAIL") or None,
+    "plugins": plugins,
+    "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+fd, tmp = tempfile.mkstemp(prefix=".sandbox-sites.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+'
+}
+
+plak_sandbox_remove_pending() {
+    local subdomain="$1" file
+    file=$(plak_sandbox_file)
+    [ -f "$file" ] || return 0
+    PLAK_FILE="$file" PLAK_SUBDOMAIN="$subdomain" python3 -c '
+import json, os, tempfile
+path = os.environ["PLAK_FILE"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+pending = doc.get("pending")
+if not isinstance(pending, dict) or os.environ["PLAK_SUBDOMAIN"] not in pending:
+    raise SystemExit(0)
+pending.pop(os.environ["PLAK_SUBDOMAIN"], None)
+fd, tmp = tempfile.mkstemp(prefix=".sandbox-sites.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+'
+}
+
+plak_sandbox_record() {
+    local selector="$1" file
+    file=$(plak_sandbox_file)
+    [ -f "$file" ] || return 0
+    PLAK_FILE="$file" PLAK_SEL="$selector" python3 -c '
+import json, os
+try:
+    with open(os.environ["PLAK_FILE"], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+sel = os.environ["PLAK_SEL"]
+sites = doc.get("sites") or {}
+rec = sites.get(sel)
+if not isinstance(rec, dict):
+    for item in sites.values():
+        if isinstance(item, dict) and str(item.get("subdomain") or "") == sel:
+            rec = item
+            break
+if isinstance(rec, dict):
+    print(json.dumps(rec, sort_keys=True))
+'
+}
+
+plak_sandbox_json_flag() {
+    local a rest=()
+    SANDBOX_JSON=0
+    for a in "$@"; do
+        case "$a" in --json) SANDBOX_JSON=1 ;; *) rest+=("$a") ;; esac
+    done
+    SANDBOX_ARGS=(${rest[@]+"${rest[@]}"})
+}
+
+plak_sandbox_validate_subdomain() {
+    local sub="$1"
+    case "$sub" in ''|*[!a-z0-9-]*) plak_ui_error "Invalid subdomain: use lowercase letters, numbers and hyphens only."; return 1 ;; esac
+    [ "${#sub}" -le 30 ] || { plak_ui_error "Invalid subdomain: maximum 30 characters."; return 1; }
+}
+
+plak_sandbox_create() {
+    local subdomain="" email="" timeout=180 key_opt="" json=0
+    local plugins=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --email) email="$2"; shift 2 ;;
+            --email=*) email="${1#*=}"; shift 1 ;;
+            --plugin) plugins+=("$2"); shift 2 ;;
+            --plugin=*) plugins+=("${1#*=}"); shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            --idempotency-key) key_opt="$2"; shift 2 ;;
+            --json) json=1; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) subdomain="$1"; shift 1 ;;
+        esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$subdomain" ] || { plak_ui_error "Usage: plak sandbox create <subdomain> [--email EMAIL] [--plugin NAME]"; return 1; }
+    plak_sandbox_validate_subdomain "$subdomain" || return 1
+    local plugin
+    for plugin in ${plugins[@]+"${plugins[@]}"}; do
+        case "$plugin" in wpcodeboxide|devkit|fluentsnippets) ;; *) plak_ui_error "Invalid --plugin '$plugin' (allowed: wpcodeboxide, devkit, fluentsnippets)."; return 1 ;; esac
+    done
+    if [ -n "$key_opt" ] && [ "${#key_opt}" -gt 120 ]; then
+        plak_ui_error "Invalid --idempotency-key: maximum 120 characters."
+        return 1
+    fi
+
+    local pending_key key
+    pending_key=$(plak_sandbox_pending_key "$subdomain")
+    if [ -n "$key_opt" ]; then
+        key="$key_opt"
+    elif [ -n "$pending_key" ]; then
+        key="$pending_key"
+        [ "$json" -eq 0 ] && echo "Resuming pending creation for '$subdomain' with its idempotency key."
+    else
+        key=$(python3 -c 'import uuid; print("plak-sandbox-" + uuid.uuid4().hex)')
+    fi
+
+    local plugins_json
+    plugins_json=$(printf '%s\n' ${plugins[@]+"${plugins[@]}"} | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')
+    local body
+    body=$(PLAK_SUB="$subdomain" PLAK_EMAIL="$email" PLAK_PLUGINS="$plugins_json" python3 -c '
+import json, os
+doc = {"subdomain": os.environ["PLAK_SUB"]}
+if os.environ.get("PLAK_EMAIL"):
+    doc["email"] = os.environ["PLAK_EMAIL"]
+plugins = json.loads(os.environ.get("PLAK_PLUGINS") or "[]")
+if plugins:
+    doc["plugins"] = plugins
+print(json.dumps(doc, sort_keys=True))
+')
+    plak_sandbox_store_pending "$subdomain" "$key" "$email" "$plugins_json" || return 1
+
+    local base url attempt=1
+    base=$(plak_sandbox_base) || return 1
+    url="$base/api/v1/public/sites"
+    while :; do
+        plak_sandbox_post "$url" "$timeout" "$body" "$key" 1
+        local rc=$?
+        if [ "$rc" -eq 0 ]; then break; fi
+        local retry=0
+        case "${PLAK_SVC_CURL_EXIT:-0}" in
+            28|52|56) retry=1 ;;
+        esac
+        case "${PLAK_SVC_STATUS:-}" in
+            5??|000) retry=1 ;;
+        esac
+        if [ "$attempt" -lt 2 ] && [ "$retry" -eq 1 ]; then
+            [ "$json" -eq 0 ] && echo "Sandbox request was interrupted; retrying safely..." >&2
+            attempt=$((attempt + 1))
+            continue
+        fi
+        if [ "${PLAK_SVC_CURL_EXIT:-0}" -ne 0 ]; then
+            plak_ui_error "$(plak_service_http_error Sandbox)"
+            plak_ui_error "Re-run 'plak sandbox create $subdomain' to retry safely with the same idempotency key; do not use a different subdomain."
+        else
+            plak_sandbox_error "$PLAK_SVC_STATUS" "$PLAK_SVC_BODY"
+            case "$PLAK_SVC_STATUS" in
+                429|5??)
+                    plak_ui_error "Re-run 'plak sandbox create $subdomain' to retry safely with the same idempotency key; do not use a different subdomain."
+                    ;;
+                4[0-9][0-9])
+                    plak_sandbox_remove_pending "$subdomain"
+                    ;;
+            esac
+        fi
+        return 1
+    done
+
+    local body_out="$PLAK_SVC_BODY" site_uuid site_domain site_url public_url expires created
+    site_uuid=$(plak_connect_json_get "$body_out" "site.uuid")
+    [ -n "$site_uuid" ] || site_uuid=$(plak_connect_json_get "$body_out" "uuid")
+    site_domain=$(plak_connect_json_get "$body_out" "site.domain")
+    site_url=$(plak_connect_json_get "$body_out" "site.url")
+    public_url=$(plak_connect_json_get "$body_out" "site.public_url")
+    expires=$(plak_connect_json_get "$body_out" "site.expires_at")
+    created=$(plak_connect_json_get "$body_out" "site.created_at")
+    if [ -z "$site_uuid" ]; then
+        [ "$json" -eq 1 ] && printf '%s\n' "$body_out"
+        plak_ui_error "Invalid sandbox response: missing site uuid."
+        return 1
+    fi
+    plak_sandbox_store_record "$site_uuid" "$subdomain" "$site_domain" "$site_url" "$public_url" "$expires" "$created" || \
+        echo "Warning: the sandbox exists, but its local metadata could not be saved." >&2
+
+    if [ "$json" -eq 1 ]; then
+        printf '%s\n' "$body_out"
+        return 0
+    fi
+    local wp_user wp_pass db_name db_user db_pass db_host
+    wp_user=$(plak_connect_json_get "$body_out" "credentials.wordpress.username")
+    wp_pass=$(plak_connect_json_get "$body_out" "credentials.wordpress.password")
+    db_name=$(plak_connect_json_get "$body_out" "credentials.database.name")
+    db_user=$(plak_connect_json_get "$body_out" "credentials.database.username")
+    db_pass=$(plak_connect_json_get "$body_out" "credentials.database.password")
+    db_host=$(plak_connect_json_get "$body_out" "credentials.database.host")
+    echo "Sandbox created: ${site_url:-?}"
+    [ -n "$public_url" ] && echo "Info page: $public_url"
+    [ -n "$wp_user" ] && echo "WordPress: $wp_user / ${wp_pass:-?}"
+    if [ -n "$db_name" ] || [ -n "$db_user" ]; then
+        echo "Database: ${db_name:-?} / ${db_user:-?} / ${db_pass:-?}${db_host:+ @ $db_host}"
+    fi
+    [ -n "$expires" ] && echo "Expires: $expires"
+    echo "Anyone with the info page can administer the sandbox; share the site URL for view-only access."
+    echo "The CLI did not store the passwords; save them now or use the email/info page."
+}
+
+plak_sandbox_list() {
+    local json=0
+    for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
+    local file
+    file=$(plak_sandbox_file)
+    if [ ! -f "$file" ]; then
+        if [ "$json" -eq 1 ]; then printf '{"data":[]}\n'; else echo "No sandbox sites recorded on this machine."; fi
+        return 0
+    fi
+    PLAK_FILE="$file" PLAK_JSON="$json" python3 -c '
+import datetime, json, os, sys
+try:
+    with open(os.environ["PLAK_FILE"], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception as exc:
+    print("Cannot read %s: %s" % (os.environ["PLAK_FILE"], exc), file=sys.stderr)
+    raise SystemExit(1)
+now = datetime.datetime.now(datetime.timezone.utc)
+items = []
+for rec in (doc.get("sites") or {}).values():
+    if not isinstance(rec, dict):
+        continue
+    expires = rec.get("expires_at")
+    expired = False
+    if expires:
+        try:
+            dt = datetime.datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if dt.tzinfo is None: dt = dt.replace(tzinfo=datetime.timezone.utc)
+            expired = dt < now
+        except Exception:
+            pass
+    items.append({
+        "uuid": rec.get("uuid"),
+        "subdomain": rec.get("subdomain"),
+        "domain": rec.get("domain"),
+        "url": rec.get("url"),
+        "public_url": rec.get("public_url"),
+        "expires_at": expires,
+        "created_at": rec.get("created_at"),
+        "expired": expired,
+    })
+items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+if os.environ.get("PLAK_JSON") == "1":
+    print(json.dumps({"data": items}, sort_keys=True))
+else:
+    if not items:
+        print("No sandbox sites recorded on this machine.")
+    else:
+        print("%-30s %-32s %-8s %s" % ("SUBDOMAIN", "DOMAIN", "STATUS", "EXPIRES"))
+        for item in items:
+            print("%-30s %-32s %-8s %s" % (
+                (item.get("subdomain") or "-")[:30], (item.get("domain") or "-")[:32],
+                "expired" if item.get("expired") else "active", item.get("expires_at") or "-"))
+'
+}
+
+plak_sandbox_show() {
+    local selector="" secrets=0 json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in --secrets) secrets=1; shift 1 ;; --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) selector="$1"; shift 1 ;; esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$selector" ] || { plak_ui_error "Usage: plak sandbox show <subdomain|uuid> [--secrets] [--json]"; return 1; }
+    local rec uuid base
+    rec=$(plak_sandbox_record "$selector")
+    if [ -n "$rec" ]; then uuid=$(plak_connect_json_get "$rec" "uuid"); else
+        case "$selector" in *[!a-zA-Z0-9]*) plak_ui_error "No local sandbox record for '$selector'; import its /s/<uuid> URL first."; return 1 ;; esac
+        uuid="$selector"
+    fi
+    [ -n "$uuid" ] || { plak_ui_error "No local sandbox record for '$selector'."; return 1; }
+    base=$(plak_sandbox_base) || return 1
+    plak_sandbox_get "$base/api/v1/public/sites/$uuid" "$timeout" || return 1
+    local body="$PLAK_SVC_BODY"
+    if [ "$json" -eq 1 ]; then
+        if [ "$secrets" -eq 1 ]; then printf '%s\n' "$body"; else printf '%s' "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("credentials",None); print(json.dumps(d,sort_keys=True))'; fi
+        return 0
+    fi
+    printf '%s' "$body" | PLAK_SECRETS="$secrets" python3 -c '
+import json, os, sys
+doc = json.load(sys.stdin)
+site = doc.get("site") or doc
+print("Sandbox: %s" % (site.get("domain") or site.get("uuid") or "?"))
+print("Status: %s" % (site.get("status") or "?"))
+if site.get("url"): print("Site: %s" % site["url"])
+if site.get("public_url"): print("Info: %s" % site["public_url"])
+if site.get("expires_at"): print("Expires: %s" % site["expires_at"])
+if os.environ.get("PLAK_SECRETS") == "1":
+    creds = doc.get("credentials") or {}
+    wp = creds.get("wordpress") or {}
+    db = creds.get("database") or {}
+    if wp.get("username") or wp.get("password"):
+        print("WordPress: %s / %s" % (wp.get("username") or "?", wp.get("password") or "?"))
+    if db.get("name") or db.get("username"):
+        print("Database: %s / %s / %s%s" % (db.get("name") or "?", db.get("username") or "?", db.get("password") or "?", (" @ " + db["host"]) if db.get("host") else ""))
+else:
+    print("Use --secrets to show WordPress/database credentials.")
+' 2>/dev/null || { printf '%s' "$body" | python3 -m json.tool; }
+}
+
+plak_sandbox_open() {
+    local selector="" info=0
+    while [ $# -gt 0 ]; do
+        case "$1" in --info) info=1; shift 1 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) selector="$1"; shift 1 ;; esac
+    done
+    [ -n "$selector" ] || { plak_ui_error "Usage: plak sandbox open <subdomain|uuid> [--info]"; return 1; }
+    local rec url
+    rec=$(plak_sandbox_record "$selector")
+    [ -n "$rec" ] || { plak_ui_error "No local sandbox record for '$selector'."; return 1; }
+    if [ "$info" -eq 1 ]; then url=$(plak_connect_json_get "$rec" "public_url"); else url=$(plak_connect_json_get "$rec" "url"); fi
+    [ -n "$url" ] || { plak_ui_error "The local record has no URL."; return 1; }
+    if plak_connect_open_url "$url"; then echo "Opened $url"; else echo "$url"; fi
+}
+
+plak_sandbox_import() {
+    local input="" json=0 timeout=30 base uuid
+    while [ $# -gt 0 ]; do
+        case "$1" in --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) input="$1"; shift 1 ;; esac
+    done
+    [ -n "$input" ] || { plak_ui_error "Usage: plak sandbox import https://sandbox.plak.io/s/<uuid>"; return 1; }
+    uuid=$(PLAK_URL="$input" python3 -c '
+import os, re, urllib.parse
+p = urllib.parse.urlparse(os.environ["PLAK_URL"])
+m = re.search(r"/s/([A-Za-z0-9]{20,64})/?$", p.path)
+print(m.group(1) if m else "")
+')
+    [ -n "$uuid" ] || { plak_ui_error "Invalid sandbox URL: expected .../s/<uuid>."; return 1; }
+    base=$(plak_sandbox_base) || return 1
+    plak_sandbox_get "$base/api/v1/public/sites/$uuid" "$timeout" || return 1
+    local body="$PLAK_SVC_BODY" subdomain domain url public_url expires created
+    subdomain=$(plak_connect_json_get "$body" "site.subdomain")
+    domain=$(plak_connect_json_get "$body" "site.domain")
+    url=$(plak_connect_json_get "$body" "site.url")
+    public_url=$(plak_connect_json_get "$body" "site.public_url")
+    expires=$(plak_connect_json_get "$body" "site.expires_at")
+    created=$(plak_connect_json_get "$body" "site.created_at")
+    plak_sandbox_store_record "$uuid" "$subdomain" "$domain" "$url" "$public_url" "$expires" "$created" || return 1
+    if [ "$json" -eq 1 ]; then
+        printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print(json.dumps({"imported": True, "site": doc.get("site") or {}}, sort_keys=True))
+'
+    else
+        echo "Imported sandbox ${domain:-$uuid}."
+    fi
+}
+
+plak_sandbox() {
+    plak_sandbox_require_deps || return 1
+    local action="${1:-help}"
+    case "$action" in
+        help|--help|-h) plak_sandbox_help; return 0 ;;
+        create|list|show|open|import)
+            shift
+            "plak_sandbox_$action" "$@"
+            ;;
+        *) plak_ui_error "Unknown sandbox command '$action'. Run 'plak sandbox help'."; return 1 ;;
     esac
 }
 

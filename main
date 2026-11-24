@@ -82,6 +82,8 @@ Commands:
   connect     Connect this machine to your Plak panel account
   disconnect  Forget the local panel credential
   panel       List your own panel sites and servers (read-only)
+  lookup      WHOIS, DNS, email security, zones and audits
+  sandbox     Create and inspect disposable sandbox sites
   add         Create a WordPress or static local site
   edit        Open the local HTML editor for a static site
   import      Create a local site from a backup ZIP or TAR
@@ -123,6 +125,8 @@ Examples:
   plak remote connect
   plak connect
   plak panel sites
+  plak lookup example.com
+  plak sandbox create demo
   plak status
 HELP
 }
@@ -193,6 +197,20 @@ HELP
                 plak_panel_help
             else
                 echo "Usage: plak panel <sites|site|servers|server> [--json]"
+            fi
+            ;;
+        lookup)
+            if declare -F plak_lookup_help >/dev/null 2>&1; then
+                plak_lookup_help
+            else
+                echo "Usage: plak lookup <domain> [--deep] [--json]"
+            fi
+            ;;
+        sandbox)
+            if declare -F plak_sandbox_help >/dev/null 2>&1; then
+                plak_sandbox_help
+            else
+                echo "Usage: plak sandbox <create|list|show|open|import>"
             fi
             ;;
         install)
@@ -326,7 +344,7 @@ main() {
     fi
 
     case "$command" in
-        add|import|clone|delete|rename|list|path|edit|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel)
+        add|import|clone|delete|rename|list|path|edit|pull|push|login|enable|disable|reload|trust|db|snapshot|history|directive|proxy|tailscale|mappings|lan|ports|memory|log|share|wsl-hosts|url|upgrade|install|health|connect|disconnect|panel|lookup|sandbox)
             set +e
             ;;
     esac
@@ -365,6 +383,12 @@ main() {
             ;;
         panel)
             plak_panel "$@"
+            ;;
+        lookup)
+            plak_lookup "$@"
+            ;;
+        sandbox)
+            plak_sandbox "$@"
             ;;
         add)
             check_dependencies

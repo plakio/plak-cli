@@ -114,6 +114,8 @@ bash ./tests/panel-link.sh
 bash ./tests/panel-migrate.sh
 bash ./tests/panel-write.sh
 bash ./tests/panel-wp.sh
+bash ./tests/lookup.sh
+bash ./tests/sandbox.sh
 bash ./tests/panel-server.sh
 bash ./tests/panel-infra.sh
 bash ./tests/import.sh

@@ -1,0 +1,630 @@
+# plak lookup — WHOIS, DNS, email security, zones and audits (plakio/plak-cli#76, #77).
+#
+# The public Lookup API is anonymous and rate-limited by IP. The CLI never
+# sends credentials; it only prints the API response and surfaces 429/Retry-After.
+
+plak_lookup_help() {
+    cat <<'HELP'
+Usage:
+  plak lookup <domain> [--deep] [--json] [--timeout SECS]
+  plak lookup whois <domain> [--json] [--timeout SECS]
+  plak lookup dns <domain> [--type TYPE] [--json] [--timeout SECS]
+  plak lookup email <domain> [--json] [--timeout SECS]
+  plak lookup zone <domain> [--deep] [--output FILE] [--json] [--timeout SECS]
+  plak lookup health [--json] [--timeout SECS]
+
+  plak lookup audit <domain...> [--file FILE] [--wait SECS] [--poll SECS]
+                          [--cancel ID | --id ID] [--format json|csv] [--output FILE] [--json]
+  plak lookup convert [FILE|-] --provider bind|cloudflare|route53|route53-json
+                      [--output FILE] [--json]
+  plak lookup diff --before FILE --after FILE [--csv] [--output FILE] [--json]
+
+WHOIS, DNS, IP/HTTP data and email-security checks through lookup.plak.io.
+
+  --deep        Try AXFR and Certificate Transparency (limited to 5/min).
+  --json        Raw API JSON (never mixed with human messages).
+  --timeout     Per-request timeout in seconds (default 30; audits 60/120).
+  --type        Filter DNS records by type (A, AAAA, MX, TXT, ...).
+  --output      Write the zone or audit report to a file.
+  --file        Domain list for audit (one per line); '-' reads stdin.
+  --wait        0 = start and return; >0 polls until done/timeout (exit 3).
+  --poll        Audit poll interval (default 5).
+  --id          Poll an existing audit instead of creating one.
+  --format      Download the finished audit report as JSON or CSV.
+  --cancel      Cancel an audit by id instead of creating one.
+  --provider    Zone conversion target (default cloudflare).
+  --csv         Print the CSV export of a zone diff.
+
+The API is public and rate-limited by IP: 30/min normal, 5/min deep,
+10/min convert/diff, 5/min audit creation, 120/min audit status.
+Set PLAK_LOOKUP_URL for staging/self-hosted (default https://lookup.plak.io).
+HELP
+}
+
+plak_lookup_require_deps() {
+    if ! plak_command_exists curl; then
+        plak_ui_error "curl is required for 'plak lookup'."
+        return 1
+    fi
+    if ! plak_command_exists python3; then
+        plak_ui_error "python3 is required for 'plak lookup' (JSON parsing)."
+        return 1
+    fi
+}
+
+plak_lookup_base() {
+    local base="${PLAK_LOOKUP_URL:-https://lookup.plak.io}"
+    base="${base%/}"
+    case "$base" in
+        http://*|https://*) ;;
+        *) plak_ui_error "Invalid PLAK_LOOKUP_URL '$base' (use http:// or https://)."; return 1 ;;
+    esac
+    printf '%s\n' "$base"
+}
+
+plak_lookup_quote() {
+    PLAK_QUOTE="$1" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["PLAK_QUOTE"], safe=""))'
+}
+
+plak_lookup_error() {
+    local status="$1" body="$2" msg
+    case "$status" in
+        422)
+            msg=$(printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("invalid input")
+    raise SystemExit(0)
+errors = d.get("errors") or []
+if isinstance(errors, list) and errors:
+    print(" ".join(str(e) for e in errors[:3]))
+else:
+    print(d.get("message") or "invalid input")
+' 2>/dev/null)
+            plak_ui_error "Lookup rejected the request: ${msg:-invalid input}."
+            ;;
+        429)
+            plak_ui_error "Lookup rate limit reached${PLAK_SVC_RETRY_AFTER:+ (retry after ${PLAK_SVC_RETRY_AFTER}s)}. Try again later."
+            ;;
+        5??)
+            plak_ui_error "Lookup is temporarily unavailable (HTTP $status). Retry later."
+            ;;
+        *)
+            plak_ui_error "Lookup request failed (HTTP ${status:-unknown})."
+            ;;
+    esac
+}
+
+plak_lookup_get() {
+    local url="$1" timeout="${2:-30}"
+    if ! plak_service_http GET "$url" "$timeout"; then
+        plak_ui_error "$(plak_service_http_error Lookup)"
+        return 1
+    fi
+    if [ "$PLAK_SVC_STATUS" != "200" ]; then
+        plak_lookup_error "$PLAK_SVC_STATUS" "$PLAK_SVC_BODY"
+        return 1
+    fi
+}
+
+plak_lookup_post() {
+    local url="$1" timeout="${2:-60}"
+    shift 2
+    if ! plak_service_http POST "$url" "$timeout" "$@"; then
+        plak_ui_error "$(plak_service_http_error Lookup)"
+        return 1
+    fi
+    if [ "$PLAK_SVC_STATUS" != "200" ]; then
+        plak_lookup_error "$PLAK_SVC_STATUS" "$PLAK_SVC_BODY"
+        return 1
+    fi
+}
+
+plak_lookup_domain_url() {
+    local path="$1" domain="$2" deep="${3:-0}"
+    local base encoded url
+    base=$(plak_lookup_base) || return 1
+    encoded=$(plak_lookup_quote "$domain") || return 1
+    url="$base$path?domain=$encoded"
+    [ "$deep" -eq 1 ] && url="$url&deep=1"
+    printf '%s\n' "$url"
+}
+
+plak_lookup_fetch() {
+    local domain="$1" deep="${2:-0}" timeout="${3:-30}" url
+    url=$(plak_lookup_domain_url "/api.php" "$domain" "$deep") || return 1
+    plak_lookup_get "$url" "$timeout"
+}
+
+plak_lookup_summary() {
+    local domain="" deep=0 json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --deep) deep=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domain="$1"; shift 1 ;;
+        esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup <domain> [--deep] [--json]"; return 1; }
+    plak_lookup_fetch "$domain" "$deep" "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+def records(name):
+    out = []
+    for item in doc.get("whois") or []:
+        if str(item.get("name", "")).lower() == name.lower():
+            out.append(str(item.get("value", "")))
+    return out
+def first(name):
+    values = records(name)
+    return values[0] if values else None
+root = doc.get("root_domain")
+print("Domain: %s%s" % (doc.get("domain") or "?", " (root %s)" % root if root and root != doc.get("domain") else ""))
+registrar = first("Registrar")
+expiry = first("Expiration Date")
+dnssec = first("DNSSEC")
+whois = doc.get("whois_source") or "-"
+bits = ["source %s" % whois]
+if registrar: bits.append("registrar %s" % registrar)
+if expiry: bits.append("expires %s" % expiry)
+if dnssec: bits.append("DNSSEC %s" % dnssec)
+print("WHOIS: " + " · ".join(bits))
+print("DNS: %s (%s), %d records" % (doc.get("dns_status") or "?", doc.get("dns_source") or "?", len(doc.get("dns_records") or [])))
+ns = doc.get("nameservers") or []
+if ns: print("Nameservers: " + ", ".join(map(str, ns)))
+ips = doc.get("ips") or []
+if ips: print("IPs: " + ", ".join(map(str, ips)))
+http = "HTTP: "
+if doc.get("http_skipped"):
+    http += "skipped (%s)" % doc.get("http_skipped")
+elif doc.get("http_error"):
+    http += "error: %s" % doc.get("http_error")
+else:
+    http += "%s %s" % (doc.get("http_status") if doc.get("http_status") is not None else "?", doc.get("http_url") or "")
+    if doc.get("http_tls"): http += " · TLS"
+print(http)
+email = doc.get("email_security")
+if isinstance(email, dict):
+    print("Email: %s — %s" % (email.get("status") or "?", email.get("summary") or ""))
+else:
+    print("Email: unavailable (subdomain lookup)" if doc.get("sub_domain") else "Email: unavailable")
+zone_meta = doc.get("zone_meta") or {}
+if zone_meta:
+    print("Zone: %s, %s records%s" % (zone_meta.get("scope") or "?", zone_meta.get("record_count", 0), ", partial" if doc.get("partial") else ""))
+for warning in doc.get("warnings") or []:
+    print("Warning: %s" % warning)
+for error in doc.get("errors") or []:
+    print("Error: %s" % error)
+if doc.get("request_id"):
+    print("Request: %s%s" % (doc.get("request_id"), " (cached)" if doc.get("cached") else ""))
+'
+}
+
+plak_lookup_whois() {
+    local domain="" json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) domain="$1"; shift 1 ;; esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup whois <domain> [--json]"; return 1; }
+    plak_lookup_fetch "$domain" 0 "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print("WHOIS source: %s" % (doc.get("whois_source") or "-"))
+items = doc.get("whois") or []
+if not items:
+    print("(no WHOIS records)")
+for item in items:
+    print("%-22s %s" % (item.get("name", "?"), item.get("value", "")))
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning)
+'
+}
+
+plak_lookup_dns() {
+    local domain="" type="" json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --type) type="$2"; shift 2 ;;
+            --type=*) type="${1#*=}"; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domain="$1"; shift 1 ;;
+        esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup dns <domain> [--type TYPE] [--json]"; return 1; }
+    plak_lookup_fetch "$domain" 0 "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | PLAK_TYPE="$type" python3 -c '
+import json, os, sys
+doc = json.load(sys.stdin)
+want = os.environ.get("PLAK_TYPE", "").lower()
+print("DNS: %s (%s)" % (doc.get("dns_status") or "?", doc.get("dns_source") or "?"))
+count = 0
+for item in doc.get("dns_records") or []:
+    if want and str(item.get("type", "")).lower() != want:
+        continue
+    count += 1
+    print("%-6s %-36s %s (TTL %s)" % (str(item.get("type", "?")).upper(), item.get("name", ""), item.get("value", ""), item.get("ttl", "?")))
+if count == 0:
+    print("(no records%s)" % (" of type " + want.upper() if want else ""))
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning)
+'
+}
+
+plak_lookup_email() {
+    local domain="" json=0 timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) domain="$1"; shift 1 ;; esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup email <domain> [--json]"; return 1; }
+    plak_lookup_fetch "$domain" 0 "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+email = doc.get("email_security")
+if not isinstance(email, dict):
+    print("Email security: unavailable%s" % (" for subdomains" if doc.get("sub_domain") else ""))
+    raise SystemExit(0)
+print("Email security: %s — %s" % (email.get("status") or "?", email.get("summary") or ""))
+for check in email.get("checks") or []:
+    print("[%-4s] %-12s %s" % (check.get("status") or "?", check.get("label") or check.get("key") or "?", check.get("summary") or ""))
+    if check.get("recommendation"):
+        print("       %s" % check["recommendation"])
+'
+}
+
+plak_lookup_zone() {
+    local domain="" deep=0 json=0 output="" timeout=30
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --deep) deep=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --output) output="$2"; shift 2 ;;
+            --output=*) output="${1#*=}"; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domain="$1"; shift 1 ;;
+        esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    [ -n "$domain" ] || { plak_ui_error "Usage: plak lookup zone <domain> [--deep] [--output FILE] [--json]"; return 1; }
+    plak_lookup_fetch "$domain" "$deep" "$timeout" || return 1
+    if [ -n "$output" ]; then
+        printf '%s' "$PLAK_SVC_BODY" | PLAK_ZONE_OUT="$output" python3 -c '
+import json, os, sys
+doc = json.load(sys.stdin)
+content = doc.get("zone") or ""
+if not content:
+    print("The API did not return a zone file.", file=sys.stderr)
+    raise SystemExit(1)
+open(os.environ["PLAK_ZONE_OUT"], "w").write(content)
+' || return 1
+        [ "$json" -eq 0 ] && echo "Zone written to $output"
+    fi
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; return 0; fi
+    if [ -z "$output" ]; then
+        printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+meta = doc.get("zone_meta") or {}
+print("Zone: %s, %s records%s" % (meta.get("scope") or "?", meta.get("record_count", 0), ", partial" if doc.get("partial") else ""))
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning)
+print("")
+print(doc.get("zone") or "(no zone returned)")
+'
+    fi
+}
+
+plak_lookup_health() {
+    local json=0 timeout=30 base
+    while [ $# -gt 0 ]; do
+        case "$1" in --json) json=1; shift 1 ;; --timeout) timeout="$2"; shift 2 ;; -*) plak_ui_error "Unknown flag: $1"; return 1 ;; *) plak_ui_error "Unknown argument: $1"; return 1 ;; esac
+    done
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    base=$(plak_lookup_base) || return 1
+    plak_lookup_get "$base/health" "$timeout" || return 1
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; else
+        printf '%s' "$PLAK_SVC_BODY" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print("Status: %s" % (doc.get("status") or "?"))
+for key, value in (doc.get("checks") or {}).items():
+    if isinstance(value, dict):
+        ok = value.get("ok")
+        detail = value.get("version") or value.get("error") or value.get("message") or ""
+        print("  %-14s %-4s %s" % (key, "ok" if ok else "fail", detail))
+    else:
+        print("  %-14s %s" % (key, value))
+'
+    fi
+    printf '%s' "$PLAK_SVC_BODY" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") == "ok" else 1)'
+}
+
+plak_lookup_print_job() {
+    local body="$1" json="$2"
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$body"; return 0; fi
+    printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+job = doc.get("job") if isinstance(doc.get("job"), dict) else doc
+print("Audit #%s: %s (%s/%s, ok %s, failed %s)" % (
+    job.get("id", "?"), job.get("status", "?"), job.get("processed", 0),
+    job.get("total", 0), job.get("succeeded", 0), job.get("failed", 0)))
+if doc.get("worker_started") is False:
+    print("Worker not started; the job is queued. Poll it with the same id.")
+for item in doc.get("ignored") or []:
+    print("Ignored: %s" % item)
+'
+}
+
+plak_lookup_audit_download() {
+    local job_id="$1" format="$2" output="$3" base url
+    [ -n "$format" ] || { plak_ui_error "Use --format json|csv to download a report."; return 1; }
+    case "$format" in json|csv) ;; *) plak_ui_error "Invalid --format '$format' (use json or csv)."; return 1 ;; esac
+    base=$(plak_lookup_base) || return 1
+    url="$base/audit.php?id=$job_id&format=$format"
+    plak_lookup_get "$url" 120 || return 1
+    if [ -n "$output" ]; then
+        printf '%s' "$PLAK_SVC_BODY" > "$output" || { plak_ui_error "Could not write '$output'."; return 1; }
+        echo "Report written to $output" >&2
+    else
+        printf '%s\n' "$PLAK_SVC_BODY"
+    fi
+}
+
+plak_lookup_audit() {
+    local domains=() file="" wait_secs=0 poll_secs=5 format="" output="" json=0 cancel="" id_opt="" timeout=60
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --file) file="$2"; shift 2 ;;
+            --file=*) file="${1#*=}"; shift 1 ;;
+            --wait) wait_secs="$2"; shift 2 ;;
+            --poll) poll_secs="$2"; shift 2 ;;
+            --format) format="$2"; shift 2 ;;
+            --output) output="$2"; shift 2 ;;
+            --cancel) cancel="$2"; shift 2 ;;
+            --id) id_opt="$2"; shift 2 ;;
+            --id=*) id_opt="${1#*=}"; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) domains+=("$1"); shift 1 ;;
+        esac
+    done
+    case "$wait_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --wait '$wait_secs'."; return 1 ;; esac
+    case "$poll_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --poll '$poll_secs'."; return 1 ;; esac
+    [ "$poll_secs" -ge 1 ] || poll_secs=1
+    [ -z "$output" ] || [ -n "$format" ] || { plak_ui_error "--output requires --format json|csv."; return 1; }
+    [ -z "$cancel" ] || [ -z "$id_opt" ] || { plak_ui_error "Use either --cancel or --id."; return 1; }
+    local base tmp="" url job_id="" job_status="" start_body=""
+    base=$(plak_lookup_base) || return 1
+
+    if [ -n "$cancel" ]; then
+        url="$base/audit.php"
+        plak_lookup_post "$url" "$timeout" -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'action=cancel' --data-urlencode "id=$cancel" || return 1
+        plak_lookup_print_job "$PLAK_SVC_BODY" "$json"
+        return 0
+    fi
+
+    if [ -n "$id_opt" ]; then
+        case "$id_opt" in *[!A-Za-z0-9_-]*) plak_ui_error "Invalid audit id '$id_opt'."; return 1 ;; esac
+        job_id="$id_opt"
+        if [ "$wait_secs" -eq 0 ]; then
+            plak_lookup_get "$base/audit.php?id=$job_id" "$timeout" || return 1
+            if [ -n "$format" ]; then
+                job_status=$(plak_connect_json_get "$PLAK_SVC_BODY" "status")
+                case "$job_status" in
+                    done|cancelled) plak_lookup_audit_download "$job_id" "$format" "$output" ;;
+                    *) plak_ui_error "Audit #$job_id is ${job_status:-running}; use --wait to poll or --cancel $job_id to cancel."; return 3 ;;
+                esac
+            else
+                plak_lookup_print_job "$PLAK_SVC_BODY" "$json"
+            fi
+            return 0
+        fi
+    else
+        if [ -n "$file" ]; then
+            if [ "$file" = "-" ]; then
+                tmp=$(mktemp) || return 1
+                cat > "$tmp" || { rm -f "$tmp"; plak_ui_error "Could not read the domain list from stdin."; return 1; }
+                file="$tmp"
+            fi
+            [ -r "$file" ] || { plak_ui_error "Cannot read '$file'."; return 1; }
+        elif [ "${#domains[@]}" -gt 0 ]; then
+            tmp=$(mktemp) || return 1
+            printf '%s\n' "${domains[@]}" > "$tmp"
+            file="$tmp"
+        elif [ ! -t 0 ]; then
+            tmp=$(mktemp) || return 1
+            cat > "$tmp" || { rm -f "$tmp"; plak_ui_error "Could not read the domain list from stdin."; return 1; }
+            file="$tmp"
+        else
+            plak_ui_error "Usage: plak lookup audit <domain...> [--file FILE] [--wait SECS] [--format json|csv]"
+            return 1
+        fi
+
+        url="$base/audit.php"
+        if ! plak_lookup_post "$url" "$timeout" -F "domain_file=@$file;type=text/plain"; then
+            [ -n "$tmp" ] && rm -f "$tmp"
+            return 1
+        fi
+        [ -n "$tmp" ] && rm -f "$tmp"
+        start_body="$PLAK_SVC_BODY"
+        job_id=$(plak_connect_json_get "$start_body" "job.id")
+        job_status=$(plak_connect_json_get "$start_body" "job.status")
+        [ -n "$job_id" ] || { plak_ui_error "Invalid audit response from Lookup."; return 1; }
+        if [ "$wait_secs" -eq 0 ] && [ -z "$format" ]; then
+            plak_lookup_print_job "$start_body" "$json"
+        elif [ "$wait_secs" -gt 0 ] && [ "$json" -eq 0 ]; then
+            plak_lookup_print_job "$start_body" 0
+        fi
+
+        if [ "$wait_secs" -eq 0 ]; then
+            if [ -n "$format" ]; then
+                case "$job_status" in done|cancelled) plak_lookup_audit_download "$job_id" "$format" "$output" ;; *)
+                    plak_ui_error "Audit #$job_id is ${job_status:-running}; use --wait or poll it with 'plak lookup audit --id $job_id --wait SECS'."; return 3 ;;
+                esac
+            fi
+            return 0
+        fi
+    fi
+
+    local elapsed=0 status_url
+    while :; do
+        status_url="$base/audit.php?id=$job_id"
+        if ! plak_lookup_get "$status_url" "$timeout"; then return 1; fi
+        job_status=$(plak_connect_json_get "$PLAK_SVC_BODY" "status")
+        [ -n "$job_status" ] || { plak_ui_error "Invalid audit status response for #$job_id."; return 1; }
+        case "$job_status" in
+            done|cancelled)
+                if [ "$json" -eq 1 ] && [ -z "$format" ]; then printf '%s\n' "$PLAK_SVC_BODY"; else
+                    [ "$json" -eq 0 ] && plak_lookup_print_job "$PLAK_SVC_BODY" 0
+                fi
+                [ -n "$format" ] && plak_lookup_audit_download "$job_id" "$format" "$output"
+                return 0
+                ;;
+            failed)
+                plak_lookup_print_job "$PLAK_SVC_BODY" "$json"
+                return 1
+                ;;
+        esac
+        if [ "$elapsed" -ge "$wait_secs" ]; then
+            if [ "$json" -eq 1 ]; then printf '%s\n' "$PLAK_SVC_BODY"; else plak_lookup_print_job "$PLAK_SVC_BODY" 0; fi
+            plak_ui_error "Audit #$job_id is still ${job_status:-running}. Resume with 'plak lookup audit --id $job_id --wait SECS'; cancel with 'plak lookup audit --cancel $job_id'."
+            return 3
+        fi
+        sleep "$poll_secs"
+        elapsed=$((elapsed + poll_secs))
+    done
+}
+
+plak_lookup_convert() {
+    local file="" provider="cloudflare" output="" json=0 timeout=60
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --provider) provider="$2"; shift 2 ;;
+            --provider=*) provider="${1#*=}"; shift 1 ;;
+            --output) output="$2"; shift 2 ;;
+            --output=*) output="${1#*=}"; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -) file="-"; shift 1 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) file="$1"; shift 1 ;;
+        esac
+    done
+    case "$provider" in bind|cloudflare|route53|route53-json) ;; *) plak_ui_error "Invalid --provider '$provider'."; return 1 ;; esac
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    local base tmp="" url
+    base=$(plak_lookup_base) || return 1
+    if [ -z "$file" ] || [ "$file" = "-" ]; then
+        tmp=$(mktemp) || return 1
+        cat > "$tmp" || { rm -f "$tmp"; plak_ui_error "Could not read the zone from stdin."; return 1; }
+        file="$tmp"
+    fi
+    [ -r "$file" ] || { [ -n "$tmp" ] && rm -f "$tmp"; plak_ui_error "Cannot read '$file'."; return 1; }
+    url="$base/convert.php"
+    if ! plak_lookup_post "$url" "$timeout" -F "zone_file=@$file;type=text/plain" -F "provider=$provider"; then
+        [ -n "$tmp" ] && rm -f "$tmp"
+        return 1
+    fi
+    [ -n "$tmp" ] && rm -f "$tmp"
+    local body="$PLAK_SVC_BODY"
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$body"; fi
+    local content
+    content=$(printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print(doc.get("content") or "")
+')
+    if [ -n "$output" ] && [ -n "$content" ]; then
+        printf '%s' "$content" > "$output" || { plak_ui_error "Could not write '$output'."; return 1; }
+        [ "$json" -eq 0 ] && echo "Converted zone written to $output"
+    elif [ "$json" -eq 0 ]; then
+        printf '%s' "$content"
+        [ -n "$content" ] && printf '\n'
+    fi
+    printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+for warning in doc.get("warnings") or []: print("Warning: %s" % warning, file=sys.stderr)
+' || true
+}
+
+plak_lookup_diff() {
+    local before="" after="" csv=0 json=0 output="" timeout=60
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --before) before="$2"; shift 2 ;;
+            --before=*) before="${1#*=}"; shift 1 ;;
+            --after) after="$2"; shift 2 ;;
+            --after=*) after="${1#*=}"; shift 1 ;;
+            --csv) csv=1; shift 1 ;;
+            --json) json=1; shift 1 ;;
+            --output) output="$2"; shift 2 ;;
+            --output=*) output="${1#*=}"; shift 1 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -*) plak_ui_error "Unknown flag: $1"; return 1 ;;
+            *) plak_ui_error "Unexpected argument: $1"; return 1 ;;
+        esac
+    done
+    [ -n "$before" ] && [ -n "$after" ] || { plak_ui_error "Usage: plak lookup diff --before FILE --after FILE [--csv] [--json]"; return 1; }
+    [ -r "$before" ] && [ -r "$after" ] || { plak_ui_error "Cannot read --before/--after files."; return 1; }
+    case "$timeout" in ''|*[!0-9]*) plak_ui_error "Invalid --timeout '$timeout'."; return 1 ;; esac
+    local base url
+    base=$(plak_lookup_base) || return 1
+    url="$base/diff.php"
+    plak_lookup_post "$url" "$timeout" -F "before_file=@$before;type=text/plain" -F "zone_file=@$after;type=text/plain" || return 1
+    local body="$PLAK_SVC_BODY"
+    if [ -n "$output" ]; then
+        if [ "$csv" -eq 1 ]; then
+            printf '%s' "$body" | python3 -c 'import json,sys,os; print(json.load(sys.stdin).get("exports",{}).get("csv",""))' > "$output"
+        else
+            printf '%s' "$body" | python3 -c 'import json,sys,os; print(json.load(sys.stdin).get("exports",{}).get("json",""))' > "$output"
+        fi
+        [ "$json" -eq 0 ] && echo "Diff written to $output"
+    fi
+    if [ "$json" -eq 1 ]; then printf '%s\n' "$body"; return 0; fi
+    if [ "$csv" -eq 1 ]; then
+        printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("exports",{}).get("csv",""))'
+        return 0
+    fi
+    printf '%s' "$body" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print("Risk: %s" % (doc.get("risk") or "none"))
+summary = doc.get("summary") or {}
+print("Changes: added %s, removed %s, changed %s, unchanged %s" % (summary.get("added", 0), summary.get("removed", 0), summary.get("changed", 0), summary.get("unchanged", 0)))
+for change in doc.get("changes") or []:
+    print("[%-6s] %s" % (change.get("risk") or "?", change.get("message") or ""))
+'
+}
+
+plak_lookup() {
+    plak_lookup_require_deps || return 1
+    local action="${1:-help}"
+    case "$action" in
+        help|--help|-h) plak_lookup_help; return 0 ;;
+        whois|dns|email|zone|health|audit|convert|diff)
+            shift
+            "plak_lookup_$action" "$@"
+            ;;
+        *)
+            plak_lookup_summary "$@"
+            ;;
+    esac
+}

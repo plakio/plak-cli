@@ -1,6 +1,6 @@
 ---
 name: plak-cli
-description: "Use when working with Plak CLI: local WordPress/static sites, the https://plak.localhost dashboard, install/status/service workflows, database backups, pull/push migrations, /etc/hosts entries, SSH remotes with site bindings, SSH keys, Plak Connect and panel sites/servers, server offers and purchase requests, or Plak release/Homebrew maintenance."
+description: "Use when working with Plak CLI: local WordPress/static sites, the https://plak.localhost dashboard, install/status/service workflows, database backups, pull/push migrations, /etc/hosts entries, SSH remotes with site bindings, SSH keys, Plak Connect and panel sites/servers, server offers and purchase requests, lookup.plak.io WHOIS/DNS/audits, sandbox.plak.io disposable sites, or Plak release/Homebrew maintenance."
 ---
 
 # Plak CLI
@@ -11,6 +11,8 @@ Use Plak for local developer workflows around:
 - The Plak dashboard at `https://plak.localhost`.
 - Adminer at `https://db.plak.localhost` and Mailpit at `https://mail.plak.localhost`.
 - SSH remotes (with optional site bindings for push/pull), `/etc/hosts` entries, and SSH keys.
+- Public `lookup.plak.io` WHOIS/DNS/email/zone lookups and audits.
+- `sandbox.plak.io` disposable sites (no account, no delete).
 - Plak CLI development, tests, releases, and Homebrew tap maintenance.
 
 ## Key Rules
@@ -24,6 +26,8 @@ Use Plak for local developer workflows around:
 - Panel purchases only create a request; the account holder approves/pays in the browser. Never approve or pay, open a Polar checkout with agent credentials, ask for card data, or treat `--yes` as financial approval.
 - Pairing defaults to `user:read` + `ssh:authorize`. `plak connect --billing` requests `billing:request`; the panel/holder can deny it. Verify `billing_granted` before claiming the machine can buy.
 - Never expose tokens, idempotency keys, Polar/checkout/customer-portal URLs in output, logs or commits. A paid-server deletion is scheduled for the end of the paid period, not immediate.
+- `plak lookup` uses the public `lookup.plak.io` API without auth. Domains are sent to that service and are subject to its IP rate limits; never send credentials. On `429`, honor `Retry-After`.
+- `plak sandbox` uses the public Sandbox API without an account or token. A sandbox UUID (`/s/<uuid>`) is an access link: anyone with it can see the credentials. The CLI stores only site metadata locally, never WordPress/database passwords. There is no CLI delete; sites expire and the admin cleans them up.
 
 ## Installation
 
@@ -84,7 +88,7 @@ WP-CLI's exit code. Use `plak wp --help` for Plak's wrapper help.
 
 **Error handling**:
 
-- Exit codes: `0` = success, `1` = usage/config or terminal purchase failure, `2` = not found, `3` = binding/integrity error, purchase timeout or ambiguous purchase status.
+- Exit codes: `0` = success, `1` = usage/config or terminal purchase failure, `2` = not found, `3` = binding/integrity error, purchase timeout/ambiguous status, or a Lookup audit still running at the deadline.
 - Errors go to STDERR; data goes to STDOUT. Use `data=$(plak ... 2>/dev/null)` to capture only data.
 - When a TTY is unavailable AND a confirmation prompt is needed, the command exits with a clear error telling you which flag to pass (`--yes`, `--force`, etc.) — it does **not** auto-confirm.
 
@@ -383,6 +387,44 @@ final object after polling.
 `users-list|add|del` (`servers:write` for mutations; synchronous).
 **Panel site infra (Fase D)**: `db-*|cron-*|cert-*|redirect-*|alias-*|dns-*|
 authuser-*|cache-*|app-*` (`sites:write` for mutations).
+
+**Lookup (public, no token)**:
+```bash
+plak lookup example.com [--deep] [--json]
+plak lookup whois|dns|email|zone example.com [--json]
+plak lookup health [--json]
+plak lookup audit example.com --wait 600 --poll 5 [--format json|csv --output FILE]
+plak lookup audit --id <job-id> --wait 600
+plak lookup audit --cancel <job-id>
+plak lookup convert zone.txt --provider cloudflare [--output FILE]
+plak lookup diff --before old.zone --after new.zone [--csv]
+```
+`PLAK_LOOKUP_URL` overrides the default `https://lookup.plak.io`. The API is
+rate-limited by IP; surface `429`/`Retry-After` instead of retrying blindly.
+`audit` exits `3` while the job is still running; `--cancel <id>` cancels it.
+Use `--json` for raw API output and never mix human messages into stdout.
+
+**Sandbox (public, no account, no token)**:
+```bash
+plak sandbox create <subdomain> [--email EMAIL] [--plugin NAME]... [--json]
+plak sandbox list [--json]
+plak sandbox show <subdomain|uuid> [--secrets] [--json]
+plak sandbox open <subdomain|uuid> [--info]
+plak sandbox import https://sandbox.plak.io/s/<uuid>
+```
+`PLAK_SANDBOX_URL` overrides the default. The UUID is an access link: the
+`/s/<uuid>` page exposes WordPress/database credentials. The CLI stores only
+site metadata (never passwords) in `~/.plak/sandbox-sites.json` (600). It does
+not delete sites; they expire and the admin cleans them up. `create` retries a
+timeout once with the same idempotency key and keeps a pending key for a later
+retry.
+
+**Release 0.4.94 changes**: `buy-server` accepts `--os`, `--database` and
+`--php` (defaults `ubuntu-24-04-lts`, `mysql`, `8.4`; OS 22/24/26, databases
+mysql/mariadb/postgresql, PHP 5.6–8.5; `none` normalizes to mysql/8.4).
+Runtime options are part of the purchase fingerprint, so changing them with
+the same `--name` never silently reuses a request. `wp-set-php --json` emits
+one final object, and `wp-complete-install` supports `--password-stdin`.
 
 **Remote → site bindings**: `plak remote attach <remote> <site>` writes the remote name to `~/Plak/Sites/<site>.localhost/.remote`. The `remote_path` (WordPress root or static web root) is stored in `~/.ssh/config` inside the `Host` block as `# plak-remote-path: <path>`. With a binding, `plak push <site>` and `plak pull <site>` resolve the remote automatically without prompting.
 
