@@ -23,7 +23,8 @@ Usage:
 
 Create and operate your own panel servers and sites (write API).
 
-  providers         Show legacy provider/region/plan references (use offers for purchases).
+  providers         Show provider/region/plan references (legacy endpoint
+                    retired; derived from offers). Use offers for purchases.
   offers            Show public server offers (free accounts can browse).
                     Filter with --provider, --family or --region.
   buy-server        Request a server purchase; the account holder approves/pays.
@@ -59,7 +60,7 @@ plak_panel_write_call() {
     local method="$1" path="$2" body="${3:-}"
     local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
     if ! plak_connect_http "$method" "$PLAK_PANEL_URL_OUT$path" "$body" "$PLAK_SAVED_TOKEN" "$cf_token"; then
-        plak_ui_error "Panel unreachable. Check the network and 'plak connect status'."
+        plak_panel_network_error
         return 1
     fi
     if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
@@ -217,12 +218,19 @@ plak_panel_poll_active() {
 plak_panel_providers() {
     local json=0
     for a in "$@"; do case "$a" in --json) json=1 ;; esac; done
-    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/providers" || return 1
-    if [ "$json" -eq 1 ]; then
-        printf '%s\n' "$PLAK_PANEL_JSON"
-        return 0
-    fi
-    PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
+
+    # The legacy /api/v1/providers contract is retired on current panels.
+    # Keep one attempt for older panels, then derive the same references
+    # (provider, region, plan) from the live offers catalog.
+    local legacy_err
+    legacy_err=$(mktemp) || return 1
+    if plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/providers" 2>"$legacy_err"; then
+        rm -f "$legacy_err"
+        if [ "$json" -eq 1 ]; then
+            printf '%s\n' "$PLAK_PANEL_JSON"
+            return 0
+        fi
+        PLAK_JSON_DOC="$PLAK_PANEL_JSON" python3 -c '
 import json, os
 provs = json.loads(os.environ["PLAK_JSON_DOC"]).get("data", [])
 if not provs:
@@ -234,6 +242,57 @@ for p in provs:
     for pl in p.get("plans", []):
         print("  plan   %s: %s" % (pl.get("id"), pl.get("label")))
 ' 2>/dev/null || plak_ui_error "Invalid providers response."
+        return 0
+    fi
+    if [ "${PLAK_HTTP_STATUS:-}" != "404" ]; then
+        cat "$legacy_err" >&2
+        rm -f "$legacy_err"
+        return 1
+    fi
+    rm -f "$legacy_err"
+    echo "The legacy /api/v1/providers endpoint is retired on this panel; deriving provider/region/plan references from 'plak panel offers'." >&2
+
+    plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/billing/offers" || return 1
+    printf '%s' "$PLAK_PANEL_JSON" | PLAK_JSON="$json" python3 -c '
+import json, os, sys
+items = json.load(sys.stdin).get("data", [])
+providers = {}
+for entry in items:
+    name = entry.get("provider") or "unknown"
+    prov = providers.setdefault(name, {"name": name, "regions": {}, "plans": {}})
+    region = entry.get("region") or {}
+    if region.get("id") is not None:
+        prov["regions"][str(region["id"])] = {
+            "id": region["id"],
+            "label": region.get("label") or "",
+        }
+    if entry.get("offer_id") is not None:
+        prov["plans"][str(entry["offer_id"])] = {
+            "offer_id": entry["offer_id"],
+            "code": entry.get("code") or entry.get("display_name") or "",
+            "label": entry.get("plan") or "",
+        }
+out = []
+for name in sorted(providers):
+    prov = providers[name]
+    out.append({
+        "name": name,
+        "regions": [prov["regions"][key] for key in sorted(prov["regions"], key=int)],
+        "plans": [prov["plans"][key] for key in sorted(prov["plans"], key=int)],
+    })
+if os.environ.get("PLAK_JSON") == "1":
+    print(json.dumps({"data": out, "source": "billing/offers"}, sort_keys=True))
+    raise SystemExit(0)
+if not out:
+    print("No providers available for this account.")
+for prov in out:
+    print("provider %s:" % prov["name"])
+    for region in prov["regions"]:
+        print("  region %s: %s" % (region["id"], region["label"]))
+    for plan in prov["plans"]:
+        label = plan["label"] or plan["code"]
+        print("  plan   %s (offer %s): %s" % (plan["code"], plan["offer_id"], label))
+'
 }
 
 
@@ -302,6 +361,26 @@ except Exception as exc:
 rec = (doc.get("requests") or {}).get(os.environ["PLAK_FP"])
 if isinstance(rec, dict):
     print(json.dumps(rec, sort_keys=True))
+'
+}
+
+# Best-effort local record for a request id (used to keep the last known
+# state when the panel cannot be reached during a long poll).
+plak_panel_purchase_record_by_request() {
+    local request_id="$1" file
+    file=$(plak_panel_purchases_file)
+    [ -f "$file" ] || return 0
+    PLAK_FILE="$file" PLAK_REQUEST_ID="$request_id" python3 -c '
+import json, os, sys
+try:
+    with open(os.environ["PLAK_FILE"], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+for rec in (doc.get("requests") or {}).values():
+    if isinstance(rec, dict) and str(rec.get("request_id")) == str(os.environ["PLAK_REQUEST_ID"]):
+        print(json.dumps(rec, sort_keys=True))
+        break
 '
 }
 
@@ -408,7 +487,8 @@ finally:
 plak_panel_purchase_json() {
     PLAK_REQUEST_ID="${1:-}" PLAK_STATUS="${2:-}" PLAK_APPROVAL="${3:-}" \
     PLAK_EXPIRES="${4:-}" PLAK_CREATED="${5:-}" PLAK_RESUMED="${6:-0}" \
-    PLAK_EXPIRED="${7:-0}" PLAK_TIMED_OUT="${8:-0}" PLAK_AMBIGUOUS="${9:-0}" python3 -c '
+    PLAK_EXPIRED="${7:-0}" PLAK_TIMED_OUT="${8:-0}" PLAK_AMBIGUOUS="${9:-0}" \
+    PLAK_INTERRUPTED="${10:-0}" PLAK_RESUME="${PLAK_PURCHASE_RESUME:-}" python3 -c '
 import json, os
 def nz(name):
     value = os.environ.get(name, "")
@@ -431,6 +511,12 @@ if flag("PLAK_TIMED_OUT"):
     out["timed_out"] = True
 if flag("PLAK_AMBIGUOUS"):
     out["ambiguous"] = True
+if flag("PLAK_INTERRUPTED"):
+    out["interrupted"] = True
+if flag("PLAK_TIMED_OUT") or flag("PLAK_INTERRUPTED"):
+    resume = nz("PLAK_RESUME")
+    if resume:
+        out["resume_command"] = resume
 print(json.dumps(out, sort_keys=True))
 '
 }
@@ -438,6 +524,8 @@ print(json.dumps(out, sort_keys=True))
 plak_panel_purchase_print() {
     local request_id="$1" status="$2" approval="$3" expires="$4"
     local expired="$5" timed_out="$6" ambiguous="$7" resumed="$8" mode="$9"
+    local interrupted="${10:-0}"
+    local resume="${PLAK_PURCHASE_RESUME:-plak panel purchase-request $request_id}"
     if [ "$mode" = "created" ]; then
         if [ "$resumed" = "1" ]; then
             echo "Existing purchase request #$request_id resumed (no new request was created)."
@@ -464,7 +552,10 @@ plak_panel_purchase_print() {
         echo "This request has expired. Create a new one with 'plak panel buy-server ... --new' if needed."
     fi
     if [ "$timed_out" = "1" ]; then
-        echo "Still not terminal after the wait. Resume with 'plak panel purchase-request $request_id --wait SECS --poll SECS'; do not create another purchase."
+        echo "Still not terminal after the wait. Resume with '$resume'; do not create another purchase."
+    fi
+    if [ "$interrupted" = "1" ]; then
+        echo "Polling stopped after repeated panel errors; the request may still be alive. Resume with '$resume'; do not create another purchase."
     fi
     if [ "$ambiguous" = "1" ]; then
         echo "This request needs manual review or has ambiguous provisioning. Do not create another purchase; check the panel/support."
@@ -486,31 +577,75 @@ plak_panel_purchase_print() {
 plak_panel_purchase_emit() {
     local request_id="$1" status="$2" approval="$3" expires="$4" created="$5"
     local expired="$6" timed_out="$7" ambiguous="$8" resumed="$9" mode="${10:-created}" json="${11:-0}"
+    local interrupted="${12:-0}"
     if [ "${PLAK_PURCHASE_PROGRESS:-0}" = "1" ]; then
         printf '\n'
         PLAK_PURCHASE_PROGRESS=0
     fi
     if [ "$json" = "1" ]; then
         plak_panel_purchase_json "$request_id" "$status" "$approval" "$expires" "$created" \
-            "$resumed" "$expired" "$timed_out" "$ambiguous"
+            "$resumed" "$expired" "$timed_out" "$ambiguous" "$interrupted"
     else
         plak_panel_purchase_print "$request_id" "$status" "$approval" "$expires" \
-            "$expired" "$timed_out" "$ambiguous" "$resumed" "$mode"
+            "$expired" "$timed_out" "$ambiguous" "$resumed" "$mode" "$interrupted"
     fi
 }
 
 plak_panel_purchase_poll() {
     local request_id="$1" wait_secs="${2:-0}" poll_secs="${3:-10}" json="${4:-0}"
     local resumed="${5:-0}" mode="${6:-status}"
-    local elapsed=0 status="" approval="" expires="" created="" expired=0 timed_out=0 ambiguous=0
+    local elapsed=0 status="${7:-}" approval="${8:-}" expires="${9:-}" created="${10:-}"
+    local expired=0
+    local timed_out=0 ambiguous=0 interrupted=0 failures=0 delay=0 remaining=0
     PLAK_PURCHASE_PROGRESS=0
+    PLAK_PURCHASE_RESUME="plak panel purchase-request $request_id --wait $wait_secs --poll $poll_secs"
     while :; do
-        plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/billing/purchase-requests/$request_id" || return 1
+        if ! plak_panel_get "$PLAK_PANEL_URL_OUT/api/v1/billing/purchase-requests/$request_id"; then
+            # Auth/404/rate-limit errors are definitive: retrying cannot fix
+            # them. Network failures, timeouts and 5xx are transient.
+            if [ "${PLAK_PANEL_RETRYABLE:-0}" != "1" ]; then
+                echo "Polling stopped for purchase request #$request_id. Resume with '$PLAK_PURCHASE_RESUME' once the panel error is resolved." >&2
+                return 1
+            fi
+            failures=$((failures + 1))
+            if [ "$failures" -ge 3 ]; then
+                interrupted=1
+                plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" \
+                    "$expired" "$timed_out" "$ambiguous" "$resumed" "$mode" "$json" "$interrupted"
+                return 1
+            fi
+            echo "Transient panel error; retrying ($failures/3)..." >&2
+            # Backoff based on --poll; a status-only call retries quickly.
+            delay=$((poll_secs * failures))
+            [ "$delay" -ge 1 ] || delay=1
+            if [ "$wait_secs" -gt 0 ]; then
+                remaining=$((wait_secs - elapsed))
+                if [ "$remaining" -le 0 ]; then
+                    timed_out=1
+                    plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" \
+                        "$expired" "$timed_out" "$ambiguous" "$resumed" "$mode" "$json" "$interrupted"
+                    return 3
+                fi
+                [ "$delay" -gt "$remaining" ] && delay="$remaining"
+            else
+                [ "$delay" -gt 1 ] && delay=1
+            fi
+            sleep "$delay"
+            elapsed=$((elapsed + delay))
+            if [ "$wait_secs" -gt 0 ] && [ "$elapsed" -ge "$wait_secs" ]; then
+                timed_out=1
+                plak_panel_purchase_emit "$request_id" "$status" "$approval" "$expires" "$created" \
+                    "$expired" "$timed_out" "$ambiguous" "$resumed" "$mode" "$json" "$interrupted"
+                return 3
+            fi
+            continue
+        fi
+        failures=0
         status=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.status")
         approval=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.approval_url")
         expires=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.expires_at")
         created=$(plak_connect_json_get "$PLAK_PANEL_JSON" "data.created_at")
-        [ -n "$status" ] || { plak_ui_error "Invalid purchase request response."; return 1; }
+        [ -n "$status" ] || { plak_ui_error "Invalid purchase request response for #$request_id. Resume with '$PLAK_PURCHASE_RESUME'."; return 1; }
         plak_panel_purchase_update_by_request "$request_id" "$status" "$approval" "$expires"
         expired=0
         case "$status" in
@@ -767,7 +902,8 @@ plak_panel_buy_server() {
             key=""; req_id=""; status=""; approval=""; expires=""; created=""
         elif [ -n "$req_id" ]; then
             # A known request is never re-POSTed. Resolve its current state.
-            plak_panel_purchase_poll "$req_id" "$wait_secs" "$poll_secs" "$json" 1 created
+            plak_panel_purchase_poll "$req_id" "$wait_secs" "$poll_secs" "$json" 1 created \
+                "$status" "$approval" "$expires" "$created"
             return $?
         fi
         if [ -n "$idem_flag" ] && [ -n "$key" ] && [ "$idem_flag" != "$key" ]; then
@@ -828,7 +964,8 @@ print(json.dumps({
     plak_panel_purchase_store "$fp" "$PLAK_PANEL_URL_OUT" "$user_id" "$offer" "$region" "$name" \
         "$key" "$req_id" "$status" "$approval" "$expires" "$created" || return 1
     if [ "$wait_secs" -gt 0 ]; then
-        plak_panel_purchase_poll "$req_id" "$wait_secs" "$poll_secs" "$json" 0 created
+        plak_panel_purchase_poll "$req_id" "$wait_secs" "$poll_secs" "$json" 0 created \
+            "$status" "$approval" "$expires" "$created"
         return $?
     fi
     local expired=0
@@ -857,7 +994,18 @@ plak_panel_purchase_request() {
     case "$wait_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --wait '$wait_secs'."; return 1 ;; esac
     case "$poll_secs" in ''|*[!0-9]*) plak_ui_error "Invalid --poll '$poll_secs'."; return 1 ;; esac
     [ "$poll_secs" -ge 1 ] || poll_secs=1
-    plak_panel_purchase_poll "$request_id" "$wait_secs" "$poll_secs" "$json" 0 status
+    # Seed the last known state from the local record so an interrupted poll
+    # still reports something useful along with the resume command.
+    local record="" status="" approval="" expires="" created=""
+    record=$(plak_panel_purchase_record_by_request "$request_id")
+    if [ -n "$record" ]; then
+        status=$(plak_connect_json_get "$record" "status")
+        approval=$(plak_connect_json_get "$record" "approval_url")
+        expires=$(plak_connect_json_get "$record" "expires_at")
+        created=$(plak_connect_json_get "$record" "created_at")
+    fi
+    plak_panel_purchase_poll "$request_id" "$wait_secs" "$poll_secs" "$json" 0 status \
+        "$status" "$approval" "$expires" "$created"
 }
 
 plak_panel_purchases() {

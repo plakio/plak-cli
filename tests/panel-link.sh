@@ -125,8 +125,23 @@ chmod 600 "$PLAK_HOME/connection.json"
 
 ssh-keygen -t ed25519 -f "$HOME/.ssh/id_test" -N '' -C "test" -q
 
+# --- non-interactive runs get every missing flag in one hint ---
+set +e
+./plak.sh panel link shop.example myshop > "$tmpdir/link-hint.out" 2> "$tmpdir/link-hint.err"
+link_hint_rc=$?
+set -e
+[ "$link_hint_rc" -ne 0 ] || fail "link without flags succeeded"
+grep -q "Non-interactive link needs:" "$tmpdir/link-hint.err" || fail "link combined hint"
+grep -q -- "--system-user" "$tmpdir/link-hint.err" || fail "link hint lacks system user"
+grep -q -- "--key" "$tmpdir/link-hint.err" || fail "link hint lacks key"
+grep -q -- "--generate" "$tmpdir/link-hint.err" || fail "link hint lacks generate"
+
 # --- happy path: authorize, verify, remote, bind, record ---
-./plak.sh panel link shop.example myshop --system-user plak --key "$HOME/.ssh/id_test" --yes || fail "link"
+mkdir -p "$HOME/Plak/Sites/other.localhost"
+printf 'panel-shop.example\n' > "$HOME/Plak/Sites/other.localhost/.remote"
+./plak.sh panel link shop.example myshop --system-user plak --key "$HOME/.ssh/id_test" --yes \
+    > "$tmpdir/link.out" 2>&1 || fail "link"
+grep -q "already attached to local site 'other'" "$tmpdir/link.out" || fail "shared remote warning"
 grep -q "panel-shop.example" "$PLAK_SSH_CONFIG" || fail "remote alias"
 [ "$(cat "$HOME/Plak/Sites/myshop.localhost/.remote")" = "panel-shop.example" ] || fail "binding"
 python3 - "$HOME/Plak/Sites/myshop.localhost/.panel-link" <<'PY' || fail "link record"

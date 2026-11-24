@@ -156,6 +156,22 @@ for item in json.loads(os.environ["PLAK_JSON_DOC"]).get("data", []):
     local users_json n_users
     users_json=$(PLAK_JSON_DOC="$contract" python3 -c 'import json,os; print(json.dumps(json.loads(os.environ["PLAK_JSON_DOC"]).get("data", {}).get("system_users", [])))')
     n_users=$(PLAK_JSON_DOC="$users_json" python3 -c 'import json,os; print(len(json.loads(os.environ["PLAK_JSON_DOC"])))')
+
+    # One preflight hint for non-interactive runs instead of failing one
+    # missing flag at a time (system user first, then the key).
+    if [ ! -t 0 ] || [ "$yes" -eq 1 ]; then
+        local missing=() joined
+        [ -z "$system_user" ] && [ "$n_users" -gt 0 ] && missing+=("--system-user <user>")
+        [ -z "$remote_path" ] && [ "$n_users" -eq 0 ] && missing+=("--path <remote-root>")
+        [ -z "$key_file" ] && [ "$generate" -eq 0 ] && missing+=("--key <private-key>|--generate")
+        if [ "${#missing[@]}" -gt 0 ]; then
+            joined=$(printf '%s, ' "${missing[@]}")
+            joined="${joined%, }"
+            plak_ui_error "Non-interactive link needs: $joined. Example: plak panel link <panel-site> <local-site> --system-user USER --key ~/.ssh/id_ed25519"
+            return 1
+        fi
+    fi
+
     if [ -z "$system_user" ]; then
         if [ "$n_users" -eq 0 ]; then
             system_user=""

@@ -201,6 +201,10 @@ if isinstance(scopes, list):
 plak_connect_http() {
     local method="$1" url="$2" body="${3:-}" bearer="${4:-}" cf_token="${5:-}"
     local headers_file body_file code
+    PLAK_HTTP_CURL_EXIT=0
+    PLAK_HTTP_STATUS=""
+    PLAK_HTTP_BODY=""
+    PLAK_HTTP_RETRY_AFTER=""
     headers_file=$(mktemp) || return 1
     body_file=$(mktemp) || { rm -f "$headers_file"; return 1; }
     local args=(-sS --max-time 20 --connect-timeout 10 -X "$method" -D "$headers_file" -o "$body_file" -w '%{http_code}')
@@ -208,7 +212,9 @@ plak_connect_http() {
     [ -n "$body" ] && args+=(-H 'Content-Type: application/json' --data "$body")
     [ -n "$bearer" ] && args+=(-H "Authorization: Bearer $bearer")
     [ -n "$cf_token" ] && args+=(-H "CF-Access-Token: $cf_token")
-    code=$(curl "${args[@]}" "$url" 2>/dev/null) || code="000"
+    code=$(curl "${args[@]}" "$url" 2>/dev/null)
+    PLAK_HTTP_CURL_EXIT=$?
+    [ "$PLAK_HTTP_CURL_EXIT" -eq 0 ] || code="000"
     PLAK_HTTP_STATUS="$code"
     PLAK_HTTP_BODY=$(cat "$body_file" 2>/dev/null || true)
     PLAK_HTTP_RETRY_AFTER=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d ' \r\n' || true)

@@ -667,6 +667,21 @@ plak_remote_attach_to() {
         plak_ui_warn "Remote '$remote_name' has no remote_path set. Run 'plak remote edit $remote_name' to set one — push/pull will still ask for the path until then."
     fi
 
+    # A domain/remote can only track one local site: two bindings push over
+    # each other and the last push wins. Warn before adding another one.
+    local other_dir other_site=""
+    for other_dir in "$SITES_DIR"/*.localhost; do
+        [ -d "$other_dir" ] || continue
+        [ "$other_dir" = "$site_dir" ] && continue
+        if [ -f "$other_dir/.remote" ] && [ "$(cat "$other_dir/.remote" 2>/dev/null)" = "$remote_name" ]; then
+            other_site=$(basename "$other_dir" .localhost)
+            break
+        fi
+    done
+    if [ -n "$other_site" ]; then
+        plak_ui_warn "Remote '$remote_name' is already attached to local site '$other_site'. One remote holds one local site at a time; pushes would overwrite each other (last push wins). Run 'plak remote detach $other_site' first if this is not intended."
+    fi
+
     if [ -f "$binding_file" ]; then
         local current_binding
         current_binding=$(cat "$binding_file")

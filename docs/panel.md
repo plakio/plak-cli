@@ -40,6 +40,12 @@ no tokens). `plak panel unlink` removes the
 record only; installed SSH keys are removed in the panel (Servers > SSH
 keys) and live independently of API keys.
 
+A panel domain/remote holds one local site at a time: attaching a second
+local site to the same remote warns, because their pushes overwrite each
+other and the last one wins. In non-interactive runs, `link` reports every
+missing flag (`--system-user`, `--path` when needed, and `--key` or
+`--generate`) in one hint.
+
 ## Migrating (`plak push` / `plak pull`, CLI-27)
 
 Linked sites revalidate the panel destination before anything destructive
@@ -70,6 +76,11 @@ plak panel delete-site <id|domain> [--yes] [--json]
 Creation is async (`202 busy`): the CLI polls until `active`/`failed` (or
 timeout, never a false success). Deletes confirm (or `--yes`); remote
 removal is panel best-effort. `--json` never includes secrets.
+
+`providers` is kept for older panels that still serve `/api/v1/providers`.
+Current panels retire that endpoint, so the CLI derives the same
+provider/region/plan references from `offers` instead of reporting a
+misleading account error.
 
 `create-server` is the legacy direct-creation path. Panels with per-server
 billing answer `servers.purchase_required` (or retire the route); the CLI
@@ -133,6 +144,12 @@ plak panel purchases --json
   duplicated. After a timeout re-run the same `buy-server` command (same key)
   or, if you have the request id, use `purchase-request <id>`; never a blind
   retry with a new key.
+- Long polls tolerate transient failures (timeouts, refused connections,
+  5xx): the CLI retries up to 3 consecutive times with backoff based on
+  `--poll` and keeps the last known status. A timeout is reported differently
+  from a refused connection. If polling stops for real, the request id and an
+  explicit `purchase-request <id> --wait ...` resume command are always
+  printed; stopping polling is never permission to create another purchase.
 - Statuses: `pending_approval`, `approved`, `checkout_open`, `paid`,
   `provisioning`, `fulfilled` (success); `failed`, `cancelled`;
   `manual_review` and `provisioning_unknown` are ambiguous. Any status the CLI
@@ -151,8 +168,9 @@ plak panel purchases --json
 
 `--json` exposes `request_id`, `status`, `approval_url`, `expires_at`,
 `created_at`, `resumed`, `approval_required`, and the flags `expired`,
-`timed_out` or `ambiguous` when applicable. `approval_required` is true only
-while the holder still has to act (`pending_approval`, `approved`,
+`timed_out`, `ambiguous` or `interrupted` when applicable; a timed-out or
+interrupted poll also includes `resume_command`. `approval_required` is true
+only while the holder still has to act (`pending_approval`, `approved`,
 `checkout_open`); `expired` only applies to those states, never to a terminal
 request. It never exposes a token, Polar URL, customer portal URL or
 idempotency key.

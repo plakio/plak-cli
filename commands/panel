@@ -81,12 +81,37 @@ plak_panel_require_connection() {
     PLAK_PANEL_URL_OUT="$PLAK_SAVED_PANEL"
 }
 
+# Turn a curl transport failure into an actionable message. A timeout is not
+# the same as a refused connection: the panel may still process the request.
+plak_panel_network_error() {
+    case "${PLAK_HTTP_CURL_EXIT:-0}" in
+        6)
+            plak_ui_error "Could not resolve the panel hostname. Check the network and 'plak connect status'."
+            ;;
+        7)
+            plak_ui_error "Could not connect to the panel (connection refused). Check the network and 'plak connect status'."
+            ;;
+        28)
+            plak_ui_error "The panel took too long to respond (timeout). Check the network and retry; the request may still be processing."
+            ;;
+        35|51|60)
+            plak_ui_error "Could not establish a secure connection to the panel (TLS/certificate). Check the panel URL and 'plak connect status'."
+            ;;
+        *)
+            plak_ui_error "Panel unreachable (curl error ${PLAK_HTTP_CURL_EXIT:-unknown}). Check the network and 'plak connect status'."
+            ;;
+    esac
+}
+
 # GET one personal API page. Sets PLAK_PANEL_JSON. Maps auth/network errors.
+# Sets PLAK_PANEL_RETRYABLE=1 only for failures a poll may safely retry.
 plak_panel_get() {
     local url="$1"
     local cf_token="${PLAK_CF_ACCESS_TOKEN:-}"
+    PLAK_PANEL_RETRYABLE=0
     if ! plak_connect_http GET "$url" "" "$PLAK_SAVED_TOKEN" "$cf_token"; then
-        plak_ui_error "Panel unreachable. Check the network and 'plak connect status'."
+        PLAK_PANEL_RETRYABLE=1
+        plak_panel_network_error
         return 1
     fi
     if plak_connect_is_access_block "$PLAK_HTTP_STATUS" "$PLAK_HTTP_BODY"; then
@@ -121,7 +146,14 @@ plak_panel_get() {
             return 1
             ;;
         404)
-            plak_ui_error "Not found on this account."
+            case "$url" in
+                */api/v1/providers*)
+                    plak_ui_error "The legacy providers endpoint is not available on this panel. Use 'plak panel offers' for current provider, region and plan references."
+                    ;;
+                *)
+                    plak_ui_error "Not found on this account."
+                    ;;
+            esac
             return 1
             ;;
         422)
@@ -130,6 +162,11 @@ plak_panel_get() {
             ;;
         429)
             plak_ui_error "Rate limited${PLAK_HTTP_RETRY_AFTER:+ (retry after ${PLAK_HTTP_RETRY_AFTER}s)}."
+            return 1
+            ;;
+        408|425|5??)
+            PLAK_PANEL_RETRYABLE=1
+            plak_ui_error "Panel request failed (HTTP $PLAK_HTTP_STATUS); this is usually temporary."
             return 1
             ;;
         *)

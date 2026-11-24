@@ -306,11 +306,12 @@ SSH authorizations outlive API keys (remove in panel Servers > SSH keys).
 **Panel migration**: `plak push/pull` on linked sites revalidate the panel
 destination first (account/panel/remote/site changes and invalid tokens
 stop with an explanation); manual remotes unchanged.
-**Panel writes (Fase A)**: `providers`, `delete-server`, `restart-server`,
-`create-site`, `delete-site` (opt-in scopes `servers:write`/`sites:write`;
-async creation is polled, never false success). `create-server` is legacy:
-a panel with per-server billing answers `servers.purchase_required` and must
-guide to `offers`/`buy-server`, never to a global or comped fallback.
+**Panel writes (Fase A)**: `providers` (legacy endpoint retired; derived
+from `offers`), `delete-server`, `restart-server`, `create-site`,
+`delete-site` (opt-in scopes `servers:write`/`sites:write`; async creation
+is polled, never false success). `create-server` is legacy: a panel with
+per-server billing answers `servers.purchase_required` and must guide to
+`offers`/`buy-server`, never to a global or comped fallback.
 **Panel purchases (CLI-50/51/52)**:
 - `offers [--provider NAME] [--family KEY] [--region ID|NAME] [--json]`
   lists the public catalog (free accounts can browse), grouped by offer.
@@ -320,7 +321,9 @@ guide to `offers`/`buy-server`, never to a global or comped fallback.
   [--json] [--new]` creates a purchase request. It sends only offer/region/
   name/idempotency key; never a price or Polar ID. Needs `billing:request`.
 - `purchase-request <id> [--wait SECS] [--poll SECS] [--json]` polls one
-  request without creating anything.
+  request without creating anything. A single timeout/refused connection/5xx
+  is retried (up to 3 consecutive failures, backoff based on `--poll`); if it
+  really stops, the last known status, the id and a resume command are kept.
 - `purchases [--json]` lists local records with safe fields; it works without
   a connection and never includes the token or idempotency key.
 - Use `plak connect --billing` during pairing. Require `billing_granted:true`
@@ -332,9 +335,11 @@ guide to `offers`/`buy-server`, never to a global or comped fallback.
   financial approval.
 - `--json` includes `request_id`, `status`, `approval_url`, `expires_at`,
   `created_at`, `resumed`, `approval_required`, and optional `expired`,
-  `timed_out`/`ambiguous` flags. It never includes the token, idempotency key,
-  Polar checkout URL or customer portal URL. `approval_required` is true only
-  for `pending_approval`/`approved`/`checkout_open`.
+  `timed_out`/`ambiguous`/`interrupted` flags plus `resume_command` when a
+  timed-out or interrupted poll must be resumed. It never includes the token,
+  idempotency key, Polar checkout URL or customer portal URL.
+  `approval_required` is true only for
+  `pending_approval`/`approved`/`checkout_open`.
 - Idempotency: the key is persisted before the POST in
   `${PLAK_HOME:-$HOME/.plak}/panel-purchases.json` (dir `700`, file `600`).
   Re-running with a known request id polls it without a new POST. After a

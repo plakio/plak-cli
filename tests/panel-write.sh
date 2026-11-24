@@ -43,6 +43,7 @@ state = {
     "large_catalog": False,
     "purchases": {},
     "rejected_once": [],
+    "poll_failures": {},
     "next_purchase_id": 41,
 }
 abilities = {
@@ -134,9 +135,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._json(401, {"code": "personal_token.invalid", "message": "x", "hint": "y"})
             return
         if url.path == "/api/v1/providers":
-            self._json(200, {"data": [{"id": 1, "name": "Hetzner",
-                                       "regions": [{"id": 2, "label": "Falkenstein"}],
-                                       "plans": [{"id": 3, "label": "CX22"}]}]})
+            # The panel retired this legacy contract; the CLI must fall back
+            # to the offers catalog instead of reporting an account error.
+            self._json(404, {"code": "not_found", "message": "Not found.", "hint": ""})
         elif url.path == "/api/v1/billing/offers":
             self._json(200, {"data": [
                 {"offer_id": 12, "code": "HE-ARM-4GB", "display_name": "HE-ARM-4GB",
@@ -220,7 +221,16 @@ class H(http.server.BaseHTTPRequestHandler):
                 return
             state["purchase_polls"] += 1
             name = rec.get("name")
-            if name == "web-poll":
+            if name in ("web-flaky-poll", "web-flaky-dead"):
+                state["poll_failures"][name] = state["poll_failures"].get(name, 0) + 1
+                if name == "web-flaky-dead" or state["poll_failures"][name] == 1:
+                    self._json(503, {"code": "upstream.unavailable",
+                                     "message": "The panel is temporarily unavailable."})
+                    return
+                # The retry succeeds and keeps advancing to a terminal state.
+                rec["polls"] = rec.get("polls", 0) + 1
+                rec["status"] = "fulfilled" if rec["polls"] >= 2 else "pending_approval"
+            elif name == "web-poll":
                 rec["polls"] = rec.get("polls", 0) + 1
                 if rec["polls"] >= 4:
                     rec["status"] = "fulfilled"
@@ -420,10 +430,46 @@ PY
 }
 seed_conn "write-test-token"
 
-# --- providers ---
-./plak.sh panel providers > "$tmpdir/providers.txt" || fail "providers"
+# --- providers: legacy endpoint retired, derived from offers ---
+./plak.sh panel providers > "$tmpdir/providers.txt" 2> "$tmpdir/providers.err" || fail "providers fallback"
 grep -q "Hetzner" "$tmpdir/providers.txt" || fail "providers rows"
 grep -q "Falkenstein" "$tmpdir/providers.txt" || fail "providers regions"
+grep -q "legacy /api/v1/providers endpoint is retired" "$tmpdir/providers.err" || fail "providers retired hint"
+grep -q "plak panel offers" "$tmpdir/providers.err" || fail "providers offers hint"
+if grep -q "Not found on this account" "$tmpdir/providers.txt" "$tmpdir/providers.err"; then
+    fail "providers reported an account error"
+fi
+./plak.sh panel providers --json > "$tmpdir/providers.json" 2> "$tmpdir/providers-json.err" || fail "providers json"
+python3 - "$tmpdir/providers.json" <<'PY' || fail "providers json shape"
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data["source"] == "billing/offers", data
+by_name = {item["name"]: item for item in data["data"]}
+assert "Hetzner Cloud" in by_name, by_name
+hetzner = by_name["Hetzner Cloud"]
+assert {region["id"] for region in hetzner["regions"]} == {13, 14}, hetzner
+assert {plan["offer_id"] for plan in hetzner["plans"]} == {12, 20}, hetzner
+PY
+# The 404 mapping itself stays actionable even if a future panel moves the
+# legacy route again (the command above already falls back).
+plak_connect_load >/dev/null 2>&1 || fail "providers connection load"
+PLAK_PANEL_URL_OUT="$PANEL"
+set +e
+plak_panel_get "$PANEL/api/v1/providers" 2> "$tmpdir/providers-404.err"
+providers_404_rc=$?
+set -e
+[ "$providers_404_rc" -ne 0 ] || fail "providers 404 was not reported"
+grep -q "legacy providers endpoint is not available" "$tmpdir/providers-404.err" || fail "providers 404 message"
+grep -q "plak panel offers" "$tmpdir/providers-404.err" || fail "providers 404 guidance"
+
+# --- transport failures are distinguished (timeout vs refused) ---
+( PLAK_HTTP_CURL_EXIT=28; plak_panel_network_error ) 2> "$tmpdir/curl-timeout.err"
+grep -q "took too long to respond" "$tmpdir/curl-timeout.err" || fail "curl 28 message"
+( PLAK_HTTP_CURL_EXIT=7; plak_panel_network_error ) 2> "$tmpdir/curl-refused.err"
+grep -q "Could not connect to the panel" "$tmpdir/curl-refused.err" || fail "curl 7 message"
+if grep -q "Panel unreachable" "$tmpdir/curl-timeout.err" "$tmpdir/curl-refused.err"; then
+    fail "transport failures collapsed into a generic unreachable message"
+fi
 
 # --- create-server async -> active, no secret in json ---
 ./plak.sh panel create-server --name web-7 --provider 1 --region 2 --plan 3 --poll 1 --wait 30 --json > "$tmpdir/created.json" || fail "create-server"
@@ -631,6 +677,48 @@ import json, sys
 data = json.load(open(sys.argv[1]))
 assert data["status"] == "fulfilled", data
 PY
+
+# --- one transient 503 during a long poll is retried and does not abort ---
+./plak.sh panel buy-server --offer 12 --region 13 --name web-flaky-poll --wait 10 --poll 1 --json \
+    > "$tmpdir/flaky-poll.json" 2> "$tmpdir/flaky-poll.err" || fail "flaky poll aborted"
+python3 - "$tmpdir/flaky-poll.json" <<'PY' || fail "flaky poll json"
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data["status"] == "fulfilled", data
+assert not data.get("interrupted"), data
+PY
+grep -q "Transient panel error; retrying" "$tmpdir/flaky-poll.err" || fail "flaky poll retry hint"
+grep -q "temporary" "$tmpdir/flaky-poll.err" || fail "flaky poll transient error message"
+
+# --- persistent failures exhaust retries but never lose the request id ---
+set +e
+./plak.sh panel buy-server --offer 12 --region 13 --name web-flaky-dead --wait 10 --poll 1 --json \
+    > "$tmpdir/flaky-dead.json" 2> "$tmpdir/flaky-dead.err"
+flaky_dead_rc=$?
+set -e
+[ "$flaky_dead_rc" -ne 0 ] || fail "persistent poll failure reported success"
+dead_id=$(python3 - "$tmpdir/flaky-dead.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data["request_id"], data
+assert data.get("interrupted") is True, data
+assert data["status"] == "pending_approval", data
+assert "purchase-request %s --wait 10 --poll 1" % data["request_id"] in data["resume_command"], data
+print(data["request_id"])
+PY
+) || fail "interrupted poll json"
+
+# Human output keeps the id and the exact resume command too.
+set +e
+./plak.sh panel purchase-request "$dead_id" --wait 10 --poll 1 \
+    > "$tmpdir/flaky-dead-human.txt" 2> "$tmpdir/flaky-dead-human.err"
+flaky_dead_human_rc=$?
+set -e
+[ "$flaky_dead_human_rc" -ne 0 ] || fail "persistent human poll reported success"
+grep -q "Purchase request #$dead_id" "$tmpdir/flaky-dead-human.txt" || fail "interrupted poll lost the id"
+grep -q "Status: pending approval" "$tmpdir/flaky-dead-human.txt" || fail "interrupted poll lost the known status"
+grep -q "Polling stopped after repeated panel errors" "$tmpdir/flaky-dead-human.txt" || fail "interrupted poll message"
+grep -q "Resume with 'plak panel purchase-request $dead_id --wait 10 --poll 1'" "$tmpdir/flaky-dead-human.txt" || fail "interrupted poll resume command"
 
 set +e
 ./plak.sh panel buy-server --offer 12 --region 13 --name web-expired --wait 2 --poll 1 --json > "$tmpdir/expired.json" 2>/dev/null
@@ -912,6 +1000,7 @@ seed_conn "rate-token"
 ./plak.sh panel purchase-request 41 --json 2>"$tmpdir/rate-read.txt" >/dev/null && fail "rate-limited read accepted"
 grep -q "Rate limited" "$tmpdir/rate-read.txt" || fail "rate read message"
 grep -q "7" "$tmpdir/rate-read.txt" || fail "rate retry-after"
+grep -q "Polling stopped for purchase request #41" "$tmpdir/rate-read.txt" || fail "rate read lost the request id"
 rate_before=$(curl -fsS http://127.0.0.1:18997/__stats)
 ./plak.sh panel buy-server --offer 12 --region 13 --name rate-test --json 2>"$tmpdir/rate-write.txt" >/dev/null && fail "rate-limited purchase accepted"
 grep -q "Rate limited" "$tmpdir/rate-write.txt" || fail "rate write message"
