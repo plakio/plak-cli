@@ -8,9 +8,11 @@ steps in order. Ask the user before destructive actions.
 - Supported systems: macOS, Linux, and WSL2 on Windows. On Windows, Plak runs
   inside WSL2 with **Ubuntu 24.04 LTS**. Docker is not required.
 - Native Windows preferred: run the Windows bootstrapper:
-  `irm https://plak.sh/install.ps1 | iex`. If that URL is not available yet
-  (404), use the manual steps below. Never run the Linux installer directly on
-  native Windows.
+  `irm https://plak.sh/install.ps1 | iex`. It may prompt for UAC, reboot
+  Windows, and open Ubuntu to create the first Linux user; hand those
+  interactive steps to the user. If it returns 404, use the manual steps below.
+  Never run the Linux installer directly on native Windows. If the harness
+  cannot survive a reboot, ask the user to rerun this onboarding afterwards.
 - Native Windows manual fallback: prepare WSL2 first:
   1. From PowerShell, check `wsl --status`, `wsl --list --verbose` and
      `Get-Service vmcompute`.
@@ -52,7 +54,15 @@ steps in order. Ask the user before destructive actions.
 
 ## 2. Install Plak CLI and the local stack
 
-Run exactly:
+On native Windows, the bootstrapper in section 1 already installed Plak inside
+Ubuntu. Do not run the command below in PowerShell; skip to section 3 and run
+the verification commands inside Ubuntu, for example:
+`wsl -d Ubuntu-24.04 -- bash -lc 'plak version'`.
+
+If the bootstrapper stopped before installing Plak, open Ubuntu and run the
+command there.
+
+On macOS, Linux and WSL, run exactly:
 
 ```bash
 curl -fsSL https://plak.sh/install | PLAK_YES=1 bash
