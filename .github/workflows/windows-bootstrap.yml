@@ -1,0 +1,63 @@
+name: Windows bootstrap
+
+on:
+  push:
+    paths:
+      - install.ps1
+      - tests/install-ps1.sh
+      - tests/windows.sh
+      - docs/windows.md
+      - agent-setup/**
+      - .github/workflows/windows-bootstrap.yml
+  pull_request:
+    paths:
+      - install.ps1
+      - tests/install-ps1.sh
+      - tests/windows.sh
+      - docs/windows.md
+      - agent-setup/**
+      - .github/workflows/windows-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: PowerShell parser and static contract
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "install.ps1").Path, [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error ("line " + $_.Extent.StartLineNumber + ": " + $_.Message) }
+            exit 1
+          }
+          Write-Host "Windows PowerShell parser: OK"
+
+      - name: Parse with PowerShell 7
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "install.ps1").Path, [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error ("line " + $_.Extent.StartLineNumber + ": " + $_.Message) }
+            exit 1
+          }
+          Write-Host "PowerShell 7 parser: OK"
+
+      - name: Static contract checks
+        shell: bash
+        run: |
+          bash tests/install-ps1.sh

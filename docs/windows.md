@@ -4,15 +4,18 @@ Plak runs inside **WSL2 with Ubuntu 24.04 LTS** on Windows. Docker is **not**
 required. Docker Desktop is a separate tool and creates its own
 `docker-desktop` distribution; Plak does not use it.
 
-The planned one-line bootstrapper is tracked in
-[plakio/plak-cli#80](https://github.com/plakio/plak-cli/issues/80):
+The Windows bootstrapper source is [`install.ps1`](../install.ps1). The public
+one-liner is:
 
 ```powershell
 irm https://plak.sh/install.ps1 | iex
 ```
 
-Until that ships, use the manual flow below. It is also the fallback if the
-bootstrapper cannot run.
+It is idempotent: if Windows asks for a reboot, restart and run the same
+command again. If the URL returns 404 (the `plak.sh` redirect has not been
+deployed yet), use the manual flow below. The bootstrapper still needs
+validation on a clean Windows 11 VM; see
+[plakio/plak-cli#80](https://github.com/plakio/plak-cli/issues/80).
 
 ## 1. Enable WSL2
 

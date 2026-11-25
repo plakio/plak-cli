@@ -8,6 +8,7 @@ URLs are stable redirects served from each product site.
 | --- | --- |
 | `https://plak.sh/agent-setup/prompt.md` | [`cli/prompt.md`](cli/prompt.md) |
 | `https://plak.io/agent-setup/prompt.md` | [`panel/prompt.md`](panel/prompt.md) |
+| `https://plak.sh/install.ps1` | [`../install.ps1`](../install.ps1) |
 
 ## Redirects
 
@@ -16,6 +17,7 @@ URLs are stable redirects served from each product site.
 ```text
 /agent-setup/prompt.md  https://raw.githubusercontent.com/plakio/plak-cli/main/agent-setup/cli/prompt.md  302
 /agent-setup/           /agent-setup/prompt.md                                                            302
+/install.ps1            https://raw.githubusercontent.com/plakio/plak-cli/main/install.ps1                 301
 ```
 
 `plak.io`:

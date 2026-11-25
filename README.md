@@ -86,9 +86,15 @@ curl -fsSL https://plak.sh/install | PLAK_CLI_ONLY=1 bash
 or gum. The process may still ask for a sudo password; run it in a terminal or
 configure passwordless sudo for the agent. On a fresh Mac, install the Xcode
 Command Line Tools first with `xcode-select --install`, because Apple's GUI
-installer cannot finish non-interactively. On Windows, use **Ubuntu 24.04 LTS
-inside WSL2**, with systemd enabled. Docker is not required. See
-[docs/windows.md](docs/windows.md) for the full Windows flow and troubleshooting.
+installer cannot finish non-interactively. On Windows, use the bootstrapper:
+
+```powershell
+irm https://plak.sh/install.ps1 | iex
+```
+
+It installs **Ubuntu 24.04 LTS inside WSL2** with systemd. Docker is not
+required. If the bootstrapper is unavailable, follow the manual flow and
+troubleshooting in [docs/windows.md](docs/windows.md).
 
 Agent prompt:
 

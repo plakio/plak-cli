@@ -12,11 +12,13 @@ fail() { echo "windows test failed: $1" >&2; exit 1; }
 
 for prompt in agent-setup/cli/prompt.md agent-setup/panel/prompt.md; do
     grep -q 'Ubuntu 24.04 LTS' "$prompt" || fail "$prompt lacks Ubuntu 24.04"
+    grep -q 'plak.sh/install.ps1' "$prompt" || fail "$prompt lacks bootstrapper"
     grep -q 'wsl --install -d Ubuntu-24.04 --web-download' "$prompt" || fail "$prompt lacks web-download install"
     grep -q 'Do not switch to' "$prompt" || fail "$prompt lacks distro guard"
     grep -q 'Docker is not required' "$prompt" || fail "$prompt still implies Docker"
     grep -q 'plak trust' "$prompt" || fail "$prompt lacks plak trust"
     grep -q 'plak wsl-hosts' "$prompt" || fail "$prompt lacks plak wsl-hosts"
+    grep -q 'inside Ubuntu' "$prompt" || fail "$prompt does not route plak into Ubuntu"
     grep -q 'systemd' "$prompt" || fail "$prompt lacks systemd check"
 done
 

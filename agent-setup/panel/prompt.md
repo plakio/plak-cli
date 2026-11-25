@@ -9,7 +9,11 @@ remote resources, and before requesting purchase capability.
 
 - Supported systems: macOS, Linux, and WSL2 on Windows. On Windows, Plak runs
   inside WSL2 with **Ubuntu 24.04 LTS**. Docker is not required.
-- Native Windows: do not run the Linux installer directly. Prepare WSL2 first:
+- Native Windows preferred: run the Windows bootstrapper:
+  `irm https://plak.sh/install.ps1 | iex`. If that URL is not available yet
+  (404), use the manual steps below. Never run the Linux installer directly on
+  native Windows.
+- Native Windows manual fallback: prepare WSL2 first:
   1. From PowerShell, check `wsl --status`, `wsl --list --verbose` and
      `Get-Service vmcompute`.
   2. If `VirtualMachinePlatform` is disabled or no distribution exists, ask
@@ -36,6 +40,9 @@ remote resources, and before requesting purchase capability.
      `sudo apt-get update && sudo apt-get install -y python3 openssh-client curl ca-certificates`.
   6. Run the installer inside Ubuntu. Run Bash commands in the WSL shell, not
      as PowerShell here-strings; CRLF causes `bash\r: command not found`.
+  7. After the bootstrapper finishes, run every `plak` command inside Ubuntu,
+     never in native PowerShell. For example:
+     `wsl -d Ubuntu-24.04 -- bash -lc 'plak version'`.
 - macOS: `xcode-select -p` must succeed. If it fails, ask the user to run
   `xcode-select --install`, wait for it to finish, then continue.
 - WSL: systemd must be enabled. If `pidof systemd` fails, use the `/etc/wsl.conf`
