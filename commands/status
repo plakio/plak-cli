@@ -14,7 +14,7 @@ plak_status() {
         local deps_json=""
         local sep=""
         local dep status
-        for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
+        for dep in curl python3 gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
             if plak_command_exists "$dep"; then
                 status="found"
             else
@@ -40,7 +40,7 @@ plak_status() {
     echo "Dependencies:"
 
     local dep status
-    for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
+    for dep in curl python3 gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
         if plak_command_exists "$dep"; then
             status="found"
         else

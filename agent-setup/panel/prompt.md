@@ -7,14 +7,41 @@ remote resources, and before requesting purchase capability.
 
 ## 1. Check the host
 
-- Supported systems: macOS, Linux, and WSL2 on Windows.
-- If this is native Windows rather than WSL, stop and tell the user to run the
-  setup inside WSL2.
+- Supported systems: macOS, Linux, and WSL2 on Windows. On Windows, Plak runs
+  inside WSL2 with **Ubuntu 24.04 LTS**. Docker is not required.
+- Native Windows: do not run the Linux installer directly. Prepare WSL2 first:
+  1. From PowerShell, check `wsl --status`, `wsl --list --verbose` and
+     `Get-Service vmcompute`.
+  2. If `VirtualMachinePlatform` is disabled or no distribution exists, ask
+     the user to open PowerShell as Administrator and run:
+     `Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform`
+     and, when disabled,
+     `Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart`.
+     Reboot Windows. Do not continue until the reboot is complete; if the
+     harness cannot survive a reboot, ask the user to rerun this onboarding
+     afterwards.
+  3. Install Ubuntu from the web (avoids Microsoft Store failures):
+     `wsl --update`
+     `wsl --install -d Ubuntu-24.04 --web-download --no-launch`
+     `wsl --set-default-version 2`
+     `wsl --list --verbose`
+     If it fails, retry with `Ubuntu` or `Ubuntu-22.04`. Do not switch to
+     Debian or another distribution without explicit user consent.
+  4. Open Ubuntu and verify `ps -p 1 -o comm=` is `systemd` and `id -u` is not
+     0. If systemd is missing, add `[boot]` and `systemd=true` to
+     `/etc/wsl.conf`, run `wsl --shutdown` from Windows, reopen Ubuntu and
+     retry. If only root exists, help the user create a normal Linux user and
+     run Plak as that user. Never run the installer as root.
+  5. Install prerequisites inside Ubuntu:
+     `sudo apt-get update && sudo apt-get install -y python3 openssh-client curl ca-certificates`.
+  6. Run the installer inside Ubuntu. Run Bash commands in the WSL shell, not
+     as PowerShell here-strings; CRLF causes `bash\r: command not found`.
 - macOS: `xcode-select -p` must succeed. If it fails, ask the user to run
   `xcode-select --install`, wait for it to finish, then continue.
-- WSL: systemd must be enabled. If `pidof systemd` fails, stop and tell the
-  user to add `[boot]` and `systemd=true` to `/etc/wsl.conf`, run
-  `wsl --shutdown` from Windows, reopen WSL, and retry.
+- WSL: systemd must be enabled. If `pidof systemd` fails, use the `/etc/wsl.conf`
+  fix above and restart WSL.
+- Docker is not required for Plak. Do not install Docker Desktop for this
+  onboarding unless the user explicitly asks for an unrelated workshop tool.
 - Do not run the installer or `plak install` as root. Use `sudo` only when it
   prompts; the installer handles its own privileged steps.
 
@@ -156,6 +183,10 @@ plak panel servers --all --json
 Summarize the number of sites and servers, their names/domains, and the
 servers' regions or status if present. Do not print tokens or secrets.
 
+If the inventory has zero servers, do not claim a deployment is possible.
+Promo/redeem codes do not provision infrastructure; buying a server requires an
+offer and the account holder's explicit approval and payment.
+
 Do not run `plak panel create-*`, `delete-*`, `restart-*`, `buy-server`,
 `link`, `pull` or `push` unless the user explicitly asks. Those commands can
 create purchase requests or change production resources. `offers`,
@@ -172,6 +203,11 @@ do. Common next steps:
   with `plak list` and `plak url <name>`; for WordPress, report the admin user
   and one-time login URL as secrets. `--agent` prepares WP-MCP and the HTML
   Editor.
+  On WSL, after creating the site, run `plak trust` (without sudo) and, if
+  `*.localhost` does not resolve, `plak wsl-hosts`. Verify in Edge/Chrome; the
+  Codex embedded browser may not use the Windows trust store. After a Windows
+  reboot or `wsl --shutdown`, start Ubuntu and wait for
+  `systemctl is-active plak mariadb mailpit` before opening the site.
 - A local site is not a panel server: `plak add` uses this machine's stack,
   while `plak panel buy-server` requests a remote server in the panel and
   requires the holder's approval/payment.

@@ -763,7 +763,7 @@ fi
 # instead of leaving the user with a command that fails halfway through.
 plak_installer_missing_deps() {
     local dep missing=""
-    for dep in gum frankenphp mariadb mailpit wp; do
+    for dep in gum frankenphp mariadb mailpit wp python3 ssh; do
         if ! command -v "$dep" >/dev/null 2>&1; then
             missing="${missing}${missing:+ }$dep"
         fi

@@ -18407,7 +18407,7 @@ install_dependency() {
         # uses /usr/bin/env php which won't resolve since Plak no longer
         # installs a standalone php (wp-cli is invoked through frankenphp
         # php-cli at runtime — see get_wp_cmd in main).
-        if [[ "$cmd_name" == "mariadb" || "$cmd_name" == "wp" ]] || "$cmd_name" --version &>/dev/null 2>&1; then
+        if [[ "$cmd_name" == "mariadb" || "$cmd_name" == "wp" || "$cmd_name" == "ssh" || "$cmd_name" == "ssh-keygen" ]] || "$cmd_name" --version &>/dev/null 2>&1; then
             echo "✅ $cmd_name is already installed and valid."
             return 0
         fi
@@ -18593,6 +18593,13 @@ plak_site_install() {
     local gum_url="https://github.com/charmbracelet/gum/releases/download/v0.14.1/gum_0.14.1_Linux_${gum_arch}.tar.gz"
     install_dependency "gum" "gum" "gum" "gum" "$gum_url"
 
+    # Panel/connect/lookup need a JSON parser; SSH remotes need OpenSSH.
+    # Debian/Ubuntu minimal images often lack both.
+    install_dependency "curl" "curl" "curl" "curl" ""
+    install_dependency "python3" "python" "python3" "python3" ""
+    install_dependency "ssh" "openssh" "openssh-client" "openssh-clients" ""
+    install_dependency "ssh-keygen" "openssh" "openssh-client" "openssh-clients" ""
+
     # --- Port Selection ---
     # Two paths can run here:
     #   1. Reconfigure path — saved config already has non-default ports; the
@@ -18745,7 +18752,7 @@ plak_site_install() {
         echo "   - Using the official FrankenPHP installer..."
         local fp_tmpdir
         fp_tmpdir=$(mktemp -d)
-        if (cd "$fp_tmpdir" && curl -sL https://frankenphp.dev/install.sh | $SUDO_CMD bash); then
+        if (cd "$fp_tmpdir" && umask 022 && curl -sL https://frankenphp.dev/install.sh | $SUDO_CMD bash); then
             hash -r
             if ! command -v frankenphp &> /dev/null && [ -x "$fp_tmpdir/frankenphp" ]; then
                 $SUDO_CMD mv "$fp_tmpdir/frankenphp" "$BIN_DIR/frankenphp"
@@ -18768,15 +18775,31 @@ plak_site_install() {
         echo "✅ FrankenPHP is already installed."
     fi
 
+    # The upstream FrankenPHP installer inherits the caller's umask. Automation
+    # sometimes runs with 077, which leaves /etc/apt/keyrings unreadable by APT.
+    # Normalize only the static-php keyring, not unrelated repository keys.
+    if [ "$OS" = "linux" ] && [ "$PKG_MANAGER" = "apt" ]; then
+        local keyring
+        for keyring in /etc/apt/keyrings/static-php*.asc; do
+            [ -e "$keyring" ] || continue
+            $SUDO_CMD chmod 0644 "$keyring" 2>/dev/null || true
+        done
+        if [ -d /etc/apt/keyrings ]; then
+            $SUDO_CMD chmod 0755 /etc/apt/keyrings 2>/dev/null || true
+        fi
+    fi
+
     # On Linux with apt/dnf, FrankenPHP needs additional PHP extensions installed
     # The DEB/RPM packages don't include all extensions by default
     if [ "$OS" = "linux" ]; then
         echo "📦 Installing FrankenPHP PHP extensions for WordPress..."
         if [ "$PKG_MANAGER" = "apt" ]; then
+            $SUDO_CMD apt-get install -y ca-certificates >/dev/null 2>&1 || true
             # Install required PHP extensions for WordPress via apt
             $SUDO_CMD apt install -y php-zts-mysqli php-zts-curl php-zts-gd php-zts-xml php-zts-mbstring php-zts-zip php-zts-intl php-zts-bcmath 2>/dev/null || true
             echo "✅ FrankenPHP PHP extensions installed."
         elif [ "$PKG_MANAGER" = "dnf" ]; then
+            $SUDO_CMD dnf install -y ca-certificates >/dev/null 2>&1 || true
             # Install required PHP extensions for WordPress via dnf
             $SUDO_CMD dnf install -y php-zts-mysqli php-zts-curl php-zts-gd php-zts-xml php-zts-mbstring php-zts-zip php-zts-intl php-zts-bcmath 2>/dev/null || true
             echo "✅ FrankenPHP PHP extensions installed."
@@ -25099,7 +25122,7 @@ plak_status() {
         local deps_json=""
         local sep=""
         local dep status
-        for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
+        for dep in curl python3 gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
             if plak_command_exists "$dep"; then
                 status="found"
             else
@@ -25125,7 +25148,7 @@ plak_status() {
     echo "Dependencies:"
 
     local dep status
-    for dep in gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
+    for dep in curl python3 gum ssh ssh-keygen awk sed grep mktemp frankenphp mariadb mailpit wp; do
         if plak_command_exists "$dep"; then
             status="found"
         else
